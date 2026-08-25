@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Tests
+        run: pytest -q
+
+      - name: Migrations apply and reverse cleanly
+        env:
+          DATABASE_URL: sqlite+aiosqlite:///./ci.db
+        run: |
+          alembic upgrade head
+          alembic check
+          alembic downgrade base
+          alembic upgrade head
+
+      - name: End-to-end walkthrough
+        run: python scripts/smoke.py
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No bot token committed
+        run: |
+          # Real tokens look like 8123456789:AAF... - the placeholder in
+          # .env.example is excluded deliberately.
+          if grep -rEn "[0-9]{8,10}:AA[A-Za-z0-9_-]{30,}" . \
+               --exclude-dir=.git --exclude=.env.example --exclude=ci.yml; then
+            echo "::error::A Telegram bot token appears to be committed."
+            exit 1
+          fi
+          echo "No tokens found."
+
+      - name: No .env committed
+        run: |
+          if [ -f .env ]; then
+            echo "::error::.env is committed. Remove it and rotate the token."
+            exit 1
+          fi
+          echo "No .env in the repository."

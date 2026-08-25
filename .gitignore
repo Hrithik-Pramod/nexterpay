@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.py[cod]
+.env
+*.db
+*.db-journal
+.pytest_cache/
+.ruff_cache/
+*.pdf
+page-*.jpg

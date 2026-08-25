@@ -1,0 +1,61 @@
+# Single-host deployment. Sufficient for Phase 1 volumes.
+#
+# IMPORTANT: run exactly one `bot` container. Long polling means two instances
+# would both receive every update and duplicate every relayed message. Do not
+# add `deploy.replicas`.
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-nexterpay}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-nexterpay_ops}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # No bind mount for backups - pg_dump writes to the host directly, so a
+      # root-owned ./backups directory never appears in the project.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nexterpay}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Not published to the host - only the bot container reaches it.
+    expose:
+      - "5432"
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    expose:
+      - "6379"
+
+  migrate:
+    build: .
+    command: ["alembic", "upgrade", "head"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-nexterpay}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-nexterpay_ops}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-nexterpay}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-nexterpay_ops}
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # No ports. Long polling dials out; nothing needs to reach this container.
+
+volumes:
+  pgdata:
