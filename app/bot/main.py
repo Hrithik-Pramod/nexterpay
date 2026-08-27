@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, Router
 from aiogram.filters import Command
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message
@@ -33,8 +33,34 @@ from app.services.throttle import ThrottledGateway
 logger = logging.getLogger(__name__)
 
 
+def build_storage():
+    """Keep half-finished requests alive across a restart.
+
+    A client taps "Raise Request", gets distracted, and answers ten minutes
+    later - by which time we may have redeployed. With in-memory state that
+    reply lands with no state attached and is silently dropped: the client
+    sees nothing, and the log shows nothing, because as far as the bot is
+    concerned no request was ever started. Redis is already running for the
+    rate limiter, so this costs nothing.
+
+    Falls back to memory rather than refusing to start; a bot with forgetful
+    state is worth more than a bot that is down.
+    """
+    settings = get_settings()
+    try:
+        from aiogram.fsm.storage.redis import RedisStorage
+
+        storage = RedisStorage.from_url(settings.redis_url)
+        logger.info("FSM state in Redis (%s)", settings.redis_url)
+        return storage
+    except Exception:
+        logger.exception("Redis unavailable - falling back to in-memory FSM state")
+        return MemoryStorage()
+
+
 def build_dispatcher() -> Dispatcher:
-    dp = Dispatcher(storage=MemoryStorage())
+    dp = Dispatcher(storage=build_storage())
+
 
     @dp.message(Command("start"))
     async def cmd_start(message: Message) -> None:
@@ -69,6 +95,29 @@ def build_dispatcher() -> Dispatcher:
     dp.include_router(admin.router)
     dp.include_router(staff.router)
     dp.include_router(client.router)
+
+    # Included last, so it only sees what every other handler declined.
+    #
+    # During UAT the hardest report to act on is "it did nothing". This turns
+    # that into evidence: if a line appears here, Telegram delivered the
+    # message and we chose to ignore it. If no line appears, Telegram never
+    # delivered it at all - almost always privacy mode. Two very different
+    # bugs that look identical from the group.
+    trace = Router(name="trace")
+
+    @trace.message()
+    async def _unhandled(message: Message) -> None:
+        logger.info(
+            "unhandled message chat=%s (%s) user=%s thread=%s reply=%s text=%r",
+            message.chat.id,
+            message.chat.type,
+            message.from_user.id if message.from_user else None,
+            message.message_thread_id,
+            bool(message.reply_to_message),
+            (message.text or message.caption or "")[:80],
+        )
+
+    dp.include_router(trace)
     return dp
 
 

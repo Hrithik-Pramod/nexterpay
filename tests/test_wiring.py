@@ -66,7 +66,11 @@ def test_routers_are_ordered_so_the_catch_all_is_last():
     from app.bot.main import build_dispatcher
 
     names = [r.name for r in build_dispatcher().sub_routers]
-    assert names == ["admin", "staff", "client"]
+    assert names == ["admin", "staff", "client", "trace"]
+    # "trace" logs anything no one else wanted, so it must stay behind the
+    # client catch-all or it would log every ordinary message as unhandled.
+    assert names[-1] == "trace"
+    assert names.index("client") > names.index("staff")
 
 
 async def test_topic_maps_back_to_its_work_item(session, acme_support, support_ops):
