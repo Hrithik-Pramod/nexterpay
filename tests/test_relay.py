@@ -334,3 +334,75 @@ async def test_claiming_does_not_notify_yourself(
     item = await _open(session, gw, acme_support)
     await relay.claim(session, gw, item, Actor.of(operator))
     assert "is now assigned to you" not in gw.all_text_to(OPS_CHAT)
+
+
+async def test_client_chasing_a_claimed_item_pings_the_owner(
+    session, acme_support, support_ops, operator, gw
+):
+    """NexterPay's decision: the owner is mentioned, not merely written about.
+
+    A message sitting in a topic is easy to miss in a busy group. A real
+    tg://user mention produces a notification for the person who claimed it.
+    """
+    item = await _open(session, gw, acme_support)
+    await relay.claim(session, gw, item, Actor.of(operator))
+
+    await relay.relay_client_message(
+        session, gw, item,
+        text="any update on this?",
+        sender_name="Tom Baker",
+        telegram_message_id=777,
+    )
+
+    topic = gw.all_text_to(OPS_CHAT)
+    assert f'tg://user?id={operator.telegram_user_id}' in topic
+    assert "any update on this?" in topic
+
+    mention_calls = [
+        c for c in gw.calls
+        if c.method == "send_message" and "tg://user" in c.payload.get("text", "")
+    ]
+    assert all(c.payload.get("parse_mode") == "HTML" for c in mention_calls), (
+        "a mention sent without parse_mode arrives as literal HTML and pings nobody"
+    )
+
+
+async def test_unowned_item_is_relayed_without_a_mention(
+    session, acme_support, support_ops, gw
+):
+    item = await _open(session, gw, acme_support)
+
+    await relay.relay_client_message(
+        session, gw, item,
+        text="still waiting",
+        sender_name="Tom Baker",
+        telegram_message_id=778,
+    )
+
+    topic = gw.all_text_to(OPS_CHAT)
+    assert "still waiting" in topic
+    assert "tg://user" not in topic
+
+
+async def test_client_text_with_markup_characters_survives(
+    session, acme_support, support_ops, operator, gw
+):
+    """Client text is interpolated into an HTML message, so it must be escaped.
+
+    Without escaping, "amount < 500 & rising" either loses characters or makes
+    Telegram reject the whole send - which would lose the client's message
+    entirely.
+    """
+    item = await _open(session, gw, acme_support)
+    await relay.claim(session, gw, item, Actor.of(operator))
+
+    await relay.relay_client_message(
+        session, gw, item,
+        text="amount < 500 & rising",
+        sender_name="Tom <b>Baker</b>",
+        telegram_message_id=779,
+    )
+
+    topic = gw.all_text_to(OPS_CHAT)
+    assert "amount &lt; 500 &amp; rising" in topic
+    assert "Tom &lt;b&gt;Baker&lt;/b&gt;" in topic

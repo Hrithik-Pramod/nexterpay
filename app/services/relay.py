@@ -18,6 +18,7 @@ Two other things happen here by design:
 
 from __future__ import annotations
 
+import html
 import logging
 from dataclasses import dataclass
 
@@ -288,11 +289,39 @@ async def relay_client_message(
         Actor(name=sender_name, telegram_user_id=sender_telegram_user_id),
     )
 
+    # NexterPay asked for the owner to be pinged when a client chases, so the
+    # message is not merely present in the topic but actually lands on the
+    # person responsible. Unowned items have nobody to ping, and fall back to
+    # the plain form.
+    owner = (
+        await session.get(Staff, item.owner_staff_id)
+        if item.owner_staff_id is not None
+        else None
+    )
+
     if text:
+        if owner is not None:
+            body = (
+                f"{mention_for(owner)} — {html.escape(sender_name)} has replied "
+                f"on {item.display_reference}:\n{html.escape(text)}"
+            )
+            await gateway.send_message(
+                ops.telegram_chat_id, body, thread_id=item.topic_id, parse_mode="HTML"
+            )
+        else:
+            await gateway.send_message(
+                ops.telegram_chat_id,
+                f"{sender_name} (client):\n{text}",
+                thread_id=item.topic_id,
+            )
+    elif owner is not None and attachments:
+        # An attachment with no words still needs the owner to know.
         await gateway.send_message(
             ops.telegram_chat_id,
-            f"{sender_name} (client):\n{text}",
+            f"{mention_for(owner)} — {html.escape(sender_name)} has sent an "
+            f"attachment on {item.display_reference}.",
             thread_id=item.topic_id,
+            parse_mode="HTML",
         )
 
     for att in attachments or []:
@@ -396,6 +425,18 @@ async def record_internal_attachment(
         await add_internal_note(session, gateway, item, actor, note)
 
 
+def mention_for(staff) -> str:
+    """A real Telegram mention, so the person is notified rather than named.
+
+    Requires parse_mode="HTML" at the call site. Falls back to the plain name
+    when we have no Telegram id, which is better than a dead link.
+    """
+    name = html.escape(staff.display_name)
+    if staff.telegram_user_id:
+        return f'<a href="tg://user?id={staff.telegram_user_id}">{name}</a>'
+    return name
+
+
 async def notify_owner(
     session: AsyncSession, gateway: TelegramGateway, item: WorkItem, assignee
 ) -> None:
@@ -409,15 +450,14 @@ async def notify_owner(
     if item.topic_id is None:
         return
     _, ops = await chats_for(session, item)
-    mention = (
-        f'<a href="tg://user?id={assignee.telegram_user_id}">{assignee.display_name}</a>'
-        if assignee.telegram_user_id
-        else assignee.display_name
-    )
     await gateway.send_message(
         ops.telegram_chat_id,
-        f"{mention} — {item.display_reference} is now assigned to you.",
+        f"{mention_for(assignee)} — {item.display_reference} is now assigned to you.",
         thread_id=item.topic_id,
+        # Without this the link was sent as literal text: the owner saw raw
+        # HTML and was never actually pinged. The whole point of the message
+        # is the notification.
+        parse_mode="HTML",
     )
 
 

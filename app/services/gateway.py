@@ -37,6 +37,12 @@ class TelegramGateway(Protocol):
         thread_id: int | None = None,
         reply_to_message_id: int | None = None,
         reply_markup: Any | None = None,
+        # Off by default on purpose. Most of what this bot sends is text a
+        # client or staff member typed, and a stray "<" in it would either be
+        # swallowed as markup or rejected outright by Telegram. Only callers
+        # that build their own markup - and escape everything they interpolate
+        # - should turn this on.
+        parse_mode: str | None = None,
     ) -> SentMessage: ...
 
     async def send_file(
@@ -83,6 +89,7 @@ class AiogramGateway:
         thread_id: int | None = None,
         reply_to_message_id: int | None = None,
         reply_markup: Any | None = None,
+        parse_mode: str | None = None,
     ) -> SentMessage:
         msg = await self._bot.send_message(
             chat_id=chat_id,
@@ -90,6 +97,7 @@ class AiogramGateway:
             message_thread_id=thread_id,
             reply_to_message_id=reply_to_message_id,
             reply_markup=reply_markup,
+            parse_mode=parse_mode,
         )
         return SentMessage(chat_id=chat_id, message_id=msg.message_id)
 
@@ -190,6 +198,7 @@ class FakeGateway:
         thread_id: int | None = None,
         reply_to_message_id: int | None = None,
         reply_markup: Any | None = None,
+        parse_mode: str | None = None,
     ) -> SentMessage:
         self._maybe_fail()
         self.calls.append(
@@ -198,6 +207,7 @@ class FakeGateway:
                 "thread_id": thread_id,
                 "reply_to_message_id": reply_to_message_id,
                 "has_markup": reply_markup is not None,
+                "parse_mode": parse_mode,
             })
         )
         return SentMessage(chat_id=chat_id, message_id=self._id())
