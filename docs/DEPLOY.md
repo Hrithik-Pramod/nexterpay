@@ -293,17 +293,46 @@ docker compose exec -T db pg_dump -U nexterpay nexterpay_ops \
 Nightly at 2am — `crontab -e`, then:
 
 ```
-0 2 * * * cd ~/nexterpay-ops && docker compose exec -T db pg_dump -U nexterpay nexterpay_ops | gzip > ~/backups/nexterpay-$(date +\%F).sql.gz
+0 2 * * * mkdir -p ~/backups && cd /root/nexterpay && /usr/bin/docker compose exec -T db pg_dump -U nexterpay nexterpay_ops | gzip > ~/backups/nexterpay-$(date +\%F).sql.gz
+
+Check the path matches where you actually cloned the project, then verify
+it works instead of trusting it: run the command by hand once and confirm
+the file is not zero bytes. A backup nobody has ever restored is a guess.
 ```
 
 ### Wipe test data before the pilot
 
-UAT fills the database with nonsense. Start clean afterwards:
+> **`-v` destroys the database. There is no undo and no confirmation prompt.**
+>
+> It removes the `pgdata` volume: every registered group, every staff record
+> and every work item, gone in under a second. `docker system prune
+> --volumes` does the same thing. Run this **only** in the deliberate gap
+> between UAT finishing and the pilot starting - never to restart the stack,
+> never to pick up new code, never to fix a container that is misbehaving.
+>
+> To restart or deploy, the safe form is always:
+>
+> ```bash
+> docker compose down          # no -v
+> docker compose up -d --build # every service, not just `bot`
+> ```
+
+UAT fills the database with nonsense. When you are genuinely finished with it,
+take a backup first so the decision is reversible, then wipe:
 
 ```bash
-docker compose down -v      # -v removes the data volume too
+mkdir -p ~/backups
+docker compose exec -T db pg_dump -U nexterpay nexterpay_ops \
+  | gzip > ~/backups/pre-pilot-$(date +%F-%H%M).sql.gz
+ls -lh ~/backups/          # confirm it is not zero bytes BEFORE continuing
+
+docker compose down -v
 docker compose up -d
 ```
+
+Re-registration after a wipe is manual: `/register_ops`, `/register_client`
+for each client group, and `/adduser` for every member of staff. Budget for
+it rather than discovering it with the client waiting.
 
 ---
 

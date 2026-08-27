@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 
 from aiogram import F, Router
+from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, Message
 
@@ -22,9 +23,10 @@ from app.bot.deps import (
     staff_context,
     work_item_for_thread,
 )
+from app.bot.registry import resolve_chat
 from app.db.base import session_scope
 from app.db.models import WorkItem
-from app.domain.enums import Priority, WorkItemStatus
+from app.domain.enums import ChatKind, Priority, WorkItemStatus
 from app.domain.history import load_events, render_history
 from app.services import relay
 
@@ -253,6 +255,19 @@ async def topic_message(message: Message) -> None:
     internal, including a file with no caption. Sending something outward is
     always a deliberate act.
     """
+    # This handler is filtered on message_thread_id, which is NOT only set by
+    # forum topics: Telegram sets it on any reply in a supergroup, including
+    # in client groups with topics switched off. Without the guard below, a
+    # client replying to the bot lands here, `_resolve` returns None because
+    # this is not an Operations Group, and the handler returns silently -
+    # consuming the update before the client router ever sees it. Raising
+    # SkipHandler hands it on instead of swallowing it.
+    async with session_scope() as session:
+        chat = await resolve_chat(session, message.chat.id)
+        is_operations = chat is not None and chat.kind is ChatKind.OPERATIONS
+    if not is_operations:
+        raise SkipHandler
+
     text = message.text or message.caption or ""
     if text.startswith("/") and not text.startswith("/reply"):
         return  # a command; its own handler deals with it

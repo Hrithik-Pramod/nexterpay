@@ -10,6 +10,8 @@ what the bot should *do* about it is still an open question with NexterPay.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from app.bot.routing import (
@@ -124,3 +126,70 @@ def test_configured_strategy_is_the_agreed_one():
 def test_unknown_strategy_fails_loudly():
     with pytest.raises(ValueError):
         build_strategy("guess")
+
+
+async def test_client_reply_is_not_swallowed_by_the_staff_topic_handler(
+    session, acme_support, monkeypatch
+):
+    """A client replying to the bot must reach the client router.
+
+    Regression, found in UAT. `topic_message` is filtered on
+    message_thread_id, which reads as "this is a forum topic" but is not:
+    Telegram sets message_thread_id on ANY reply in a supergroup, including
+    client groups with topics switched off.
+
+    So a client replying to the bot's "describe your request" prompt matched
+    the staff handler, which is registered first. `_resolve` returned None -
+    correctly, since a client group has no staff - and the handler returned.
+    aiogram counted the update as handled and the client router never ran.
+
+    The symptom was the worst kind: the reply arrived, no ticket was created,
+    nothing was logged, and no error was raised anywhere. It cost most of a
+    day to find.
+    """
+    import contextlib
+
+    from aiogram.dispatcher.event.bases import SkipHandler
+
+    from app.bot.handlers import staff as staff_handlers
+
+    @contextlib.asynccontextmanager
+    async def fake_scope():
+        yield session
+
+    monkeypatch.setattr(staff_handlers, "session_scope", fake_scope)
+
+    reply_in_client_group = SimpleNamespace(
+        chat=SimpleNamespace(id=acme_support.telegram_chat_id, type="supergroup"),
+        message_thread_id=8842,          # set by Telegram because it is a reply
+        text="the payment still has not arrived",
+        caption=None,
+        from_user=SimpleNamespace(id=8230258656, full_name="Charley"),
+    )
+
+    with pytest.raises(SkipHandler):
+        await staff_handlers.topic_message(reply_in_client_group)
+
+
+async def test_unregistered_group_is_skipped_not_swallowed(session, monkeypatch):
+    import contextlib
+
+    from aiogram.dispatcher.event.bases import SkipHandler
+
+    from app.bot.handlers import staff as staff_handlers
+
+    @contextlib.asynccontextmanager
+    async def fake_scope():
+        yield session
+
+    monkeypatch.setattr(staff_handlers, "session_scope", fake_scope)
+
+    stranger = SimpleNamespace(
+        chat=SimpleNamespace(id=-1009999999999, type="supergroup"),
+        message_thread_id=1,
+        text="hello",
+        caption=None,
+        from_user=SimpleNamespace(id=1, full_name="Nobody"),
+    )
+    with pytest.raises(SkipHandler):
+        await staff_handlers.topic_message(stranger)

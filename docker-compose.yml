@@ -17,7 +17,12 @@ services:
       # No bind mount for backups - pg_dump writes to the host directly, so a
       # root-owned ./backups directory never appears in the project.
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nexterpay}"]
+      # -d matters. Without it pg_isready connects to a database named after
+      # the user ("nexterpay"), which does not exist - so Postgres logs a
+      # FATAL every 10 seconds forever. The check still passes, because the
+      # server answered, so nothing breaks; it just buries real errors under
+      # thousands of lines of noise.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nexterpay} -d ${POSTGRES_DB:-nexterpay_ops}"]
       interval: 10s
       timeout: 5s
       retries: 5
