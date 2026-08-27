@@ -138,10 +138,59 @@ async def check_client_group(bot: Bot, chat: Chat) -> None:
     try:
         me = await bot.get_me()
         member = await bot.get_chat_member(chat.telegram_chat_id, me.id)
+
         if member.status not in ("administrator", "member"):
             fail(f"{label}: bot status is '{member.status}'", "re-add the bot to the group")
+        elif member.status == "administrator":
+            # Not broken, but it quietly changes the agreed behaviour: an admin
+            # bot bypasses privacy mode and sees every message in the group,
+            # including ones that have nothing to do with a request.
+            warn(
+                f"{info.title or label}: the bot is an ADMINISTRATOR here. In a client "
+                "group it should be an ordinary member - as an admin it sees every "
+                "message, not only replies to its own. Testing in this state will "
+                "not match the agreed design. Dismiss it as admin unless NexterPay "
+                "have chosen otherwise."
+            )
+        else:
+            ok(f"{info.title or label}: bot is a member, not an admin (correct)")
     except Exception as exc:
         warn(f"{label}: could not confirm bot membership ({exc})")
+
+
+async def check_staff_anonymity(bot: Bot, chat: Chat) -> None:
+    """Flag human administrators of an Operations Group.
+
+    Telegram turns on "Remain Anonymous" for group admins by default. An
+    anonymous admin's messages arrive from the group rather than the person,
+    so the bot cannot identify them and refuses every action. Staff only need
+    to be members here.
+    """
+    try:
+        admins = await bot.get_chat_administrators(chat.telegram_chat_id)
+    except Exception as exc:
+        warn(f"Could not list administrators of {chat.department.value} operations ({exc})")
+        return
+
+    people = [
+        a for a in admins
+        if getattr(a.user, "is_bot", False) is False and a.status != "creator"
+    ]
+    anonymous = [a for a in people if getattr(a, "is_anonymous", False)]
+
+    if anonymous:
+        names = ", ".join(a.user.full_name for a in anonymous)
+        warn(
+            f"{chat.department.value.title()} Operations: {names} "
+            f"{'are' if len(anonymous) > 1 else 'is'} an anonymous administrator. "
+            "The bot cannot tell who they are and will refuse their commands. "
+            "Dismiss them as Telegram admin, or turn off 'Remain Anonymous'."
+        )
+    elif people:
+        ok(
+            f"{chat.department.value.title()} Operations: "
+            f"{len(people)} human admin(s), none anonymous"
+        )
 
 
 async def check_registry() -> tuple[list[Chat], list[Chat]]:
@@ -224,6 +273,7 @@ async def main() -> None:
             heading("Operations Groups")
             for chat in ops:
                 await check_operations_group(bot, chat)
+                await check_staff_anonymity(bot, chat)
 
         if clients:
             heading("Client groups")
