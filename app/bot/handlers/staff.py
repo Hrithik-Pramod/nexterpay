@@ -12,7 +12,9 @@ import logging
 from aiogram import F, Router
 from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.filters import Command, CommandObject
-from aiogram.types import CallbackQuery, Message
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import CallbackQuery, ForceReply, Message
 
 from app.bot import keyboards as kb
 from app.bot.attachments import extract_attachments, has_attachment
@@ -25,9 +27,10 @@ from app.bot.deps import (
 )
 from app.bot.registry import resolve_chat
 from app.db.base import session_scope
-from app.db.models import WorkItem
+from app.db.models import Client, Staff, WorkItem
 from app.domain.enums import ChatKind, Priority, WorkItemStatus
 from app.domain.history import load_events, render_history
+from app.domain.work_items import ROLE_REQUIRED_TO_REASSIGN
 from app.services import relay
 
 logger = logging.getLogger(__name__)
@@ -154,8 +157,102 @@ async def cmd_assign(message: Message, command: CommandObject) -> None:
             await message.reply(explain(exc))
 
 
+class StaffCompose(StatesGroup):
+    """Composing a message from a button rather than typing a command.
+
+    Deliberately short-lived. State is cleared on send, on cancel, and on any
+    sign the person has moved to a different request - a stale draft that
+    later attaches itself to the wrong ticket would be worse than no button.
+    """
+
+    awaiting_reply = State()
+    awaiting_note = State()
+
+
+async def _client_name(session, item: WorkItem) -> str:
+    client = await session.get(Client, item.client_id)
+    return client.name if client else "the client"
+
+
+async def _wrong_topic(message: Message, state: FSMContext, topic_id: int | None) -> bool:
+    """Is this reply about the request the draft was started in?
+
+    FSM keys are (chat, user) and carry no topic, so a staff member composing
+    in one ticket and then answering a prompt in another would have their text
+    attached to the first. In an Operations Group where everyone works several
+    topics at once that is not a hypothetical.
+    """
+    if topic_id is None or message.message_thread_id == topic_id:
+        return False
+    await state.clear()
+    await message.reply(
+        "That draft belonged to a different request, so I have discarded it. "
+        "Tap 'Reply to client' in this topic to start again."
+    )
+    return True
+
+
+@router.message(StaffCompose.awaiting_reply)
+async def capture_reply_draft(message: Message, state: FSMContext) -> None:
+    """Hold the draft and show it back. Nothing is sent from here."""
+    data = await state.get_data()
+    if await _wrong_topic(message, state, data.get("topic_id")):
+        return
+
+    text = (message.text or message.caption or "").strip()
+    if not text:
+        await message.reply("Type the message the client should see, or tap Cancel.")
+        return
+
+    work_item_id = data.get("work_item_id")
+    async with session_scope() as session:
+        item = await session.get(WorkItem, work_item_id)
+        if item is None:
+            await state.clear()
+            await message.reply("That request no longer exists.")
+            return
+        client_name = await _client_name(session, item)
+        reference = item.display_reference
+
+    await state.update_data(draft=text)
+    await message.reply(
+        f"This will be sent to {client_name} for {reference}:\n\n{text}\n\n"
+        f"Nothing has been sent yet.",
+        reply_markup=kb.confirm_reply(work_item_id),
+    )
+
+
+@router.message(StaffCompose.awaiting_note)
+async def capture_note_text(message: Message, state: FSMContext) -> None:
+    """Internal notes need no preview - nothing leaves the Operations Group."""
+    data = await state.get_data()
+    if await _wrong_topic(message, state, data.get("topic_id")):
+        return
+
+    text = (message.text or message.caption or "").strip()
+    if not text:
+        await message.reply("Type the note, or ignore this to abandon it.")
+        return
+
+    await state.clear()
+    async with session_scope() as session:
+        resolved = await _resolve(session, message, message.message_thread_id)
+        if resolved is None:
+            await message.reply(
+                refusal_reason(message.from_user.id if message.from_user else None)
+            )
+            return
+        _, actor, item = resolved
+        if item is None:
+            return
+        await relay.add_internal_note(
+            session, gateway(), item, actor, text,
+            telegram_message_id=message.message_id,
+        )
+
+
 @router.callback_query(F.data.startswith("wi:"))
-async def on_action(query: CallbackQuery) -> None:
+async def on_action(query: CallbackQuery, state: FSMContext) -> None:
     try:
         action, work_item_id, value = kb.parse_cb(query.data or "")
     except ValueError:
@@ -179,7 +276,7 @@ async def on_action(query: CallbackQuery) -> None:
             return
 
         try:
-            note = await _apply(session, query, action, value, item, actor)
+            note = await _apply(session, query, action, value, item, actor, state)
         except Exception as exc:
             await query.answer(explain(exc)[:190], show_alert=True)
             return
@@ -187,7 +284,9 @@ async def on_action(query: CallbackQuery) -> None:
     await query.answer(note or "Done")
 
 
-async def _apply(session, query: CallbackQuery, action, value, item: WorkItem, actor) -> str:
+async def _apply(
+    session, query: CallbackQuery, action, value, item: WorkItem, actor, state: FSMContext
+) -> str:
     gw = gateway()
 
     if action == "claim":
@@ -195,11 +294,76 @@ async def _apply(session, query: CallbackQuery, action, value, item: WorkItem, a
         await _refresh_keyboard(query, item.id, claimed=True)
         return f"Claimed {item.display_reference}"
 
-    if action == "reassign":
-        await query.message.reply(
-            "Reply to the person you want to assign and send /assign."
+    if action == "reply":
+        # ForceReply rather than "now type your reply": it quotes the prompt in
+        # the composer, so the person can see they are writing to a client and
+        # not to the topic. The preview afterwards is the actual safety net.
+        await state.set_state(StaffCompose.awaiting_reply)
+        await state.update_data(
+            work_item_id=item.id, topic_id=query.message.message_thread_id
         )
-        return "Use /assign"
+        name = await _client_name(session, item)
+        await query.message.answer(
+            f"Reply to {name} for {item.display_reference} - type it below. "
+            f"You will see it before it is sent.",
+            message_thread_id=query.message.message_thread_id,
+            reply_markup=ForceReply(selective=True),
+        )
+        return "Type your reply"
+
+    if action == "note":
+        await state.set_state(StaffCompose.awaiting_note)
+        await state.update_data(
+            work_item_id=item.id, topic_id=query.message.message_thread_id
+        )
+        await query.message.answer(
+            f"Internal note for {item.display_reference} - type it below. "
+            f"This stays in this group.",
+            message_thread_id=query.message.message_thread_id,
+            reply_markup=ForceReply(selective=True),
+        )
+        return "Type your note"
+
+    if action == "sendreply":
+        data = await state.get_data()
+        draft = (data.get("draft") or "").strip()
+        if not draft or data.get("work_item_id") != item.id:
+            # Covers a second tap on the same preview, and a preview left over
+            # from an earlier request. Sending a client the wrong message twice
+            # is not a mistake worth being relaxed about.
+            await state.clear()
+            return "That draft has already been sent or expired"
+        await relay.send_client_reply(session, gw, item, actor, draft)
+        await state.clear()
+        await _seal_preview(query, f"Sent to the client:\n\n{draft}")
+        return f"Sent to the client for {item.display_reference}"
+
+    if action == "cancelreply":
+        await state.clear()
+        await _seal_preview(query, "Cancelled. Nothing was sent to the client.")
+        return "Cancelled"
+
+    if action == "reassign":
+        # Check the permission before offering the list. Showing someone a menu
+        # of colleagues and then refusing every one of them is a worse
+        # experience than saying no once.
+        actor.require(ROLE_REQUIRED_TO_REASSIGN)
+
+        people = await _assignable(session, item)
+        if not people:
+            return "No other active staff in this department"
+        await query.message.edit_reply_markup(
+            reply_markup=kb.assignee_choices(item.id, people)
+        )
+        return "Choose who to assign it to"
+
+    if action == "setowner":
+        assignee = await session.get(Staff, int(value)) if value else None
+        if assignee is None or not assignee.is_active:
+            return "That person is no longer active staff"
+        await relay.assign(session, gw, item, assignee, actor)
+        await _refresh_keyboard(query, item.id, claimed=True)
+        return f"Assigned to {assignee.display_name}"
 
     if action == "status":
         await query.message.edit_reply_markup(reply_markup=kb.status_choices(item.id))
@@ -235,6 +399,34 @@ async def _apply(session, query: CallbackQuery, action, value, item: WorkItem, a
         return f"Closed {item.display_reference}"
 
     return ""
+
+
+async def _assignable(session, item: WorkItem) -> list[Staff]:
+    """Active staff in this department, minus whoever already owns it."""
+    from sqlalchemy import select
+
+    result = await session.execute(
+        select(Staff)
+        .where(
+            Staff.is_active.is_(True),
+            Staff.department == item.department,
+            Staff.id != item.owner_staff_id,
+        )
+        .order_by(Staff.display_name)
+    )
+    return list(result.scalars().all())
+
+
+async def _seal_preview(query: CallbackQuery, text: str) -> None:
+    """Replace the preview with its outcome and strip the buttons.
+
+    Leaving a live "Send to client" button under a message that has already
+    been sent is an invitation to send it twice.
+    """
+    try:
+        await query.message.edit_text(text[:4000], reply_markup=None)
+    except Exception:
+        logger.debug("Could not seal preview", exc_info=True)
 
 
 async def _refresh_keyboard(query: CallbackQuery, work_item_id: int, *, claimed: bool) -> None:

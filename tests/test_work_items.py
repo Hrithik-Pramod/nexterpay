@@ -40,12 +40,22 @@ async def test_references_are_sequential_and_unique(session, acme_support, suppo
     assert second.reference == first.reference + 1
 
 
-async def test_claim_sets_owner_and_status(session, acme_support, support_ops, operator):
+async def test_claim_sets_owner_and_starts_work(session, acme_support, support_ops, operator):
+    """Claiming is starting. One tap, not two.
+
+    NexterPay chose this: an owner who has taken a request but left it Claimed
+    is indistinguishable from an unattended one, and nobody remembers the
+    second tap. Both facts are still recorded separately in the history.
+    """
     item = await _raise_request(session, acme_support)
     await wi.claim(session, item, Actor.of(operator))
 
     assert item.owner_staff_id == operator.id
-    assert item.status is WorkItemStatus.CLAIMED
+    assert item.status is WorkItemStatus.IN_PROGRESS
+
+    kinds = [e.event_type for e in await load_events(session, item)]
+    assert EventType.OWNERSHIP_CLAIMED in kinds
+    assert EventType.STATUS_CHANGED in kinds
 
 
 async def test_second_claim_is_refused(session, acme_support, support_ops, operator, senior):

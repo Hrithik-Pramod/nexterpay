@@ -197,10 +197,25 @@ async def claim(session: AsyncSession, work_item: WorkItem, actor: Actor) -> Wor
         raise AlreadyOwned(f"{work_item.display_reference} is already owned")
 
     work_item.owner_staff_id = staff.id
-    if work_item.status is WorkItemStatus.OPEN:
-        work_item.status = WorkItemStatus.CLAIMED
-
     await record_event(session, work_item, EventType.OWNERSHIP_CLAIMED, actor)
+
+    # Claiming means starting, so the status follows in the same action rather
+    # than waiting for a second tap nobody remembers to make. The transition is
+    # recorded as its own event: the history has to show WHY the status moved,
+    # and "peter claimed it" and "it became In Progress" are two facts.
+    if work_item.status is WorkItemStatus.OPEN:
+        previous = work_item.status
+        work_item.status = WorkItemStatus.IN_PROGRESS
+        await record_event(
+            session,
+            work_item,
+            EventType.STATUS_CHANGED,
+            actor,
+            from_value=previous.value,
+            to_value=WorkItemStatus.IN_PROGRESS.value,
+            from_label=previous.label,
+            to_label=WorkItemStatus.IN_PROGRESS.label,
+        )
     return work_item
 
 
@@ -215,12 +230,26 @@ async def assign(
         raise NotAuthorised("Cannot assign to an inactive staff member")
 
     work_item.owner_staff_id = assignee.id
-    if work_item.status is WorkItemStatus.OPEN:
-        work_item.status = WorkItemStatus.CLAIMED
-
     await record_event(
         session, work_item, EventType.OWNERSHIP_ASSIGNED, actor, assignee=assignee.display_name
     )
+
+    # Same reasoning as claim(): giving someone a request starts it. Keeping
+    # assign() and claim() on different status rules would mean the header said
+    # something different depending on how ownership happened to be set.
+    if work_item.status is WorkItemStatus.OPEN:
+        previous = work_item.status
+        work_item.status = WorkItemStatus.IN_PROGRESS
+        await record_event(
+            session,
+            work_item,
+            EventType.STATUS_CHANGED,
+            actor,
+            from_value=previous.value,
+            to_value=WorkItemStatus.IN_PROGRESS.value,
+            from_label=previous.label,
+            to_label=WorkItemStatus.IN_PROGRESS.label,
+        )
     return work_item
 
 

@@ -148,10 +148,7 @@ async def test_prd_3_5_operational_consistency(
     assert item.status is WorkItemStatus.OPEN
 
     await relay.claim(session, gw, item, Actor.of(operator))
-    assert item.status is WorkItemStatus.CLAIMED
-
-    await relay.change_status(session, gw, item, WorkItemStatus.IN_PROGRESS, Actor.of(operator))
-    assert item.status is WorkItemStatus.IN_PROGRESS
+    assert item.status is WorkItemStatus.IN_PROGRESS  # claiming starts the work
 
     await relay.send_client_reply(session, gw, item, Actor.of(operator), "resolved now.")
 

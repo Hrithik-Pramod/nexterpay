@@ -168,12 +168,13 @@ async def test_status_and_priority_changes_are_visible_in_the_topic(
     item = await _open(session, gw, acme_support)
 
     await relay.claim(session, gw, item, Actor.of(operator))
-    await relay.change_status(session, gw, item, WorkItemStatus.IN_PROGRESS, Actor.of(operator))
+    await relay.change_status(session, gw, item, WorkItemStatus.WAITING_CLIENT, Actor.of(operator))
     await relay.change_priority(session, gw, item, Priority.HIGH, Actor.of(senior))
 
     topic_text = gw.all_text_to(OPS_CHAT)
     assert "Claimed by Sarah Hill" in topic_text
-    assert "Status: Claimed → In Progress (Sarah Hill)" in topic_text
+    assert "Status: Open → In Progress (Sarah Hill)" in topic_text
+    assert "Status: In Progress → Waiting for Client (Sarah Hill)" in topic_text
     assert "Priority: Medium → High (James Okoro)" in topic_text
 
     # And none of it leaked outward.

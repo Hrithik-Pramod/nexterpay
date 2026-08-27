@@ -48,12 +48,60 @@ def work_item_actions(work_item_id: int, *, claimed: bool) -> InlineKeyboardMark
                 InlineKeyboardButton(text="Status", callback_data=cb("status", work_item_id)),
             ],
             [
+                InlineKeyboardButton(
+                    text="✉ Reply to client", callback_data=cb("reply", work_item_id)
+                ),
+                InlineKeyboardButton(text="Note", callback_data=cb("note", work_item_id)),
+            ],
+            [
                 InlineKeyboardButton(text="Priority", callback_data=cb("priority", work_item_id)),
                 InlineKeyboardButton(text="History", callback_data=cb("history", work_item_id)),
             ],
             [InlineKeyboardButton(text="Close", callback_data=cb("close", work_item_id))],
         ]
     )
+
+
+def confirm_reply(work_item_id: int) -> InlineKeyboardMarkup:
+    """Last stop before a message leaves for a client group.
+
+    The envelope and the client's name are on the button on purpose. Staff tap
+    dozens of these a day and stop reading; the one thing that must never
+    become muscle memory is sending internal wording to a customer.
+    """
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✉ Send to client", callback_data=cb("sendreply", work_item_id)
+                ),
+                InlineKeyboardButton(
+                    text="Cancel", callback_data=cb("cancelreply", work_item_id)
+                ),
+            ]
+        ]
+    )
+
+
+def assignee_choices(work_item_id: int, people) -> InlineKeyboardMarkup:
+    """Who to hand the request to, as buttons.
+
+    The alternative was `/assign <telegram id>`, which nobody knows, or
+    replying to a message from the person - which only works if they happen
+    to have posted in that topic already. Neither is usable on a fresh
+    request, which is precisely when reassignment happens.
+    """
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"{p.display_name} · {p.role.value.replace('_', ' ')}",
+                callback_data=cb("setowner", work_item_id, str(p.id)),
+            )
+        ]
+        for p in people
+    ]
+    rows.append([InlineKeyboardButton(text="← Back", callback_data=cb("back", work_item_id))])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def status_choices(work_item_id: int) -> InlineKeyboardMarkup:

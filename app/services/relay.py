@@ -446,16 +446,18 @@ async def change_priority(
 async def claim(
     session: AsyncSession, gateway: TelegramGateway, item: WorkItem, actor: Actor
 ) -> None:
+    before = await _last_event_id(session, item)
     await wi.claim(session, item, actor)
-    await announce(session, gateway, item, await _latest_event(session, item))
+    await _announce_since(session, gateway, item, before)
     await refresh_header(session, gateway, item)
 
 
 async def assign(
     session: AsyncSession, gateway: TelegramGateway, item: WorkItem, assignee, actor: Actor
 ) -> None:
+    before = await _last_event_id(session, item)
     await wi.assign(session, item, assignee, actor)
-    await announce(session, gateway, item, await _latest_event(session, item))
+    await _announce_since(session, gateway, item, before)
     await refresh_header(session, gateway, item)
     if assignee.id != (actor.staff.id if actor.staff else None):
         await notify_owner(session, gateway, item, assignee)
@@ -487,6 +489,36 @@ async def close(
         event = await wi.record_event(session, item, EventType.TOPIC_CLOSED, actor)
         logger.info("Closed topic %s for %s", item.topic_id, item.display_reference)
         del event
+
+
+async def _last_event_id(session: AsyncSession, item: WorkItem) -> int:
+    from sqlalchemy import select
+
+    result = await session.execute(
+        select(Event.id).where(Event.work_item_id == item.id).order_by(Event.id.desc()).limit(1)
+    )
+    return result.scalar_one_or_none() or 0
+
+
+async def _announce_since(
+    session: AsyncSession, gateway: TelegramGateway, item: WorkItem, after_id: int
+) -> None:
+    """Announce every event a domain call produced, not merely the last one.
+
+    A single action can record more than one fact - claiming records both the
+    ownership change and the status change it triggers. Announcing only the
+    latest event silently dropped "Claimed by ..." from the topic, which is
+    exactly the ownership visibility PRD 7.3 asks for.
+    """
+    from sqlalchemy import select
+
+    result = await session.execute(
+        select(Event)
+        .where(Event.work_item_id == item.id, Event.id > after_id)
+        .order_by(Event.id)
+    )
+    for event in result.scalars().all():
+        await announce(session, gateway, item, event)
 
 
 async def _latest_event(session: AsyncSession, item: WorkItem) -> Event:
