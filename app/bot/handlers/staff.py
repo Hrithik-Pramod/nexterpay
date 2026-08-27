@@ -306,7 +306,6 @@ async def _apply(
         await query.message.answer(
             f"Reply to {name} for {item.display_reference} - type it below. "
             f"You will see it before it is sent.",
-            message_thread_id=query.message.message_thread_id,
             reply_markup=ForceReply(selective=True),
         )
         return "Type your reply"
@@ -319,7 +318,6 @@ async def _apply(
         await query.message.answer(
             f"Internal note for {item.display_reference} - type it below. "
             f"This stays in this group.",
-            message_thread_id=query.message.message_thread_id,
             reply_markup=ForceReply(selective=True),
         )
         return "Type your note"

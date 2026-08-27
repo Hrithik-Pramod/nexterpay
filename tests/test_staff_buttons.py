@@ -42,9 +42,23 @@ def state() -> FSMContext:
 
 
 def fake_query(thread_id: int | None = 55):
+    """A stand-in for CallbackQuery that is as strict as the real thing.
+
+    An earlier version accepted any keyword at all, which let a genuine bug
+    through: `Message.answer()` fills in message_thread_id itself, so passing
+    it explicitly raises TypeError in production. The fake swallowed it and
+    the tests stayed green. A fake that is more permissive than the object it
+    replaces is worse than no test.
+    """
+
     sent: list[str] = []
 
     async def answer(text, **kwargs):
+        if "message_thread_id" in kwargs:
+            raise TypeError(
+                "SendMessage() got multiple values for keyword argument "
+                "'message_thread_id' - Message.answer() already sets it"
+            )
         sent.append(text)
         return SimpleNamespace(message_id=1)
 
@@ -220,3 +234,19 @@ async def test_setowner_refuses_an_inactive_person(
     )
     assert "no longer active" in note
     assert item.owner_staff_id != operator.id
+
+
+async def test_note_button_prompts_without_touching_the_client(
+    session, acme_support, support_ops, operator, gw, state
+):
+    item = await _item(session, gw, acme_support)
+    before = len(gw.messages_to(CLIENT_CHAT))
+
+    query = fake_query()
+    await staff_handlers._apply(
+        session, query, "note", None, item, Actor.of(operator), state
+    )
+
+    assert len(gw.messages_to(CLIENT_CHAT)) == before
+    assert await state.get_state() == "StaffCompose:awaiting_note"
+    assert any("stays in this group" in text for text in query.sent)
