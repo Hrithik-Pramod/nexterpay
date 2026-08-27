@@ -1,5 +1,29 @@
 # Deploying the test server
 
+> ## This deployment (created 25 August 2026)
+>
+> | | |
+> |---|---|
+> | Server | `nexterpay-test` |
+> | IP | `168.119.101.79` |
+> | Type | CPX12 — 2 vCPU AMD, 2 GB RAM, 40 GB |
+> | Location | Falkenstein, Germany (`fsn1`) |
+> | Image | Ubuntu 24.04 LTS |
+> | Cost | €11.99/month including IPv4, billed hourly |
+> | Access | **root password**, emailed by Hetzner — no SSH key installed |
+>
+> The €4.35 CX22 was unavailable: Hetzner's cost-optimized shared plans showed
+> "Temporarily not available" in both Falkenstein and Helsinki. CPX12 is the
+> cheapest plan that could actually be created.
+>
+> **Because there is no SSH key, password logins stay enabled.** The bootstrap
+> script detects this and deliberately does *not* disable them, since doing so
+> would lock you out. Add a key when convenient and re-run the script — see
+> "Adding a key later" below.
+>
+> Steps 1 and 2 below are already done. Start at step 3.
+
+
 Written for someone who has not set up a server before. Follow it in order and
 the bot will be running in about 40 minutes, most of which is waiting.
 
@@ -298,6 +322,39 @@ docker compose up -d
 
 For anything else, start with `docker compose logs --tail=200 bot`. The logs
 name the chat and the work item, so they are usually enough.
+
+### Adding a key later
+
+Worth doing before UAT week, because password logins on a public IP get probed
+constantly. Takes two minutes.
+
+On your machine:
+
+```powershell
+ssh-keygen -t ed25519 -C "nexterpay"
+type $env:USERPROFILE\.ssh\id_ed25519.pub
+```
+
+On the server, as the `nexterpay` user:
+
+```bash
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
+nano ~/.ssh/authorized_keys      # paste the key, Ctrl+O, Enter, Ctrl+X
+chmod 600 ~/.ssh/authorized_keys
+```
+
+Test it works from a *second* terminal before closing the first — `ssh
+nexterpay@168.119.101.79` should let you in without a password. Once it does:
+
+```bash
+sudo bash ~/nexterpay-ops/scripts/bootstrap-server.sh
+```
+
+It will now see the key and disable password logins.
+
+> Do not disable password logins before confirming the key works. Keep the
+> original session open until you have logged in successfully in another
+> window — if the key is wrong, that open session is how you fix it.
 
 ### Rescaling
 

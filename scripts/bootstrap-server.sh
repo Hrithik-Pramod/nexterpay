@@ -54,21 +54,30 @@ apt-get install -y -qq \
 systemctl enable --now docker
 
 say "Creating the '${APP_USER}' user"
-if ! id -u "$APP_USER" >/dev/null 2>&1; then
-  adduser --disabled-password --gecos "" "$APP_USER"
-  usermod -aG docker "$APP_USER"
-  # Carry over your SSH key so you can log straight in as this user.
-  if [[ -f /root/.ssh/authorized_keys ]]; then
-    mkdir -p "/home/${APP_USER}/.ssh"
-    cp /root/.ssh/authorized_keys "/home/${APP_USER}/.ssh/"
-    chown -R "${APP_USER}:${APP_USER}" "/home/${APP_USER}/.ssh"
-    chmod 700 "/home/${APP_USER}/.ssh"
-    chmod 600 "/home/${APP_USER}/.ssh/authorized_keys"
-  else
-    warn "No SSH key found for root. You will need a password to log in as ${APP_USER}."
-  fi
+# Every step below is idempotent and runs whether or not the user already
+# exists. An earlier version guarded all of this behind "is this a new user",
+# which meant a re-run silently skipped the SSH key copy and the docker group -
+# and then disabled password logins, locking the user out.
+if id -u "$APP_USER" >/dev/null 2>&1; then
+  echo "    user exists; re-checking its setup"
 else
-  echo "    user already exists, leaving it alone"
+  adduser --disabled-password --gecos "" "$APP_USER"
+  echo "    created"
+fi
+
+usermod -aG docker "$APP_USER"
+echo "    added to the docker group"
+
+# Carry over the SSH key so you can log straight in as this user.
+if [[ -f /root/.ssh/authorized_keys ]]; then
+  mkdir -p "/home/${APP_USER}/.ssh"
+  cp /root/.ssh/authorized_keys "/home/${APP_USER}/.ssh/authorized_keys"
+  chown -R "${APP_USER}:${APP_USER}" "/home/${APP_USER}/.ssh"
+  chmod 700 "/home/${APP_USER}/.ssh"
+  chmod 600 "/home/${APP_USER}/.ssh/authorized_keys"
+  echo "    SSH key copied from root"
+else
+  warn "No SSH key found for root. You will need a password to log in as ${APP_USER}."
 fi
 
 say "Firewall"
@@ -81,9 +90,25 @@ ufw --force enable >/dev/null
 ufw status verbose | sed 's/^/    /'
 
 say "Hardening SSH"
-sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
-sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
-systemctl reload ssh || systemctl reload sshd
+# Only disable password logins if a key is actually installed. Doing it
+# unconditionally would lock you out of a server created with a root password
+# and no key - which is a very bad five minutes to have.
+if [[ -s "/home/${APP_USER}/.ssh/authorized_keys" ]]; then
+  sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
+  sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+  systemctl reload ssh || systemctl reload sshd
+  echo "    password logins disabled (key present)"
+else
+  warn "No SSH key found, so password logins are being left ENABLED."
+  warn "This server is reachable from the whole internet and will be probed"
+  warn "within hours. fail2ban is installed and running, which helps, but the"
+  warn "right fix is to add a key and re-run this script:"
+  warn ""
+  warn "  on your machine:  ssh-keygen -t ed25519"
+  warn "                    type \$env:USERPROFILE\\.ssh\\id_ed25519.pub"
+  warn "  on the server:    mkdir -p ~/.ssh && nano ~/.ssh/authorized_keys"
+  warn "                    (paste the key, save, then re-run this script)"
+fi
 
 say "Automatic security updates"
 dpkg-reconfigure -f noninteractive unattended-upgrades >/dev/null 2>&1 || true

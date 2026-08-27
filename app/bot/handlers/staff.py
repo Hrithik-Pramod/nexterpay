@@ -15,7 +15,13 @@ from aiogram.types import CallbackQuery, Message
 
 from app.bot import keyboards as kb
 from app.bot.attachments import extract_attachments, has_attachment
-from app.bot.deps import explain, gateway, staff_context, work_item_for_thread
+from app.bot.deps import (
+    explain,
+    gateway,
+    refusal_reason,
+    staff_context,
+    work_item_for_thread,
+)
 from app.db.base import session_scope
 from app.db.models import WorkItem
 from app.domain.enums import Priority, WorkItemStatus
@@ -48,14 +54,30 @@ async def cmd_reply(message: Message, command: CommandObject) -> None:
     async with session_scope() as session:
         resolved = await _resolve(session, message, message.message_thread_id)
         if resolved is None:
+            # Say why rather than failing silently. A staff member typing a
+            # command and getting nothing back has no way to tell whether the
+            # bot is down, they are unregistered, or the group is wrong.
+            logger.info(
+                "/reply refused: chat=%s user=%s thread=%s",
+                message.chat.id,
+                message.from_user.id if message.from_user else None,
+                message.message_thread_id,
+            )
+            await message.reply(
+                refusal_reason(message.from_user.id if message.from_user else None)
+            )
             return
         _, actor, item = resolved
         if item is None:
-            await message.reply("This topic is not linked to a work item.")
+            await message.reply(
+                "This topic is not linked to a work item. Use /reply inside the "
+                "topic of the request you are answering."
+            )
             return
         try:
             await relay.send_client_reply(session, gateway(), item, actor, text)
         except Exception as exc:
+            logger.exception("/reply failed for work item %s", item.id)
             await message.reply(explain(exc))
             return
 
@@ -144,7 +166,8 @@ async def on_action(query: CallbackQuery) -> None:
             session, message.chat.id, query.from_user.id if query.from_user else None
         )
         if ctx is None:
-            await query.answer("You are not registered for this department.", show_alert=True)
+            reason = refusal_reason(query.from_user.id if query.from_user else None)
+            await query.answer(reason[:190], show_alert=True)
             return
         _, actor = ctx
 

@@ -48,12 +48,24 @@ async def client_context(session: AsyncSession, telegram_chat_id: int) -> Chat |
     return chat
 
 
+# Telegram's stand-in user for a group admin posting anonymously. When
+# "Remain Anonymous" is on, messages arrive from the group rather than the
+# person, so there is no identity to match against a staff record.
+ANONYMOUS_ADMIN_ID = 1087968824
+
+
+def is_anonymous_admin(telegram_user_id: int | None) -> bool:
+    return telegram_user_id == ANONYMOUS_ADMIN_ID
+
+
 async def staff_context(
     session: AsyncSession, telegram_chat_id: int, telegram_user_id: int | None
 ) -> tuple[Chat, Actor] | None:
     """A registered Operations Group plus an active staff member, or None."""
     chat = await resolve_chat(session, telegram_chat_id)
     if chat is None or chat.kind is not ChatKind.OPERATIONS or telegram_user_id is None:
+        return None
+    if is_anonymous_admin(telegram_user_id):
         return None
     staff = await resolve_staff(session, telegram_user_id)
     if staff is None:
@@ -63,6 +75,26 @@ async def staff_context(
         # they can configure any of them.
         return None
     return chat, Actor.of(staff)
+
+
+def refusal_reason(telegram_user_id: int | None) -> str:
+    """Why an action was refused, in words the person can act on.
+
+    "You are not registered" is unhelpful when the real problem is that
+    Telegram is hiding who they are.
+    """
+    if is_anonymous_admin(telegram_user_id):
+        return (
+            "You are posting anonymously, so I cannot tell who you are. "
+            "Turn off 'Remain Anonymous' in your admin rights for this group, "
+            "or ask to be removed as a Telegram admin - staff only need to be "
+            "members here."
+        )
+    return (
+        "You are not registered as active staff for this department. "
+        "An administrator can add you: ask them to reply to one of your "
+        "messages with /adduser operator <department>."
+    )
 
 
 async def work_item_for_thread(

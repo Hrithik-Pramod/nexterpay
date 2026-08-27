@@ -97,3 +97,37 @@ def test_handler_modules_import_cleanly():
     assert admin.router.name == "admin"
     assert client.router.name == "client"
     assert staff.router.name == "staff"
+
+
+def test_anonymous_admin_gets_a_useful_refusal():
+    """A Telegram admin with 'Remain Anonymous' on posts as the group, so the
+    bot cannot identify them. Saying 'not registered' sends them hunting for
+    the wrong fix."""
+    from app.bot.deps import ANONYMOUS_ADMIN_ID, is_anonymous_admin, refusal_reason
+
+    assert is_anonymous_admin(ANONYMOUS_ADMIN_ID)
+    assert not is_anonymous_admin(5001)
+
+    anon = refusal_reason(ANONYMOUS_ADMIN_ID)
+    assert "anonymously" in anon.lower()
+    assert "Remain Anonymous" in anon
+
+    ordinary = refusal_reason(5001)
+    assert "not registered" in ordinary.lower()
+    assert "/adduser" in ordinary
+
+
+async def test_anonymous_admin_is_never_treated_as_staff(session, support_ops, senior):
+    """Even if the group itself were somehow registered, an anonymous poster
+    must not inherit anyone's permissions."""
+    from app.bot.deps import ANONYMOUS_ADMIN_ID, staff_context
+
+    ctx = await staff_context(
+        session, support_ops.telegram_chat_id, senior.telegram_user_id
+    )
+    assert ctx is not None, "a real staff member should resolve"
+
+    anon = await staff_context(
+        session, support_ops.telegram_chat_id, ANONYMOUS_ADMIN_ID
+    )
+    assert anon is None
