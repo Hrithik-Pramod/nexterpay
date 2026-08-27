@@ -131,3 +131,31 @@ async def test_anonymous_admin_is_never_treated_as_staff(session, support_ops, s
         session, support_ops.telegram_chat_id, ANONYMOUS_ADMIN_ID
     )
     assert anon is None
+
+
+def test_raise_prompt_forces_a_reply() -> None:
+    """The Raise Request prompt must use ForceReply.
+
+    This is not a style preference. The bot runs with privacy mode ON and is
+    deliberately not an administrator in client groups, so Telegram delivers
+    only commands and replies to the bot's own messages. The description step
+    is neither - unless the client replies. ForceReply is what makes it a
+    reply.
+
+    Regression: this was originally a plain send. It appeared to work only
+    because the bot was temporarily an admin in the test client group, which
+    bypasses privacy mode. The moment the bot was correctly demoted to an
+    ordinary member, raising a request stopped producing a work item and
+    failed completely silently - the update never reached the bot at all, so
+    there was nothing in the logs either.
+    """
+    import inspect
+
+    from app.bot.handlers import client as client_handlers
+
+    source = inspect.getsource(client_handlers.start_request)
+    assert "ForceReply" in source, (
+        "start_request no longer forces a reply. Under privacy mode the "
+        "client's description will never reach the bot and Raise Request "
+        "will fail silently."
+    )

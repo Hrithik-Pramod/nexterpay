@@ -12,7 +12,7 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, ForceReply, Message
 
 from app.bot import keyboards as kb
 from app.bot.attachments import extract_attachments
@@ -65,7 +65,24 @@ async def start_request(query: CallbackQuery, state: FSMContext) -> None:
         else "Please describe the issue, including any reference numbers or "
              "screenshots that would help us investigate."
     )
-    await query.message.answer(ask)
+
+    # ForceReply is load-bearing, not decoration.
+    #
+    # The bot runs with privacy mode ON and is deliberately NOT an administrator
+    # in client groups, so Telegram does not deliver ordinary group messages to
+    # it. It does deliver replies to the bot's own messages. Asking the client
+    # to type freely would mean the answer never arrives; asking them to reply
+    # means it always does - and Telegram opens the reply box for them, so it
+    # costs the client nothing.
+    #
+    # If this is ever changed to a plain send, the Raise Request flow silently
+    # stops working in any group where the bot is not an admin.
+    mention = (
+        f"{query.from_user.full_name}, {ask[0].lower()}{ask[1:]}"
+        if query.from_user
+        else ask
+    )
+    await query.message.answer(mention, reply_markup=ForceReply(selective=True))
     await query.answer()
 
 
