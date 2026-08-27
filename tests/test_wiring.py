@@ -163,3 +163,32 @@ def test_raise_prompt_forces_a_reply() -> None:
         "client's description will never reach the bot and Raise Request "
         "will fail silently."
     )
+
+
+def test_unreachable_redis_falls_back_to_memory(monkeypatch) -> None:
+    """An unreachable Redis must degrade the bot, not stop it.
+
+    Regression: FSM state was moved to Redis behind a try/except around
+    RedisStorage.from_url(). That call only builds a client and never
+    connects, so the except branch was unreachable. The real connection
+    happened inside aiogram's FSM middleware, which runs before every
+    handler on every update - so with Redis down the bot polled happily and
+    answered nothing at all, in any group, for any user.
+    """
+    from aiogram.fsm.storage.memory import MemoryStorage
+
+    from app.bot import main as bot_main
+
+    monkeypatch.setattr(bot_main, "_reachable", lambda *_args, **_kw: False)
+    assert isinstance(bot_main.build_storage(), MemoryStorage)
+
+
+def test_reachable_redis_is_used(monkeypatch) -> None:
+    import pytest
+
+    pytest.importorskip("redis", reason="runtime dependency, not installed for tests")
+    from app.bot import main as bot_main
+
+    monkeypatch.setattr(bot_main, "_reachable", lambda *_args, **_kw: True)
+    storage = bot_main.build_storage()
+    assert type(storage).__name__ == "RedisStorage"

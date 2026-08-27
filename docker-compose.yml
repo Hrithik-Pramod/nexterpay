@@ -29,6 +29,11 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
     command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
     expose:
       - "6379"
 
@@ -52,6 +57,13 @@ services:
       REDIS_URL: redis://redis:6379/0
     depends_on:
       db:
+        condition: service_healthy
+      # Without this, `docker compose up -d bot` starts the bot alone and
+      # leaves Redis down. The bot then resolves nothing at redis:6379 and,
+      # because FSM state is read on every single update, every message
+      # raises before reaching a handler. The bot looks alive and answers
+      # nothing.
+      redis:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully

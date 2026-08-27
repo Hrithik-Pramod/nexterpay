@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket
+from urllib.parse import urlparse
 
 from aiogram import Bot, Dispatcher, Router
 from aiogram.filters import Command
@@ -47,15 +49,36 @@ def build_storage():
     state is worth more than a bot that is down.
     """
     settings = get_settings()
-    try:
-        from aiogram.fsm.storage.redis import RedisStorage
 
-        storage = RedisStorage.from_url(settings.redis_url)
-        logger.info("FSM state in Redis (%s)", settings.redis_url)
-        return storage
-    except Exception:
-        logger.exception("Redis unavailable - falling back to in-memory FSM state")
+    # Probe the socket first. RedisStorage.from_url() only builds a client -
+    # it does not connect, so wrapping it in try/except catches nothing. The
+    # first connection attempt happens inside aiogram's FSM middleware, which
+    # runs on EVERY update before any handler. An unreachable Redis therefore
+    # does not degrade the bot, it stops it dead: polling continues, the logs
+    # fill with ConnectionError, and not one message is answered.
+    if not _reachable(settings.redis_url):
+        logger.warning(
+            "Redis at %s is unreachable - using in-memory FSM state. "
+            "Half-finished requests will not survive a restart.",
+            settings.redis_url,
+        )
         return MemoryStorage()
+
+    from aiogram.fsm.storage.redis import RedisStorage
+
+    logger.info("FSM state in Redis (%s)", settings.redis_url)
+    return RedisStorage.from_url(settings.redis_url)
+
+
+def _reachable(url: str, timeout: float = 3.0) -> bool:
+    parsed = urlparse(url)
+    try:
+        with socket.create_connection(
+            (parsed.hostname or "localhost", parsed.port or 6379), timeout=timeout
+        ):
+            return True
+    except OSError:
+        return False
 
 
 def build_dispatcher() -> Dispatcher:
