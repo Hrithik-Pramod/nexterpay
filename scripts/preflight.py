@@ -157,6 +157,41 @@ async def check_client_group(bot: Bot, chat: Chat) -> None:
     except Exception as exc:
         warn(f"{label}: could not confirm bot membership ({exc})")
 
+    # Topics in a client group are not part of the agreed design. Clients get
+    # one plain conversation; the topic-per-request structure lives in the
+    # Operations Group where staff work. A forum here means client messages
+    # carry a thread id the bot does not track, and replies land wherever
+    # Telegram decides rather than where the client is looking.
+    if getattr(info, "is_forum", False):
+        warn(
+            f"{info.title or label}: Topics are ENABLED in this client group. "
+            "Client groups should be ordinary groups - topics belong in the "
+            "Operations Group. Turn them off in Group Settings, or expect "
+            "replies to appear in the wrong place."
+        )
+
+    # Two bots in one group is the quiet killer. Under privacy mode a bare
+    # /raise only reaches us "if the bot was the last bot to send a message to
+    # the group" - so NexterPay's previous bot posting anything at all can
+    # stop /raise working, with no error anywhere. We can only see admins via
+    # the API, so this catches the common case, not every case.
+    try:
+        me = await bot.get_me()
+        others = [
+            a.user for a in await bot.get_chat_administrators(chat.telegram_chat_id)
+            if getattr(a.user, "is_bot", False) and a.user.id != me.id
+        ]
+        if others:
+            names = ", ".join(f"@{u.username or u.id}" for u in others)
+            warn(
+                f"{info.title or label}: another bot is an administrator here ({names}). "
+                "Under privacy mode a plain /raise only reaches our bot if ours was "
+                "the last bot to post. Remove the other bot, or tell clients to use "
+                f"/raise@{me.username}."
+            )
+    except Exception as exc:
+        warn(f"{label}: could not list administrators ({exc})")
+
 
 async def check_staff_anonymity(bot: Bot, chat: Chat) -> None:
     """Flag human administrators of an Operations Group.

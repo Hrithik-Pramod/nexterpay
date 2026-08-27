@@ -6,10 +6,11 @@ then everything else is ordinary Telegram conversation.
 
 from __future__ import annotations
 
+import html
 import logging
 
 from aiogram import F, Router
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, ForceReply, Message
@@ -31,19 +32,35 @@ class RaiseRequest(StatesGroup):
 
 
 @router.message(Command("raise", "request", "enquiry"))
-async def offer_raise_button(message: Message) -> None:
+async def offer_raise_button(message: Message, command: CommandObject) -> None:
+    """`/raise <description>` opens a request outright; bare `/raise` asks.
+
+    The one-line form exists because it is the only path that cannot be
+    defeated by privacy mode: a command always reaches the bot, whereas an
+    ordinary follow-up message does not. Everything else here is convenience
+    layered on top of it.
+    """
     async with session_scope() as session:
         chat = await client_context(session, message.chat.id)
         if chat is None:
             return
         department = chat.department.value
 
+    described = (command.args or "").strip()
+    if described:
+        await _open_from(message, described)
+        return
+
     prompt = (
         "What would you like to discuss?"
         if department == "business"
         else "What do you need help with?"
     )
-    await message.answer(prompt, reply_markup=kb.raise_request_prompt(department))
+    await message.answer(
+        f"{prompt}\n\nTap the button below, or send it in one go - "
+        f"for example: /raise payment not received for INV-2041",
+        reply_markup=kb.raise_request_prompt(department),
+    )
 
 
 @router.callback_query(F.data == "raise:new")
@@ -70,19 +87,26 @@ async def start_request(query: CallbackQuery, state: FSMContext) -> None:
     #
     # The bot runs with privacy mode ON and is deliberately NOT an administrator
     # in client groups, so Telegram does not deliver ordinary group messages to
-    # it. It does deliver replies to the bot's own messages. Asking the client
-    # to type freely would mean the answer never arrives; asking them to reply
-    # means it always does - and Telegram opens the reply box for them, so it
-    # costs the client nothing.
+    # it. It does deliver replies to the bot's own messages, which is why the
+    # description has to arrive as a reply. Telegram's own documentation makes
+    # the same recommendation: "using the force reply option for the bot's
+    # messages should be more than enough."
     #
-    # If this is ever changed to a plain send, the Raise Request flow silently
-    # stops working in any group where the bot is not an admin.
-    mention = (
-        f"{query.from_user.full_name}, {ask[0].lower()}{ask[1:]}"
-        if query.from_user
-        else ask
-    )
-    await query.message.answer(mention, reply_markup=ForceReply(selective=True))
+    # `selective` only targets people actually mentioned in the text, and a
+    # plain first name is not a mention - it is just letters. The tg://user
+    # link below is a real text_mention entity, which is. Writing the name
+    # without the link silently reverts this to forcing a reply from nobody.
+    if query.from_user:
+        who = html.escape(query.from_user.full_name)
+        text = (
+            f'<a href="tg://user?id={query.from_user.id}">{who}</a>, '
+            f"{ask[0].lower()}{ask[1:]}"
+        )
+        markup = ForceReply(selective=True, input_field_placeholder="Describe your request")
+    else:
+        text, markup = ask, ForceReply(selective=False)
+
+    await query.message.answer(text, parse_mode="HTML", reply_markup=markup)
     await query.answer()
 
 
@@ -94,6 +118,11 @@ async def capture_request(message: Message, state: FSMContext) -> None:
         return
 
     await state.clear()
+    await _open_from(message, body)
+
+
+async def _open_from(message: Message, body: str) -> None:
+    """Create the work item and post its action keyboard. The single path in."""
     subject = (body.splitlines()[0] if body else "Attachment")[:120] or "New request"
 
     async with session_scope() as session:
