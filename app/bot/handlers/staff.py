@@ -394,6 +394,10 @@ async def _apply(
 
     if action == "close":
         await relay.close(session, gw, item, actor)
+        try:
+            await query.message.edit_reply_markup(reply_markup=kb.closed_actions(item.id))
+        except Exception:
+            logger.debug("Could not swap in the closed keyboard", exc_info=True)
         return f"Closed {item.display_reference}"
 
     return ""

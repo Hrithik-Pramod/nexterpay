@@ -13,6 +13,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
+from aiogram.exceptions import TelegramBadRequest
+
 logger = logging.getLogger(__name__)
 
 
@@ -130,7 +132,15 @@ class AiogramGateway:
         return topic.message_thread_id
 
     async def close_topic(self, chat_id: int, thread_id: int) -> None:
-        await self._bot.close_forum_topic(chat_id=chat_id, message_thread_id=thread_id)
+        try:
+            await self._bot.close_forum_topic(chat_id=chat_id, message_thread_id=thread_id)
+        except TelegramBadRequest as exc:
+            # A topic somebody already closed by hand in Telegram is not an
+            # error - the desired state is the current state. Anything else
+            # still raises.
+            if "TOPIC_NOT_MODIFIED" not in str(exc):
+                raise
+            logger.info("Topic %s in %s was already closed", thread_id, chat_id)
 
     async def edit_reply_markup(
         self, chat_id: int, message_id: int, reply_markup: Any | None

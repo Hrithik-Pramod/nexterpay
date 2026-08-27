@@ -472,9 +472,19 @@ async def close(
     Whether the client is told is a setting rather than a hard rule - it is
     pre-start question A2 and NexterPay have not decided yet.
     """
+    if item.status is WorkItemStatus.CLOSED:
+        # Second tap on a Close button that is still on screen. wi.close() is
+        # already idempotent, but everything after it was not: the client was
+        # sent a second "your request has been closed" message before Telegram
+        # rejected the duplicate topic close. Telling a customer twice that
+        # their case is shut is worse than the crash that revealed it.
+        logger.info("%s is already closed; ignoring", item.display_reference)
+        return
+
     _, ops = await chats_for(session, item)
+    before = await _last_event_id(session, item)
     await wi.close(session, item, actor)
-    await announce(session, gateway, item, await _latest_event(session, item))
+    await _announce_since(session, gateway, item, before)
     await refresh_header(session, gateway, item)
 
     if notify_client:

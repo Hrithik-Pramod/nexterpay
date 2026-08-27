@@ -83,6 +83,21 @@ def confirm_reply(work_item_id: int) -> InlineKeyboardMarkup:
     )
 
 
+def closed_actions(work_item_id: int) -> InlineKeyboardMarkup:
+    """What is left once a request is closed.
+
+    Everything else - claim, reply, status, priority, close - is refused by the
+    domain on a closed item, so leaving those buttons on screen only invites
+    taps that produce an error. History still makes sense: the record is the
+    reason the topic is kept.
+    """
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="History", callback_data=cb("history", work_item_id))]
+        ]
+    )
+
+
 def assignee_choices(work_item_id: int, people) -> InlineKeyboardMarkup:
     """Who to hand the request to, as buttons.
 

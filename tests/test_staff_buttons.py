@@ -250,3 +250,52 @@ async def test_note_button_prompts_without_touching_the_client(
     assert len(gw.messages_to(CLIENT_CHAT)) == before
     assert await state.get_state() == "StaffCompose:awaiting_note"
     assert any("stays in this group" in text for text in query.sent)
+
+
+# --------------------------------------------------------------------------
+# Closing
+# --------------------------------------------------------------------------
+
+
+async def test_closing_twice_does_not_tell_the_client_twice(
+    session, acme_support, support_ops, operator, gw, state
+):
+    """The Close button stays on screen after the first tap.
+
+    Regression from UAT. wi.close() was already idempotent, but relay.close()
+    carried on regardless: the second tap sent the client another "your
+    request has been closed" notice and then crashed on TOPIC_NOT_MODIFIED.
+    The crash was the visible part; the duplicate message to the customer was
+    the part that mattered.
+    """
+    item = await _item(session, gw, acme_support)
+    await relay.close(session, gw, item, Actor.of(operator))
+
+    client_messages = len(gw.messages_to(CLIENT_CHAT))
+    closes = len(gw.closed_topics)
+
+    await relay.close(session, gw, item, Actor.of(operator))
+
+    assert len(gw.messages_to(CLIENT_CHAT)) == client_messages
+    assert len(gw.closed_topics) == closes
+
+
+async def test_a_closed_request_keeps_only_history(
+    session, acme_support, support_ops, operator, gw, state
+):
+    item = await _item(session, gw, acme_support)
+
+    query = fake_query()
+    captured = {}
+
+    async def edit_reply_markup(reply_markup=None, **kwargs):
+        captured["markup"] = reply_markup
+
+    query.message.edit_reply_markup = edit_reply_markup
+
+    await staff_handlers._apply(
+        session, query, "close", None, item, Actor.of(operator), state
+    )
+
+    labels = [b.text for row in captured["markup"].inline_keyboard for b in row]
+    assert labels == ["History"]
