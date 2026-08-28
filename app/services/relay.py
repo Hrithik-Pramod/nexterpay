@@ -287,6 +287,7 @@ async def relay_client_message(
     event = await wi.record_event(
         session, item, EventType.CLIENT_MESSAGE_RECEIVED,
         Actor(name=sender_name, telegram_user_id=sender_telegram_user_id),
+        text=(text or "")[:500],
     )
 
     # NexterPay asked for the owner to be pinged when a client chases, so the
@@ -370,7 +371,9 @@ async def send_client_reply(
         await _store_attachment(session, item, attachment, source.telegram_chat_id,
                                 file_msg.message_id, MessageDirection.OUTBOUND, actor.name)
 
-    event = await wi.record_event(session, item, EventType.STAFF_REPLY_SENT, actor)
+    event = await wi.record_event(
+        session, item, EventType.STAFF_REPLY_SENT, actor, text=outbound[:500]
+    )
     await announce(session, gateway, item, event)
 
 

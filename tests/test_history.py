@@ -102,3 +102,88 @@ async def test_every_event_type_has_a_renderer():
         )
         rendered = render_event(event)
         assert rendered and isinstance(rendered, str)
+
+
+async def test_history_quotes_what_was_actually_said(
+    session, acme_support, support_ops, operator
+):
+    """The history has to contain the words, not just who said something.
+
+    Reported in UAT: an internal note was added and could not be found in the
+    history. It was recorded correctly - the renderer simply never printed the
+    text, so every note looked identical. NexterPay have no other interface
+    onto this data, so a trail of "Internal note by peter" is worthless.
+    """
+    from app.services import relay
+    from app.services.gateway import FakeGateway
+
+    gw = FakeGateway()
+    item = await relay.open_request(
+        session, gw, source_chat=acme_support, subject="Settlement",
+        body="Missing settlement.", raised_by_name="Tom Baker",
+    )
+    await relay.claim(session, gw, item, Actor.of(operator))
+    await relay.add_internal_note(
+        session, gw, item, Actor.of(operator), "chased the acquirer, waiting on them"
+    )
+    await relay.send_client_reply(
+        session, gw, item, Actor.of(operator), "we are on it, update tomorrow."
+    )
+    await relay.relay_client_message(
+        session, gw, item, text="any news?", sender_name="Tom Baker",
+        telegram_message_id=99,
+    )
+
+    history = "\n".join(render_history(await load_events(session, item)))
+
+    assert "chased the acquirer, waiting on them" in history
+    assert "we are on it, update tomorrow." in history
+    assert "any news?" in history
+
+
+async def test_topic_announcements_stay_terse(
+    session, acme_support, support_ops, operator
+):
+    """The topic already contains the message, so the marker must not repeat it."""
+    from app.services import relay
+    from app.services.gateway import FakeGateway
+
+    gw = FakeGateway()
+    item = await relay.open_request(
+        session, gw, source_chat=acme_support, subject="Settlement",
+        body="Missing settlement.", raised_by_name="Tom Baker",
+    )
+    await relay.add_internal_note(
+        session, gw, item, Actor.of(operator), "chased the acquirer"
+    )
+
+    announcements = [
+        c.payload["text"] for c in gw.calls
+        if c.method == "send_message" and c.payload["text"].startswith("•")
+    ]
+    assert any("Internal note by" in a for a in announcements)
+    assert not any("chased the acquirer" in a for a in announcements)
+
+
+async def test_long_notes_are_shortened_not_dropped(
+    session, acme_support, support_ops, operator
+):
+    from app.services import relay
+    from app.services.gateway import FakeGateway
+
+    gw = FakeGateway()
+    item = await relay.open_request(
+        session, gw, source_chat=acme_support, subject="Settlement",
+        body="Missing settlement.", raised_by_name="Tom Baker",
+    )
+    await relay.add_internal_note(
+        session, gw, item, Actor.of(operator), "detail " * 200
+    )
+
+    line = [
+        line for line in render_history(await load_events(session, item))
+        if "Internal note" in line
+    ][0]
+    assert "detail" in line
+    assert "…" in line
+    assert len(line) < 300

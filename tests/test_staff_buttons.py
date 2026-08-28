@@ -299,3 +299,56 @@ async def test_a_closed_request_keeps_only_history(
 
     labels = [b.text for row in captured["markup"].inline_keyboard for b in row]
     assert labels == ["History"]
+
+
+# --------------------------------------------------------------------------
+# The Note button, end to end
+# --------------------------------------------------------------------------
+
+
+async def test_note_button_text_reaches_the_history(
+    session, acme_support, support_ops, operator, gw, state, monkeypatch
+):
+    """Tapping Note, then typing, must produce a history entry.
+
+    Only the button tap was covered before; the step that actually records
+    the note was not tested at all.
+    """
+    import contextlib
+
+    from app.domain.history import load_events, render_history
+
+    item = await _item(session, gw, acme_support)
+
+    @contextlib.asynccontextmanager
+    async def fake_scope():
+        yield session
+
+    monkeypatch.setattr(staff_handlers, "session_scope", fake_scope)
+
+    await staff_handlers._apply(
+        session, fake_query(thread_id=item.topic_id), "note", None, item,
+        Actor.of(operator), state,
+    )
+
+    replies: list[str] = []
+
+    async def reply(text, **kwargs):
+        replies.append(text)
+
+    note_message = SimpleNamespace(
+        chat=SimpleNamespace(id=support_ops.telegram_chat_id, type="supergroup"),
+        message_thread_id=item.topic_id,
+        message_id=4242,
+        text="chased the acquirer, waiting on them",
+        caption=None,
+        from_user=SimpleNamespace(id=operator.telegram_user_id, full_name="Sarah Hill"),
+        reply=reply,
+    )
+
+    await staff_handlers.capture_note_text(note_message, state)
+
+    history = render_history(await load_events(session, item))
+    assert any("Internal note" in line for line in history), (
+        f"note missing from history; bot said {replies!r}"
+    )

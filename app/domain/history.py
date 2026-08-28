@@ -39,7 +39,23 @@ async def load_events(session: AsyncSession, work_item: WorkItem) -> list[Event]
     return list(result.scalars().all())
 
 
-def _fmt(event: Event) -> str:
+def _quote(text: str | None, limit: int = 160) -> str:
+    """Attach the words to the line, on one line, or nothing at all.
+
+    NexterPay have no interface onto this data - a passive account reads the
+    group. So this history IS the audit trail, and "Internal note by peter"
+    without the note is not an audit trail. Newlines are flattened because a
+    history entry has to stay one entry.
+    """
+    if not text:
+        return ""
+    flat = " ".join(str(text).split())
+    if len(flat) > limit:
+        flat = flat[: limit - 1].rstrip() + "…"
+    return f': "{flat}"'
+
+
+def _fmt(event: Event, *, verbose: bool = False) -> str:
     p = event.payload or {}
     actor = event.actor_name or "System"
     t = event.event_type
@@ -59,11 +75,11 @@ def _fmt(event: Event) -> str:
     if t is EventType.PRIORITY_CHANGED:
         return f"Priority: {p.get('from_label')} → {p.get('to_label')} ({actor})"
     if t is EventType.INTERNAL_NOTE_ADDED:
-        return f"Internal note by {actor}"
+        return f"Internal note by {actor}" + (_quote(p.get("note")) if verbose else "")
     if t is EventType.CLIENT_MESSAGE_RECEIVED:
-        return f"Message received from {actor}"
+        return f"Message received from {actor}" + (_quote(p.get("text")) if verbose else "")
     if t is EventType.STAFF_REPLY_SENT:
-        return f"Reply sent to client by {actor}"
+        return f"Reply sent to client by {actor}" + (_quote(p.get("text")) if verbose else "")
     if t is EventType.ATTACHMENT_RECEIVED:
         return f"Attachment received from {actor} ({p.get('file_name') or p.get('kind', 'file')})"
     if t is EventType.WORK_ITEM_CLOSED:
@@ -76,12 +92,17 @@ def _fmt(event: Event) -> str:
     raise NotImplementedError(f"No renderer for event type {t!r}")
 
 
-def render_event(event: Event, *, with_timestamp: bool = False) -> str:
+def render_event(
+    event: Event, *, with_timestamp: bool = False, verbose: bool = False
+) -> str:
     """One line describing a single event.
 
-    Posted into the Telegram topic as changes occur.
+    Posted into the Telegram topic as changes occur, where `verbose` stays off:
+    the message itself is already sitting in the topic a line above, so quoting
+    it back would just be noise. History is the opposite case - it is rebuilt
+    from the event log alone, with nothing else to read - so it quotes.
     """
-    body = _fmt(event)
+    body = _fmt(event, verbose=verbose)
     if with_timestamp:
         return f"[{event.created_at:%d %b %Y %H:%M}] {body}"
     return body
@@ -89,4 +110,4 @@ def render_event(event: Event, *, with_timestamp: bool = False) -> str:
 
 def render_history(events: Iterable[Event]) -> list[str]:
     """The full trail for a work item, oldest first, with timestamps."""
-    return [render_event(e, with_timestamp=True) for e in events]
+    return [render_event(e, with_timestamp=True, verbose=True) for e in events]
