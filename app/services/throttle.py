@@ -152,9 +152,19 @@ class ThrottledGateway:
     async def create_topic(self, chat_id: int, name: str) -> int:
         return await self._guarded(chat_id, self._inner.create_topic, chat_id, name)
 
+    async def rename_topic(self, chat_id: int, thread_id: int, name: str) -> None:
+        return await self._guarded(
+            chat_id, self._inner.rename_topic, chat_id, thread_id, name
+        )
+
     async def close_topic(self, chat_id: int, thread_id: int) -> None:
         return await self._guarded(
             chat_id, self._inner.close_topic, chat_id, thread_id
+        )
+
+    async def reopen_topic(self, chat_id: int, thread_id: int) -> None:
+        return await self._guarded(
+            chat_id, self._inner.reopen_topic, chat_id, thread_id
         )
 
     async def edit_reply_markup(self, chat_id: int, message_id: int, reply_markup) -> None:
