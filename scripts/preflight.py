@@ -153,18 +153,18 @@ async def check_client_group(bot: Bot, chat: Chat) -> None:
         if member.status not in ("administrator", "member"):
             fail(f"{label}: bot status is '{member.status}'", "re-add the bot to the group")
         elif member.status == "administrator":
-            # Not broken, but it quietly changes the agreed behaviour: an admin
-            # bot bypasses privacy mode and sees every message in the group,
-            # including ones that have nothing to do with a request.
-            warn(
-                f"{info.title or label}: the bot is an ADMINISTRATOR here. In a client "
-                "group it should be an ordinary member - as an admin it sees every "
-                "message, not only replies to its own. Testing in this state will "
-                "not match the agreed design. Dismiss it as admin unless NexterPay "
-                "have chosen otherwise."
+            # NexterPay chose this on 30 August. Recorded rather than warned
+            # about, but stated plainly, because it is the setting that decides
+            # whether the bot can read a client's general conversation.
+            ok(
+                f"{info.title or label}: bot is an administrator - it receives every "
+                "message in this group, which is what NexterPay asked for"
             )
         else:
-            ok(f"{info.title or label}: bot is a member, not an admin (correct)")
+            ok(
+                f"{info.title or label}: bot is an ordinary member - it sees only "
+                "commands and replies to its own messages"
+            )
     except Exception as exc:
         warn(f"{label}: could not confirm bot membership ({exc})")
 
