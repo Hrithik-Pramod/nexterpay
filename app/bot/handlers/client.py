@@ -15,12 +15,14 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, ForceReply, Message
 
+from app.bot import commands as cmd
 from app.bot import keyboards as kb
 from app.bot.attachments import extract_attachments
 from app.bot.deps import client_context, gateway
 from app.bot.routing import IncomingMessage, build_strategy
 from app.config import get_settings
 from app.db.base import session_scope
+from app.db.models import WorkItem
 from app.services import relay
 
 logger = logging.getLogger(__name__)
@@ -31,9 +33,13 @@ class RaiseRequest(StatesGroup):
     awaiting_details = State()
 
 
-@router.message(Command("raise", "request", "enquiry"))
+@router.message(Command(cmd.FRONT_DOOR, cmd.RAISE, cmd.REQUEST, cmd.ENQUIRY))
 async def offer_raise_button(message: Message, command: CommandObject) -> None:
-    """`/raise <description>` opens a request outright; bare `/raise` asks.
+    """`/np_raise <description>` opens a request outright; `/np` asks.
+
+    `/np` on its own is the front door - the single command clients are asked
+    to remember. It lands here rather than in its own handler because the
+    answer is the same either way: show them the button.
 
     The one-line form exists because it is the only path that cannot be
     defeated by privacy mode: a command always reaches the bot, whereas an
@@ -58,7 +64,7 @@ async def offer_raise_button(message: Message, command: CommandObject) -> None:
     )
     await message.answer(
         f"{prompt}\n\nTap the button below, or send it in one go - "
-        f"for example: /raise payment not received for INV-2041",
+        f"for example: /{cmd.RAISE} payment not received for INV-2041",
         reply_markup=kb.raise_request_prompt(department),
     )
 
@@ -140,6 +146,7 @@ async def _open_from(message: Message, body: str) -> None:
             raised_by_telegram_user_id=message.from_user.id if message.from_user else None,
             attachments=extract_attachments(message),
             keyboard=None,  # attached after creation, once the id exists
+            ack_keyboard=kb.acknowledgement_actions(),
         )
         work_item_id = item.id
         ops_chat_id = (await relay.chats_for(session, item))[1].telegram_chat_id
@@ -152,6 +159,78 @@ async def _open_from(message: Message, body: str) -> None:
         thread_id=thread_id,
         reply_markup=kb.work_item_actions(work_item_id, claimed=False),
     )
+
+
+@router.message(Command(cmd.TICKETS))
+async def cmd_tickets(message: Message) -> None:
+    """`/np_tickets` - the client's own open requests."""
+    async with session_scope() as session:
+        chat = await client_context(session, message.chat.id)
+        if chat is None:
+            return
+        items = await relay.open_requests_for(session, chat)
+        lines = [
+            f"{i.client_reference} · {i.subject}\n    {i.status.client_label}"
+            for i in items
+        ]
+        markup = kb.open_requests(items) if items else None
+
+    if not items:
+        await message.answer(
+            "You have no open requests at the moment. "
+            f"Send /{cmd.FRONT_DOOR} to raise one."
+        )
+        return
+    await message.answer(
+        "Your open requests:\n\n" + "\n\n".join(lines) + "\n\nTap one to add to it.",
+        reply_markup=markup,
+    )
+
+
+@router.callback_query(F.data == "tk:list")
+async def show_requests(query: CallbackQuery) -> None:
+    async with session_scope() as session:
+        chat = await client_context(session, query.message.chat.id)
+        if chat is None:
+            await query.answer()
+            return
+        items = await relay.open_requests_for(session, chat)
+        lines = [
+            f"{i.client_reference} · {i.subject}\n    {i.status.client_label}"
+            for i in items
+        ]
+        markup = kb.open_requests(items) if items else None
+
+    if not items:
+        await query.answer("You have no open requests.", show_alert=True)
+        return
+    await query.message.answer(
+        "Your open requests:\n\n" + "\n\n".join(lines) + "\n\nTap one to add to it.",
+        reply_markup=markup,
+    )
+    await query.answer()
+
+
+@router.callback_query(F.data.startswith("tk:open:"))
+async def open_one_request(query: CallbackQuery) -> None:
+    """Post a fresh anchor for the chosen request, at the bottom of the chat."""
+    try:
+        work_item_id = int((query.data or "").split(":")[2])
+    except (IndexError, ValueError):
+        await query.answer()
+        return
+
+    async with session_scope() as session:
+        chat = await client_context(session, query.message.chat.id)
+        item = await session.get(WorkItem, work_item_id)
+        # Checked rather than assumed: a callback carries whatever id it was
+        # built with, and this one must belong to the group it was tapped in.
+        if chat is None or item is None or item.source_chat_id != chat.id:
+            await query.answer("That request is not from this group.", show_alert=True)
+            return
+        await relay.post_anchor(session, gateway(), item)
+
+    await query.answer()
 
 
 @router.message(F.chat.type.in_({"group", "supergroup"}))

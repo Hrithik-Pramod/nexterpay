@@ -7,6 +7,8 @@ claims, a keyboard whose payload nobody can parse.
 
 from __future__ import annotations
 
+import pathlib
+
 import pytest
 
 from app.bot import keyboards as kb
@@ -192,3 +194,96 @@ def test_reachable_redis_is_used(monkeypatch) -> None:
     monkeypatch.setattr(bot_main, "_reachable", lambda *_args, **_kw: True)
     storage = bot_main.build_storage()
     assert type(storage).__name__ == "RedisStorage"
+
+
+def test_the_trace_router_never_logs_message_content() -> None:
+    """Diagnostics must not put clients' words in the server logs.
+
+    NexterPay agreed to make the bot an administrator in client groups, which
+    means it now receives every message there rather than only replies to
+    itself. The unhandled-message diagnostic was written before that and
+    logged a snippet of each message. Under admin rights that would quietly
+    record fragments of clients' private conversation.
+
+    A leading command is still logged - commands are not private and are the
+    thing worth diagnosing.
+    """
+    import inspect
+
+    from app.bot import main as bot_main
+
+    source = inspect.getsource(bot_main.build_dispatcher)
+    trace = source[source.index("trace = Router"):]
+
+    assert "message.text or message.caption" in trace, "expected the body to be read"
+    assert "chars=%d" in trace, "length should be logged instead of content"
+    assert "text=%r" not in trace, (
+        "the trace router is logging message content again; with the bot as an "
+        "administrator that writes clients' conversation into the server logs"
+    )
+
+
+def test_every_command_carries_the_np_prefix() -> None:
+    """No command may be added without the prefix.
+
+    NexterPay run a second bot in the same client groups. Telegram delivers a
+    bare command to whichever bot posted last, and if both bots implement the
+    same name both of them answer - admin rights fix the first problem but not
+    the second. The prefix removes both, and only holds if it is universal.
+
+    `/start` is the single deliberate exception: Telegram's own interface
+    sends it when someone taps Start, so it has to keep working under that
+    name. `/np_start` is registered alongside it.
+    """
+    from aiogram.filters import Command
+
+    from app.bot import commands
+    from app.bot.handlers import admin, client, staff
+
+    # The routers are module-level singletons and cannot be attached to a
+    # second dispatcher, so they are inspected directly rather than through
+    # build_dispatcher().
+    registered = set()
+    for router in (admin.router, staff.router, client.router):
+        for handler in router.message.handlers:
+            for f in handler.filters or []:
+                if isinstance(f.callback, Command):
+                    registered.update(str(c) for c in f.callback.commands)
+
+    assert registered, "no commands registered at all"
+    unprefixed = {n for n in registered if not n.startswith(commands.PREFIX)}
+    assert not unprefixed, (
+        f"these commands are missing the {commands.PREFIX} prefix: "
+        f"{sorted(unprefixed)}. A bare command collides with NexterPay's other bot."
+    )
+    assert commands.FRONT_DOOR in registered
+
+
+def test_no_command_name_is_hard_coded() -> None:
+    """Names must come from app/bot/commands.py, not string literals.
+
+    A literal is how the prefix gets lost: someone adds Command("export") in a
+    hurry, it works in testing because our bot is the only one in the room,
+    and it fails intermittently in a client group months later.
+    """
+    import re
+
+    from app.bot import commands
+
+    offenders = []
+    for path in pathlib.Path("app/bot").rglob("*.py"):
+        for line, text in enumerate(path.read_text().splitlines(), 1):
+            for literal in re.findall(r'Command\(\s*"([^"]+)"', text):
+                if literal != commands.START:
+                    offenders.append(f"{path}:{line} Command(\"{literal}\")")
+    assert not offenders, (
+        "command names must be referenced from app/bot/commands.py:\n  "
+        + "\n  ".join(offenders)
+    )
+
+
+def test_the_front_door_is_just_np() -> None:
+    from app.bot import commands
+
+    assert commands.FRONT_DOOR == "np"
+    assert commands.RAISE == "np_raise", "underscore form was agreed with the client"

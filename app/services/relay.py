@@ -1,9 +1,16 @@
 """The relay: everything that moves between a client group and a topic.
 
-Safety rule, and the reason this module is small and explicit: **only
-`send_client_reply` ever writes to a client chat.** Internal notes and staff
-discussion have no path outward, by construction rather than by convention.
-`tests/test_relay.py` asserts this directly.
+Safety rule, and the reason this module is small and explicit: **the only
+route by which anything a member of staff wrote reaches a client is
+`send_client_reply`.** Internal notes and staff discussion have no path
+outward, by construction rather than by convention. `tests/test_relay.py`
+asserts this directly.
+
+A short, named set of functions also writes to a client chat, but only ever
+with text this module composes itself: the acknowledgement in `open_request`,
+the anchor in `post_anchor`, the closure notice in `close`, and the note in
+`relay_client_message` telling someone a request is already closed. Nothing
+in that list can carry staff wording.
 
 Two other things happen here by design:
 
@@ -26,7 +33,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Attachment, Chat, Client, Event, Message, Staff, WorkItem
 from app.domain import work_items as wi
-from app.domain.enums import EventType, MessageDirection, Priority, WorkItemStatus
+from app.domain.enums import (
+    Department,
+    EventType,
+    MessageDirection,
+    Priority,
+    WorkItemStatus,
+)
+from app.domain.errors import DomainError
 from app.domain.history import render_event
 from app.domain.work_items import Actor
 from app.services.gateway import TelegramGateway
@@ -140,9 +154,34 @@ async def refresh_header(
         logger.debug("Could not refresh header for %s", item.display_reference, exc_info=True)
 
 
+def closure_text(item: WorkItem, resolution: str | None = None) -> str:
+    """What the client is told when a request is closed.
+
+    NexterPay asked for the original request to be repeated back, because a
+    bare "this is now closed" arriving days later means nothing to whoever
+    reads it. The line on what was done is optional: the person closing adds
+    one if there is something worth saying, and skips it if there is not.
+    """
+    raised = item.created_at.strftime("%d %B") if item.created_at else "earlier"
+    original = " ".join((item.original_message or "").split())
+    if len(original) > 400:
+        original = original[:399].rstrip() + "…"
+
+    parts = [
+        f"Request {item.client_reference} is now resolved.",
+        "",
+        f"What you raised on {raised}:",
+        f'"{original}"',
+    ]
+    if resolution:
+        parts += ["", "What we did:", resolution.strip()]
+    parts += ["", "If anything is still outstanding, reply to this message."]
+    return "\n".join(parts)
+
+
 def acknowledgement_text(item: WorkItem) -> str:
     return (
-        f"Request {item.display_reference} has been logged with our "
+        f"Request {item.client_reference} has been logged with our "
         f"{item.department.value.title()} team.\n\n"
         f"Please reply to this message to add anything further to it."
     )
@@ -159,6 +198,7 @@ async def open_request(
     raised_by_telegram_user_id: int | None = None,
     attachments: list[IncomingAttachment] | None = None,
     keyboard=None,
+    ack_keyboard=None,
 ) -> WorkItem:
     """A client request becomes a work item, a topic, and an acknowledgement.
 
@@ -210,7 +250,9 @@ async def open_request(
                                 MessageDirection.INBOUND, item.raised_by_name)
 
     ack = await gateway.send_message(
-        source_chat.telegram_chat_id, acknowledgement_text(item)
+        source_chat.telegram_chat_id,
+        acknowledgement_text(item),
+        reply_markup=ack_keyboard,
     )
     await _record_message(
         session, item,
@@ -294,11 +336,21 @@ async def relay_client_message(
     # message is not merely present in the topic but actually lands on the
     # person responsible. Unowned items have nobody to ping, and fall back to
     # the plain form.
-    owner = (
-        await session.get(Staff, item.owner_staff_id)
-        if item.owner_staff_id is not None
-        else None
-    )
+    #
+    # On a closed request the person to reach is whoever closed it rather than
+    # whoever owned it, since they made the judgement that it was finished.
+    if item.status is WorkItemStatus.CLOSED:
+        owner = await _closed_by(session, item) or (
+            await session.get(Staff, item.owner_staff_id)
+            if item.owner_staff_id is not None
+            else None
+        )
+    else:
+        owner = (
+            await session.get(Staff, item.owner_staff_id)
+            if item.owner_staff_id is not None
+            else None
+        )
 
     if text:
         if owner is not None:
@@ -335,6 +387,26 @@ async def relay_client_message(
 
     await announce(session, gateway, item, event)
 
+    if item.status is WorkItemStatus.CLOSED:
+        # NexterPay's decision: a reply to a closed request does not reopen it.
+        # The person who closed it is notified and decides. The client is told
+        # rather than left wondering - we invited the reply, so silence here
+        # would be worse than not inviting it at all.
+        note = (
+            f"{item.client_reference} is already closed, so this has been passed to "
+            f"the person who handled it rather than reopening the request. "
+            f"If it needs to be looked at again, they will come back to you."
+        )
+        sent = await gateway.send_message(source.telegram_chat_id, note)
+        await _record_message(
+            session, item,
+            direction=MessageDirection.OUTBOUND,
+            chat_id=source.telegram_chat_id,
+            message_id=sent.message_id,
+            sender_name="NexterPay Operations",
+            text=note,
+        )
+
 
 async def send_client_reply(
     session: AsyncSession,
@@ -352,7 +424,9 @@ async def send_client_reply(
     """
     actor.require_any()
     source, ops = await chats_for(session, item)
-    outbound = f"{item.display_reference} — {text}"
+    # client_reference, not display_reference: an outbound message must never
+    # carry the supplier code. See the note on the property.
+    outbound = f"{item.client_reference} — {text}"
 
     sent = await gateway.send_message(source.telegram_chat_id, outbound)
     await _record_message(
@@ -506,15 +580,152 @@ async def assign(
         await notify_owner(session, gateway, item, assignee)
 
 
+async def reopen(
+    session: AsyncSession, gateway: TelegramGateway, item: WorkItem, actor: Actor
+) -> None:
+    """Put a closed request back into play. Manager and above."""
+    if item.status is not WorkItemStatus.CLOSED:
+        return
+
+    _, ops = await chats_for(session, item)
+    before = await _last_event_id(session, item)
+    await wi.reopen(session, item, actor)
+
+    if item.topic_id is not None:
+        await gateway.reopen_topic(ops.telegram_chat_id, item.topic_id)
+    await _announce_since(session, gateway, item, before)
+    await refresh_header(session, gateway, item)
+
+
+async def _closed_by(session: AsyncSession, item: WorkItem):
+    """Whoever closed it, so a client chasing afterwards reaches that person."""
+    from sqlalchemy import select
+
+    result = await session.execute(
+        select(Event)
+        .where(Event.work_item_id == item.id, Event.event_type == EventType.WORK_ITEM_CLOSED)
+        .order_by(Event.id.desc())
+        .limit(1)
+    )
+    event = result.scalar_one_or_none()
+    if event is None or event.actor_staff_id is None:
+        return None
+    return await session.get(Staff, event.actor_staff_id)
+
+
+async def open_requests_for(session: AsyncSession, source_chat: Chat) -> list[WorkItem]:
+    """Every open request raised from this client group, oldest first.
+
+    The whole group rather than the person asking: they can already read each
+    other's messages in there, so hiding a colleague's request would be
+    theatre rather than privacy.
+    """
+    from sqlalchemy import select
+
+    result = await session.execute(
+        select(WorkItem)
+        .where(
+            WorkItem.source_chat_id == source_chat.id,
+            WorkItem.status.not_in([WorkItemStatus.CLOSED, WorkItemStatus.COMPLETED]),
+        )
+        .order_by(WorkItem.reference)
+    )
+    return list(result.scalars().all())
+
+
+async def post_anchor(
+    session: AsyncSession, gateway: TelegramGateway, item: WorkItem
+) -> None:
+    """Post a fresh message in the client group that replies will attach to.
+
+    A client with several requests open should not have to scroll back to find
+    our original acknowledgement. Tapping a request from the list posts a new
+    anchor at the bottom of the conversation, and because it is recorded
+    against the work item the existing reply routing resolves it - no new
+    mechanism, and nothing to go wrong differently from the path that already
+    works.
+    """
+    source, _ = await chats_for(session, item)
+    text = (
+        f"{item.client_reference} · {item.subject}\n"
+        f"Status: {item.status.client_label}\n\n"
+        f"Reply to this message to add to this request."
+    )
+    sent = await gateway.send_message(source.telegram_chat_id, text)
+    await _record_message(
+        session, item,
+        direction=MessageDirection.OUTBOUND,
+        chat_id=source.telegram_chat_id,
+        message_id=sent.message_id,
+        sender_name="NexterPay Operations",
+        text=text,
+    )
+
+
+async def file_under(
+    session: AsyncSession,
+    gateway: TelegramGateway,
+    item: WorkItem,
+    supplier: Client,
+    actor: Actor,
+) -> None:
+    """Record which supplier a ticket concerns, and rename it accordingly.
+
+    NexterPay file requests as Client / Supplier / Ticket. The supplier is set
+    after the fact, by staff, because the client raising a request does not
+    know which supplier it concerns and frequently nobody does until someone
+    has looked at it.
+
+    Filing changes the reference, so the topic title is rewritten to match.
+    Otherwise the ticket would answer to one name in conversation and another
+    in the sidebar, which defeats the point of filing it at all.
+    """
+    if supplier.code is None:
+        raise DomainError(
+            f"{supplier.name} has no code yet. An administrator can set one with "
+            f"/np_setcode inside their group."
+        )
+    if item.supplier_id == supplier.id:
+        return
+
+    was = item.display_reference
+    item.supplier_id = supplier.id
+    item.supplier_code = supplier.code
+    await session.flush()
+
+    await wi.record_event(
+        session, item, EventType.SUPPLIER_FILED, actor,
+        supplier=supplier.name,
+        supplier_code=supplier.code,
+        from_reference=was,
+        to_reference=item.display_reference,
+    )
+
+    client = await session.get(Client, item.client_id)
+    _, ops = await chats_for(session, item)
+    if item.topic_id is not None:
+        await gateway.rename_topic(
+            ops.telegram_chat_id,
+            item.topic_id,
+            topic_name(item, client.name if client else "Unknown client"),
+        )
+    await announce(session, gateway, item, await _latest_event(session, item))
+    await refresh_header(session, gateway, item)
+
+
 async def close(
     session: AsyncSession, gateway: TelegramGateway, item: WorkItem, actor: Actor,
-    *, notify_client: bool = True,
+    *, notify_client: bool | None = None, resolution: str | None = None,
 ) -> None:
-    """Close the work item, announce it, and archive the topic.
+    """Close the work item, tell the client, and archive the topic.
 
-    Whether the client is told is a setting rather than a hard rule - it is
-    pre-start question A2 and NexterPay have not decided yet.
+    NexterPay decided that clients are told, with the original request
+    repeated back and an optional line on what was done. Business is the
+    exception and closes silently: there the answer itself is the conclusion,
+    and a closure notice would be noise.
     """
+    if notify_client is None:
+        notify_client = item.department is not Department.BUSINESS
     if item.status is WorkItemStatus.CLOSED:
         # Second tap on a Close button that is still on screen. wi.close() is
         # already idempotent, but everything after it was not: the client was
@@ -524,17 +735,23 @@ async def close(
         logger.info("%s is already closed; ignoring", item.display_reference)
         return
 
-    _, ops = await chats_for(session, item)
+    source, ops = await chats_for(session, item)
     before = await _last_event_id(session, item)
     await wi.close(session, item, actor)
     await _announce_since(session, gateway, item, before)
     await refresh_header(session, gateway, item)
 
     if notify_client:
-        await send_client_reply(
-            session, gateway, item, actor,
-            "this request has now been completed and closed. "
-            "Please reply here if anything remains outstanding.",
+        sent = await gateway.send_message(
+            source.telegram_chat_id, closure_text(item, resolution)
+        )
+        await _record_message(
+            session, item,
+            direction=MessageDirection.OUTBOUND,
+            chat_id=source.telegram_chat_id,
+            message_id=sent.message_id,
+            sender_name="NexterPay Operations",
+            text=closure_text(item, resolution),
         )
 
     if item.topic_id is not None:

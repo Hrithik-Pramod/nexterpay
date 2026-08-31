@@ -280,7 +280,7 @@ async def test_closing_twice_does_not_tell_the_client_twice(
     assert len(gw.closed_topics) == closes
 
 
-async def test_a_closed_request_keeps_only_history(
+async def test_a_closed_request_keeps_only_history_and_reopen(
     session, acme_support, support_ops, operator, gw, state
 ):
     item = await _item(session, gw, acme_support)
@@ -298,7 +298,11 @@ async def test_a_closed_request_keeps_only_history(
     )
 
     labels = [b.text for row in captured["markup"].inline_keyboard for b in row]
-    assert labels == ["History"]
+    # Everything else is refused by the domain on a closed item, so leaving
+    # those buttons on screen would only invite taps that error. Reopen stays
+    # because it is the one thing that still applies - and it is gated to
+    # Manager in the domain, so an Operator tapping it gets a clear refusal.
+    assert labels == ["History", "Reopen"]
 
 
 # --------------------------------------------------------------------------

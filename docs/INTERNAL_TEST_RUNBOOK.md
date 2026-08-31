@@ -49,9 +49,9 @@ python -m app.bot.main
 
 **Register**
 
-In the Operations group: `/register_ops support`
-In the Acme group: `/register_client support Acme Payments`
-In the Operations group, reply to yourself: `/adduser senior_operator support`
+In the Operations group: `/np_register_ops support`
+In the Acme group: `/np_register_client support Acme Payments`
+In the Operations group, reply to yourself: `/np_adduser senior_operator support`
 
 **Then run the preflight**
 
@@ -68,7 +68,7 @@ otherwise waste the first half hour.
 
 **As the client account, in the Acme group:**
 
-1. Send `/raise`.
+1. Send `/np_raise`.
 2. Press **Raise Request**.
 3. Type: `We have not received settlement for 3 March. Can you check?`
 
@@ -94,7 +94,7 @@ preflight.
 2. Press **Status** → **In Progress**.
 3. Press **Priority** → **High**.
 4. Type a plain message: `Checking the settlement file with the bank.`
-5. Send `/reply we are looking into this and will come back to you shortly.`
+5. Send `/np_reply we are looking into this and will come back to you shortly.`
 
 **Expect:**
 
@@ -103,7 +103,7 @@ preflight.
 - [ ] **The header at the top of the topic updates** — owner, status and
       priority change in place. This is the one people forget to check.
 - [ ] Your plain message did **not** reach the client
-- [ ] The `/reply` text *did* reach the client, prefixed `#1000 —`
+- [ ] The `/np_reply` text *did* reach the client, prefixed `#1000 —`
 
 > **The critical check.** Look at the client group on the other phone. If
 > "Checking the settlement file with the bank" appears there, stop and tell me
@@ -163,7 +163,7 @@ Needs a second staff account. Add them as `operator`:
 - [ ] As the operator, press **Priority** → refused with a message about needing
       Senior Operator
 - [ ] As the operator, **Claim** an unclaimed item → allowed
-- [ ] Remove them with `/removeuser` (as a reply), then have them press any
+- [ ] Remove them with `/np_removeuser` (as a reply), then have them press any
       button → refused
 
 ---
@@ -202,10 +202,10 @@ Worth proving, since it is the honest answer to "what if it goes down".
 | Symptom | Cause | Fix |
 |---|---|---|
 | No topic created | Topics off, or no Manage Topics | Enable both, re-run preflight |
-| Bot silent in a group | Group not registered | `/register_ops` or `/register_client` |
-| Buttons say "not registered for this department" | Staff record missing, or wrong department | `/adduser <role> <department>` |
+| Bot silent in a group | Group not registered | `/np_register_ops` or `/np_register_client` |
+| Buttons say "not registered for this department" | Staff record missing, or wrong department | `/np_adduser <role> <department>` |
 | Client message ignored | They typed instead of replying | Expected. See section 3. |
-| `/register_ops` does nothing | You are not the bootstrap admin | Set `ADMIN_BOOTSTRAP_ID` to your Telegram id, restart |
+| `/np_register_ops` does nothing | You are not the bootstrap admin | Set `ADMIN_BOOTSTRAP_ID` to your Telegram id, restart |
 | Duplicate messages | Two bot processes running | Kill one. Only ever run one. |
 | Nothing at all happens | Bot not started, or wrong token | Check the console output |
 

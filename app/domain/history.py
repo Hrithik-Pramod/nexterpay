@@ -82,6 +82,13 @@ def _fmt(event: Event, *, verbose: bool = False) -> str:
         return f"Reply sent to client by {actor}" + (_quote(p.get("text")) if verbose else "")
     if t is EventType.ATTACHMENT_RECEIVED:
         return f"Attachment received from {actor} ({p.get('file_name') or p.get('kind', 'file')})"
+    if t is EventType.SUPPLIER_FILED:
+        supplier = p.get("supplier") or "unknown"
+        was = p.get("from_reference")
+        now = p.get("to_reference")
+        if was and now:
+            return f"Filed under {supplier} by {actor} ({was} → {now})"
+        return f"Filed under {supplier} by {actor}"
     if t is EventType.WORK_ITEM_CLOSED:
         return f"Closed by {actor}"
     if t is EventType.WORK_ITEM_REOPENED:

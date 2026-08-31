@@ -1,7 +1,7 @@
 """Staff handlers, used inside the departmental Operations Groups.
 
 The safety property this file exists to preserve: typing in a topic is
-internal. Only `/reply` sends to a client. There is no configuration that
+internal. Only `/np_reply` sends to a client. There is no configuration that
 changes this and no code path that relays a plain message outward.
 """
 
@@ -16,6 +16,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, ForceReply, Message
 
+from app.bot import commands as cmd
 from app.bot import keyboards as kb
 from app.bot.attachments import extract_attachments, has_attachment
 from app.bot.deps import (
@@ -48,12 +49,12 @@ async def _resolve(session, message_or_query, thread_id) -> tuple | None:
     return chat, actor, item
 
 
-@router.message(Command("reply"))
+@router.message(Command(cmd.REPLY))
 async def cmd_reply(message: Message, command: CommandObject) -> None:
     """The only route from an Operations Group to a client."""
     text = (command.args or "").strip()
     if not text:
-        await message.reply("Usage: /reply <message to the client>")
+        await message.reply(f"Usage: /{cmd.REPLY} <message to the client>")
         return
 
     async with session_scope() as session:
@@ -63,7 +64,8 @@ async def cmd_reply(message: Message, command: CommandObject) -> None:
             # command and getting nothing back has no way to tell whether the
             # bot is down, they are unregistered, or the group is wrong.
             logger.info(
-                "/reply refused: chat=%s user=%s thread=%s",
+                "%s refused: chat=%s user=%s thread=%s",
+                cmd.REPLY,
                 message.chat.id,
                 message.from_user.id if message.from_user else None,
                 message.message_thread_id,
@@ -75,25 +77,25 @@ async def cmd_reply(message: Message, command: CommandObject) -> None:
         _, actor, item = resolved
         if item is None:
             await message.reply(
-                "This topic is not linked to a work item. Use /reply inside the "
-                "topic of the request you are answering."
+                f"This topic is not linked to a work item. Use /{cmd.REPLY} inside "
+                "the topic of the request you are answering."
             )
             return
         try:
             await relay.send_client_reply(session, gateway(), item, actor, text)
         except Exception as exc:
-            logger.exception("/reply failed for work item %s", item.id)
+            logger.exception("%s failed for work item %s", cmd.REPLY, item.id)
             await message.reply(explain(exc))
             return
 
     await message.reply("Sent to the client.")
 
 
-@router.message(Command("note"))
+@router.message(Command(cmd.NOTE))
 async def cmd_note(message: Message, command: CommandObject) -> None:
     text = (command.args or "").strip()
     if not text:
-        await message.reply("Usage: /note <internal note>")
+        await message.reply(f"Usage: /{cmd.NOTE} <internal note>")
         return
 
     async with session_scope() as session:
@@ -106,7 +108,7 @@ async def cmd_note(message: Message, command: CommandObject) -> None:
         await relay.add_internal_note(session, gateway(), item, actor, text)
 
 
-@router.message(Command("history"))
+@router.message(Command(cmd.HISTORY))
 async def cmd_history(message: Message) -> None:
     async with session_scope() as session:
         resolved = await _resolve(session, message, message.message_thread_id)
@@ -122,9 +124,9 @@ async def cmd_history(message: Message) -> None:
     await message.reply(f"{reference} — full history\n\n{body}"[:4000])
 
 
-@router.message(Command("assign"))
+@router.message(Command(cmd.ASSIGN))
 async def cmd_assign(message: Message, command: CommandObject) -> None:
-    """/assign in reply to a staff member's message, or /assign <telegram id>."""
+    """`/np_assign` in reply to a staff member, or with a telegram id."""
     async with session_scope() as session:
         resolved = await _resolve(session, message, message.message_thread_id)
         if resolved is None:
@@ -141,7 +143,7 @@ async def cmd_assign(message: Message, command: CommandObject) -> None:
 
         if target_id is None:
             await message.reply(
-                "Reply to the person you want to assign, or use /assign <telegram id>."
+                f"Reply to the person you want to assign, or use /{cmd.ASSIGN} <telegram id>."
             )
             return
 
@@ -355,6 +357,23 @@ async def _apply(
         )
         return "Choose who to assign it to"
 
+    if action == "file":
+        options = await _codeable(session, item)
+        if not options:
+            return "No counterparties have codes yet - set one with /np_setcode"
+        await query.message.edit_reply_markup(
+            reply_markup=kb.supplier_choices(item.id, options)
+        )
+        return "Which supplier is this about?"
+
+    if action == "setsupplier":
+        supplier = await session.get(Client, int(value)) if value else None
+        if supplier is None:
+            return "That counterparty no longer exists"
+        await relay.file_under(session, gw, item, supplier, actor)
+        await _refresh_keyboard(query, item.id, claimed=item.owner_staff_id is not None)
+        return f"Filed under {supplier.code}"
+
     if action == "setowner":
         assignee = await session.get(Staff, int(value)) if value else None
         if assignee is None or not assignee.is_active:
@@ -392,6 +411,13 @@ async def _apply(
         )
         return ""
 
+    if action == "reopen":
+        # Manager and above, enforced in the domain. Checked there rather than
+        # here so the rule holds however it is reached.
+        await relay.reopen(session, gw, item, actor)
+        await _refresh_keyboard(query, item.id, claimed=item.owner_staff_id is not None)
+        return f"Reopened {item.display_reference}"
+
     if action == "close":
         await relay.close(session, gw, item, actor)
         try:
@@ -401,6 +427,26 @@ async def _apply(
         return f"Closed {item.display_reference}"
 
     return ""
+
+
+async def _codeable(session, item: WorkItem) -> list[Client]:
+    """Counterparties that can be filed against - those with a code.
+
+    The client the request came from is excluded: filing a ticket under its
+    own client is not a supplier relationship, it is a mistake.
+    """
+    from sqlalchemy import select
+
+    result = await session.execute(
+        select(Client)
+        .where(
+            Client.is_active.is_(True),
+            Client.code.is_not(None),
+            Client.id != item.client_id,
+        )
+        .order_by(Client.code)
+    )
+    return list(result.scalars().all())
 
 
 async def _assignable(session, item: WorkItem) -> list[Staff]:
@@ -444,7 +490,7 @@ async def _refresh_keyboard(query: CallbackQuery, work_item_id: int, *, claimed:
 async def topic_message(message: Message) -> None:
     """Anything a staff member posts in a topic.
 
-    Files captioned `/reply ...` go to the client, satisfying PRD 7.5 - staff
+    Files captioned `/np_reply ...` go to the client, satisfying PRD 7.5 - staff
     attachments must reach the originating client group. Everything else is
     internal, including a file with no caption. Sending something outward is
     always a deliberate act.
@@ -463,15 +509,16 @@ async def topic_message(message: Message) -> None:
         raise SkipHandler
 
     text = message.text or message.caption or ""
-    if text.startswith("/") and not text.startswith("/reply"):
+    reply_cmd = f"/{cmd.REPLY}"
+    if text.startswith("/") and not text.startswith(reply_cmd):
         return  # a command; its own handler deals with it
 
     attachments = extract_attachments(message)
     if not attachments and not message.text:
         return
 
-    outbound = text.startswith("/reply")
-    body = text[len("/reply"):].strip() if outbound else text
+    outbound = text.startswith(reply_cmd)
+    body = text[len(reply_cmd):].strip() if outbound else text
 
     async with session_scope() as session:
         resolved = await _resolve(session, message, message.message_thread_id)
@@ -490,7 +537,7 @@ async def topic_message(message: Message) -> None:
                 )
                 await message.reply("Sent to the client, with the attachment.")
             elif outbound:
-                # `/reply` as plain text is handled by cmd_reply; nothing to do.
+                # `/np_reply` as plain text is handled by cmd_reply; nothing to do.
                 return
             elif attachments:
                 await relay.record_internal_attachment(

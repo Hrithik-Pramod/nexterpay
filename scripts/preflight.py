@@ -133,7 +133,18 @@ async def check_client_group(bot: Bot, chat: Chat) -> None:
         return
 
     client_name = chat.client.name if chat.client else "unlinked"
-    ok(f"{info.title or label}: registered to {client_name} / {chat.department.value}")
+    code = chat.client.code if chat.client else None
+    if code:
+        ok(f"{info.title or label}: {code} - {client_name} / {chat.department.value}")
+    else:
+        # Not fatal - requests still work and keep the older #1000 form - but
+        # nothing can be filed against this counterparty until it has a code.
+        warn(
+            f"{info.title or label}: {client_name} has no four-letter code. "
+            f"References will read #1000 rather than ACME-1000, and no request "
+            f"can be filed under this counterparty. Set one with /np_setcode "
+            f"inside their group."
+        )
 
     try:
         me = await bot.get_me()

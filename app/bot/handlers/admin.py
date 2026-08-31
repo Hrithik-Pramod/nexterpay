@@ -17,16 +17,18 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 from sqlalchemy import func, select
 
+from app.bot import commands as cmd
 from app.bot.registry import (
     deactivate_staff,
     register_client_chat,
     register_operations_chat,
+    resolve_chat,
     resolve_staff,
     upsert_staff,
 )
 from app.config import get_settings
 from app.db.base import session_scope
-from app.db.models import Staff, WorkItem
+from app.db.models import Client, Staff, WorkItem
 from app.domain.enums import Department, StaffRole, WorkItemStatus
 
 logger = logging.getLogger(__name__)
@@ -56,16 +58,16 @@ def _department(value: str) -> Department | None:
         return None
 
 
-@router.message(Command("register_ops"))
+@router.message(Command(cmd.REGISTER_OPS))
 async def cmd_register_ops(message: Message, command: CommandObject) -> None:
-    """/register_ops <department> — run inside the Operations Group itself."""
+    """`/np_register_ops <department>` - run inside the Operations Group itself."""
     async with session_scope() as session:
         if not await _is_admin(session, message.from_user.id if message.from_user else None):
             return
         department = _department(command.args or "")
         if department is None:
             await message.reply(
-                "Usage: /register_ops <support|finance|development|business>"
+                f"Usage: /{cmd.REGISTER_OPS} <support|finance|development|business>"
             )
             return
         await register_operations_chat(
@@ -82,16 +84,17 @@ async def cmd_register_ops(message: Message, command: CommandObject) -> None:
     )
 
 
-@router.message(Command("register_client"))
+@router.message(Command(cmd.REGISTER_CLIENT))
 async def cmd_register_client(message: Message, command: CommandObject) -> None:
-    """/register_client <department> <client name> — run inside the client group."""
+    """`/np_register_client <department> <client name>` - run in the client group."""
     parts = (command.args or "").split(maxsplit=1)
     async with session_scope() as session:
         if not await _is_admin(session, message.from_user.id if message.from_user else None):
             return
         if len(parts) < 2 or _department(parts[0]) is None:
             await message.reply(
-                "Usage: /register_client <support|finance|development|business> <client name>"
+                f"Usage: /{cmd.REGISTER_CLIENT} "
+                "<support|finance|development|business> <client name>"
             )
             return
         department = _department(parts[0])
@@ -110,22 +113,24 @@ async def cmd_register_client(message: Message, command: CommandObject) -> None:
     await message.reply(f"Registered: {client_name} — {department.value.title()}.")
 
 
-@router.message(Command("adduser"))
+@router.message(Command(cmd.ADDUSER))
 async def cmd_adduser(message: Message, command: CommandObject) -> None:
-    """/adduser <role> <department> — as a reply to the person being added."""
+    """`/np_adduser <role> <department>` - as a reply to the person being added."""
     async with session_scope() as session:
         if not await _is_admin(session, message.from_user.id if message.from_user else None):
             return
 
         target = message.reply_to_message.from_user if message.reply_to_message else None
         if target is None:
-            await message.reply("Reply to the person you want to add, then send /adduser.")
+            await message.reply(
+                f"Reply to the person you want to add, then send /{cmd.ADDUSER}."
+            )
             return
 
         parts = (command.args or "").split()
         if len(parts) < 2:
             await message.reply(
-                "Usage (as a reply): /adduser "
+                f"Usage (as a reply): /{cmd.ADDUSER} "
                 "<operator|senior_operator|manager|administrator> <department>"
             )
             return
@@ -152,9 +157,9 @@ async def cmd_adduser(message: Message, command: CommandObject) -> None:
     await message.reply(f"{name} added as {role.value} in {department.value}.")
 
 
-@router.message(Command("removeuser"))
+@router.message(Command(cmd.REMOVEUSER))
 async def cmd_removeuser(message: Message, command: CommandObject) -> None:
-    """/removeuser — as a reply, or /removeuser <telegram id>.
+    """`/np_removeuser` - as a reply, or with a telegram id.
 
     Deactivates rather than deletes, so past events keep resolving to a name.
     Offboarding matters more than onboarding here.
@@ -169,7 +174,9 @@ async def cmd_removeuser(message: Message, command: CommandObject) -> None:
         elif command.args and command.args.strip().isdigit():
             target_id = int(command.args.strip())
         if target_id is None:
-            await message.reply("Reply to the person, or use /removeuser <telegram id>.")
+            await message.reply(
+                f"Reply to the person, or use /{cmd.REMOVEUSER} <telegram id>."
+            )
             return
 
         staff = await deactivate_staff(session, target_id)
@@ -182,7 +189,63 @@ async def cmd_removeuser(message: Message, command: CommandObject) -> None:
     await message.reply(f"{name} deactivated. They can no longer act on work items.")
 
 
-@router.message(Command("workload"))
+@router.message(Command(cmd.SETCODE))
+async def cmd_setcode(message: Message, command: CommandObject) -> None:
+    """`/np_setcode <CODE>` - assign a counterparty's four-letter code.
+
+    Run inside the counterparty's own group, which is how the bot knows who
+    the code is for. Four letters, unique across the platform, because the
+    code is what every reference and every topic title is built on.
+    """
+    code = (command.args or "").strip().upper()
+
+    async with session_scope() as session:
+        if not await _is_admin(session, message.from_user.id if message.from_user else None):
+            return
+
+        if not (len(code) == 4 and code.isascii() and code.isalpha()):
+            await message.reply(
+                f"Usage: /{cmd.SETCODE} <CODE> - exactly four letters, for example ACME."
+            )
+            return
+
+        chat = await resolve_chat(session, message.chat.id)
+        if chat is None or chat.client_id is None:
+            await message.reply(
+                "This group is not registered to a client or supplier yet. "
+                f"Register it first with /{cmd.REGISTER_CLIENT}."
+            )
+            return
+
+        taken = await session.execute(
+            select(Client).where(Client.code == code, Client.id != chat.client_id)
+        )
+        holder = taken.scalar_one_or_none()
+        if holder is not None:
+            # Codes lead every reference, so two counterparties sharing one
+            # would make references ambiguous - the opposite of filing.
+            await message.reply(
+                f"{code} already belongs to {holder.name}. Codes must be unique, "
+                f"so please choose another."
+            )
+            return
+
+        counterparty = await session.get(Client, chat.client_id)
+        previous = counterparty.code
+        counterparty.code = code
+        await session.flush()
+        logger.info("Set code %s for client %s", code, counterparty.name)
+
+    if previous and previous != code:
+        await message.reply(
+            f"{counterparty.name} is now {code} (was {previous}). "
+            f"Requests already raised keep their original reference."
+        )
+    else:
+        await message.reply(f"{counterparty.name} is now {code}.")
+
+
+@router.message(Command(cmd.WORKLOAD))
 async def cmd_workload(message: Message) -> None:
     """Open items by owner for this department.
 

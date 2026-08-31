@@ -40,6 +40,11 @@ class WorkItemStatus(str, enum.Enum):
         return self in (WorkItemStatus.COMPLETED, WorkItemStatus.CLOSED)
 
     @property
+    def client_label(self) -> str:
+        """The coarser wording shown to clients. See CLIENT_STATUS_LABELS."""
+        return CLIENT_STATUS_LABELS.get(self.value, self.label)
+
+    @property
     def label(self) -> str:
         return _STATUS_LABELS[self]
 
@@ -54,6 +59,27 @@ _STATUS_LABELS = {
     WorkItemStatus.ESCALATED: "Escalated",
     WorkItemStatus.COMPLETED: "Completed",
     WorkItemStatus.CLOSED: "Closed",
+}
+
+
+# What a client is shown, as opposed to what staff track.
+#
+# Deliberately coarser than the internal set. "Waiting for Third Party" and
+# "Escalated" describe NexterPay's process rather than the client's situation,
+# and telling a customer their case has been escalated invites a question
+# nobody wants to answer. Agreed with NexterPay; their team may yet revise the
+# wording, which is why it sits here as one mapping rather than scattered
+# through the message text.
+CLIENT_STATUS_LABELS = {
+    "open": "Received",
+    "claimed": "In progress",
+    "in_progress": "In progress",
+    "waiting_client": "Waiting on you",
+    "waiting_internal": "In progress",
+    "waiting_third_party": "In progress",
+    "escalated": "In progress",
+    "completed": "Resolved",
+    "closed": "Resolved",
 }
 
 
@@ -116,6 +142,7 @@ class EventType(str, enum.Enum):
     CLIENT_MESSAGE_RECEIVED = "client_message_received"
     STAFF_REPLY_SENT = "staff_reply_sent"
     ATTACHMENT_RECEIVED = "attachment_received"
+    SUPPLIER_FILED = "supplier_filed"
     WORK_ITEM_CLOSED = "work_item_closed"
     WORK_ITEM_REOPENED = "work_item_reopened"
     TOPIC_CLOSED = "topic_closed"

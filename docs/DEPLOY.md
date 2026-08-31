@@ -251,9 +251,9 @@ Follow **`docs/INTERNAL_TEST_RUNBOOK.md`** section 0 for group creation, then
 register them by sending these *inside the groups themselves*:
 
 ```
-/register_ops support                          ← in the Operations group
-/register_client support Acme Payments         ← in the client group
-/adduser senior_operator support               ← as a reply to yourself
+/np_register_ops support                          ← in the Operations group
+/np_register_client support Acme Payments         ← in the client group
+/np_adduser senior_operator support               ← as a reply to yourself
 ```
 
 Then confirm everything before anyone tests:
@@ -283,22 +283,66 @@ your first half hour.
 
 ### Back up the database
 
-Not critical for UAT, but it is one command:
+**Not optional, and not "later".** This project has already lost its database
+once, during UAT, to a `docker compose down -v`. That was survivable because
+it held test data. The same five seconds with real client requests in it is a
+different conversation entirely.
+
+Take one now:
 
 ```bash
-docker compose exec -T db pg_dump -U nexterpay nexterpay_ops \
-  | gzip > ~/backups/nexterpay-$(date +%F-%H%M).sql.gz
+cd /root/nexterpay
+bash scripts/backup.sh
 ```
 
-Nightly at 2am — `crontab -e`, then:
+The script refuses to keep a dump that is empty, truncated, corrupt, or from
+the wrong database, so a green result means you actually have a backup rather
+than a file with the right name.
+
+Then schedule it. `crontab -e`, and add:
 
 ```
-0 2 * * * mkdir -p ~/backups && cd /root/nexterpay && /usr/bin/docker compose exec -T db pg_dump -U nexterpay nexterpay_ops | gzip > ~/backups/nexterpay-$(date +\%F).sql.gz
-
-Check the path matches where you actually cloned the project, then verify
-it works instead of trusting it: run the command by hand once and confirm
-the file is not zero bytes. A backup nobody has ever restored is a guess.
+0 2 * * * cd /root/nexterpay && /bin/bash scripts/backup.sh >> /var/log/nexterpay-backup.log 2>&1
 ```
+
+Adjust the path if you cloned somewhere else. Cron has a minimal `PATH`, so
+run it once by hand first — if it works from cron's environment it will keep
+working.
+
+**Then verify it, rather than trusting it.** Tomorrow, run:
+
+```bash
+bash scripts/backup.sh --check
+```
+
+That fails loudly if the newest backup is missing, corrupt, suspiciously
+small, or more than 30 hours old. Worth running occasionally; a backup job
+that silently stopped six weeks ago is the normal way this goes wrong.
+
+Backups keep for 14 days, and the **newest seven are never deleted whatever
+their age** — otherwise a job that stopped running a fortnight ago would
+delete every copy you have on the day you next need one.
+
+### Restore
+
+```bash
+bash scripts/restore.sh              # lists what is available
+bash scripts/restore.sh ~/backups/nexterpay-2026-08-30-0200.sql.gz
+```
+
+It checks the file is a real NexterPay dump, makes you type `RESTORE` rather
+than accepting a stray `y`, takes a safety copy of the current database first,
+stops the bot, restores, and starts it again. Restoring the wrong file is a
+normal mistake; the safety copy makes it a recoverable one.
+
+Afterwards, confirm the platform came back:
+
+```bash
+docker compose exec bot python scripts/preflight.py
+```
+
+**Practise this once before go-live.** A restore you have never performed is
+not a recovery plan.
 
 ### Wipe test data before the pilot
 
@@ -321,17 +365,15 @@ UAT fills the database with nonsense. When you are genuinely finished with it,
 take a backup first so the decision is reversible, then wipe:
 
 ```bash
-mkdir -p ~/backups
-docker compose exec -T db pg_dump -U nexterpay nexterpay_ops \
-  | gzip > ~/backups/pre-pilot-$(date +%F-%H%M).sql.gz
-ls -lh ~/backups/          # confirm it is not zero bytes BEFORE continuing
+bash scripts/backup.sh     # verifies the dump before keeping it
+bash scripts/backup.sh --check
 
 docker compose down -v
 docker compose up -d
 ```
 
-Re-registration after a wipe is manual: `/register_ops`, `/register_client`
-for each client group, and `/adduser` for every member of staff. Budget for
+Re-registration after a wipe is manual: `/np_register_ops`, `/np_register_client`
+for each client group, and `/np_adduser` for every member of staff. Budget for
 it rather than discovering it with the client waiting.
 
 ---
@@ -343,7 +385,7 @@ it rather than discovering it with the client waiting.
 | `bot` keeps restarting | Bad token, or database not up | `docker compose logs bot` |
 | `Unauthorized` in the logs | Token wrong or revoked | Check `.env`, get a fresh token from BotFather |
 | `migrate` exited non-zero | Database was not ready yet | `docker compose up -d` again; it retries |
-| Bot silent in a group | Group not registered | `/register_ops` or `/register_client` |
+| Bot silent in a group | Group not registered | `/np_register_ops` or `/np_register_client` |
 | No topics created | Topics off, or no Manage Topics | Run `preflight.py`; it names the problem |
 | Messages arriving twice | Two bot processes | Only ever run one. `docker compose ps` |
 | Container killed unexpectedly | Out of memory | `free -h`; rescale in the console |

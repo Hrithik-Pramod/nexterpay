@@ -57,6 +57,11 @@ def work_item_actions(work_item_id: int, *, claimed: bool) -> InlineKeyboardMark
                 InlineKeyboardButton(text="Priority", callback_data=cb("priority", work_item_id)),
                 InlineKeyboardButton(text="History", callback_data=cb("history", work_item_id)),
             ],
+            [
+                InlineKeyboardButton(
+                    text="File under supplier", callback_data=cb("file", work_item_id)
+                )
+            ],
             [InlineKeyboardButton(text="Close", callback_data=cb("close", work_item_id))],
         ]
     )
@@ -93,9 +98,35 @@ def closed_actions(work_item_id: int) -> InlineKeyboardMarkup:
     """
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="History", callback_data=cb("history", work_item_id))]
+            [
+                InlineKeyboardButton(
+                    text="History", callback_data=cb("history", work_item_id)
+                ),
+                InlineKeyboardButton(
+                    text="Reopen", callback_data=cb("reopen", work_item_id)
+                ),
+            ]
         ]
     )
+
+
+def supplier_choices(work_item_id: int, counterparties) -> InlineKeyboardMarkup:
+    """Which supplier this request concerns.
+
+    Only counterparties that have a code appear: the code is what the filing
+    structure is built on, so one without a code cannot be filed against.
+    """
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"{c.code} · {c.name}"[:60],
+                callback_data=cb("setsupplier", work_item_id, str(c.id)),
+            )
+        ]
+        for c in counterparties
+    ]
+    rows.append([InlineKeyboardButton(text="← Back", callback_data=cb("back", work_item_id))])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def assignee_choices(work_item_id: int, people) -> InlineKeyboardMarkup:
@@ -139,6 +170,30 @@ def priority_choices(work_item_id: int) -> InlineKeyboardMarkup:
     ]
     rows.append([InlineKeyboardButton(text="← Back", callback_data=cb("back", work_item_id))])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def open_requests(items) -> InlineKeyboardMarkup:
+    """One button per open request. Tapping it posts a fresh anchor to reply to."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"{i.client_reference} · {i.subject}"[:60],
+                    callback_data=f"tk:open:{i.id}",
+                )
+            ]
+            for i in items
+        ]
+    )
+
+
+def acknowledgement_actions() -> InlineKeyboardMarkup:
+    """Sits under every acknowledgement, so the list is always one tap away."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="My open requests", callback_data="tk:list")]
+        ]
+    )
 
 
 def raise_request_prompt(department: str) -> InlineKeyboardMarkup:

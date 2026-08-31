@@ -154,6 +154,8 @@ async def create_work_item(
         operations_chat_id=ops_chat.id,
         raised_by_name=raised_by_name,
         raised_by_telegram_user_id=raised_by_telegram_user_id,
+        # Copied, not looked up later - see the note on the column.
+        client_code=client.code if client else None,
         subject=subject.strip()[:300],
         original_message=original_message,
         status=WorkItemStatus.OPEN,

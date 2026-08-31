@@ -23,6 +23,7 @@ from aiogram.filters import Command
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message
 
+from app.bot import commands as cmd
 from app.bot import deps
 from app.bot.handlers import admin, client, staff
 from app.bot.registry import resolve_chat, resolve_staff
@@ -85,7 +86,7 @@ def build_dispatcher() -> Dispatcher:
     dp = Dispatcher(storage=build_storage())
 
 
-    @dp.message(Command("start"))
+    @dp.message(Command(cmd.START, cmd.START_ALIAS))
     async def cmd_start(message: Message) -> None:
         async with session_scope() as session:
             chat = await resolve_chat(session, message.chat.id)
@@ -100,7 +101,7 @@ def build_dispatcher() -> Dispatcher:
             f"Group: {chat.kind.value} / {chat.department.value}"
         )
 
-    @dp.message(Command("whoami"))
+    @dp.message(Command(cmd.WHOAMI))
     async def cmd_whoami(message: Message) -> None:
         if message.from_user is None:
             return
@@ -130,14 +131,27 @@ def build_dispatcher() -> Dispatcher:
 
     @trace.message()
     async def _unhandled(message: Message) -> None:
+        # Deliberately does not log what the message said.
+        #
+        # This was invaluable while the bot could only see replies to itself.
+        # Once it is an administrator in client groups it sees everything, and
+        # logging content would put fragments of clients' private conversation
+        # into the server logs - which NexterPay have not agreed to and neither
+        # of us intended.
+        #
+        # A leading command is kept, because commands are not private and are
+        # the thing worth diagnosing. Everything else is reduced to a length.
+        body = (message.text or message.caption or "")
+        command = body.split()[0] if body.startswith("/") else None
         logger.info(
-            "unhandled message chat=%s (%s) user=%s thread=%s reply=%s text=%r",
+            "unhandled message chat=%s (%s) user=%s thread=%s reply=%s command=%s chars=%d",
             message.chat.id,
             message.chat.type,
             message.from_user.id if message.from_user else None,
             message.message_thread_id,
             bool(message.reply_to_message),
-            (message.text or message.caption or "")[:80],
+            command,
+            len(body),
         )
 
     dp.include_router(trace)

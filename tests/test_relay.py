@@ -202,7 +202,13 @@ async def test_close_archives_topic_and_tells_the_client(
 
     assert item.status is WorkItemStatus.CLOSED
     assert (OPS_CHAT, item.topic_id) in gw.closed_topics
-    assert any("completed and closed" in m for m in gw.messages_to(CLIENT_CHAT))
+
+    # NexterPay asked for the original request to be repeated back, because a
+    # bare "this is closed" arriving days later means nothing to the reader.
+    closure = [m for m in gw.messages_to(CLIENT_CHAT) if "is now resolved" in m]
+    assert closure, "the client was not told"
+    assert "What you raised on" in closure[0]
+    assert "settlement" in closure[0].lower()
 
 
 async def test_close_can_be_silent(session, acme_support, support_ops, operator, gw):
@@ -406,3 +412,46 @@ async def test_client_text_with_markup_characters_survives(
     topic = gw.all_text_to(OPS_CHAT)
     assert "amount &lt; 500 &amp; rising" in topic
     assert "Tom &lt;b&gt;Baker&lt;/b&gt;" in topic
+
+
+def test_only_these_functions_may_write_to_a_client_chat() -> None:
+    """The core safety property, enforced structurally rather than by review.
+
+    Anything reaching a client group is visible to a customer of NexterPay's
+    customer. The list below is deliberately short, and every entry composes
+    its own text - none of them can carry wording a member of staff typed
+    except send_client_reply, which is the one route out and has a
+    confirmation step in front of it.
+
+    If this fails because you added a function, that is the point: decide
+    whether it really needs to write outward, and if it does, add it here so
+    the next person can see the whole list in one place.
+    """
+    import pathlib
+    import re
+
+    allowed = {
+        "open_request",       # the acknowledgement carrying the reference
+        "post_anchor",        # a fresh message to reply to, from the list
+        "send_client_reply",  # the only route for staff-written words
+        "relay_client_message",  # telling someone a request is already closed
+        "close",              # the closure notice
+    }
+
+    source = pathlib.Path("app/services/relay.py").read_text().splitlines()
+    writers, current = set(), None
+    for index, line in enumerate(source):
+        named = re.match(r"(?:async )?def (\w+)", line)
+        if named:
+            current = named.group(1)
+        window = "".join(source[index:index + 4])
+        if re.search(r"gateway\.send_(message|file)\(", line) and (
+            "source.telegram_chat_id" in window or "source_chat.telegram_chat_id" in window
+        ):
+            writers.add(current)
+
+    assert writers == allowed, (
+        f"functions writing to a client chat changed.\n"
+        f"  added:   {sorted(writers - allowed)}\n"
+        f"  removed: {sorted(allowed - writers)}"
+    )

@@ -34,8 +34,8 @@ app/
     routing.py           reply routing strategies
     handlers/
       client.py          Raise Request, client replies
-      staff.py           actions, /reply, /note, /history, /assign
-      admin.py           registration, user management, /workload
+      staff.py           actions, /np_reply, /np_note, /np_history, /np_assign
+      admin.py           registration, user management, /np_workload
 scripts/smoke.py         full walkthrough, prints both sides
 tests/                   55 tests
 ```
@@ -49,7 +49,7 @@ back to.
 |---|---|---|
 | §16 | Existing client groups retained | Done |
 | §16, §6 | Four departmental Operations Groups | Done |
-| §16, §5 | Bot installed in each client group | Done — `/register_client` |
+| §16, §5 | Bot installed in each client group | Done — `/np_register_client` |
 | §8 | Raise Request workflow | Done |
 | §15.4 | Commercial Enquiry workflow | Wording and free-text capture done; the separate stage model is **not** built — see below |
 | §16 | Automatic Work Item creation | Done |
@@ -109,28 +109,28 @@ in `docker-compose.yml`.
 
 1. Create a supergroup per department for internal use, **enable topics**, add
    the bot as an administrator with "manage topics".
-2. In that group: `/register_ops support`
-3. Add the bot to a client group, then: `/register_client support Acme Payments`
-4. Add staff, replying to the person: `/adduser operator support`
+2. In that group: `/np_register_ops support`
+3. Add the bot to a client group, then: `/np_register_client support Acme Payments`
+4. Add staff, replying to the person: `/np_adduser operator support`
 
 `ADMIN_BOOTSTRAP_ID` lets the first administrator act before any exist in the
 database. Clear it once a real administrator is registered.
 
 ## Commands
 
-**Client groups** — `/raise` (or `/enquiry` in Business groups) offers the
+**Client groups** — `/np_raise` (or `/np_enquiry` in Business groups) offers the
 button. Everything after that is ordinary conversation.
 
 **Operations Groups**
 
 | Command | Effect |
 |---|---|
-| `/reply <text>` | Sends to the client. The only thing that does. |
-| `/note <text>` | Internal note. Never leaves the group. |
-| `/history` | Full audit trail for the topic's work item. |
-| `/assign` | Reply to someone, then assign to them. |
-| `/workload` | Open items for the department. |
-| `/whoami` | Your registered role. |
+| `/np_reply <text>` | Sends to the client. The only thing that does. |
+| `/np_note <text>` | Internal note. Never leaves the group. |
+| `/np_history` | Full audit trail for the topic's work item. |
+| `/np_assign` | Reply to someone, then assign to them. |
+| `/np_workload` | Open items for the department. |
+| `/np_whoami` | Your registered role. |
 
 Claim, status, priority, history and close are also inline buttons on the work
 item header.
@@ -155,7 +155,7 @@ the reference; the client replies to it; `reply_to_message` resolves the work
 item. A freshly typed message resolves to nothing and is logged, not guessed
 at. The strategy is behind an interface so this can change in one binding.
 
-**Outbound is explicit.** `/reply` sends to a client. Plain typing in a topic is
+**Outbound is explicit.** `/np_reply` sends to a client. Plain typing in a topic is
 an internal note. There is no setting that changes this, and
 `test_internal_note_never_reaches_the_client` guards it.
 

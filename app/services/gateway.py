@@ -70,6 +70,10 @@ class TelegramGateway(Protocol):
 
     async def close_topic(self, chat_id: int, thread_id: int) -> None: ...
 
+    async def rename_topic(self, chat_id: int, thread_id: int, name: str) -> None: ...
+
+    async def reopen_topic(self, chat_id: int, thread_id: int) -> None: ...
+
     async def edit_reply_markup(
         self, chat_id: int, message_id: int, reply_markup: Any | None
     ) -> None: ...
@@ -139,6 +143,27 @@ class AiogramGateway:
         topic = await self._bot.create_forum_topic(chat_id=chat_id, name=name[:128])
         return topic.message_thread_id
 
+    async def rename_topic(self, chat_id: int, thread_id: int, name: str) -> None:
+        try:
+            await self._bot.edit_forum_topic(
+                chat_id=chat_id, message_thread_id=thread_id, name=name[:128]
+            )
+        except TelegramBadRequest as exc:
+            # The name is already what we are setting it to. Not a failure.
+            if "TOPIC_NOT_MODIFIED" not in str(exc):
+                raise
+            logger.info("Topic %s in %s already had that name", thread_id, chat_id)
+
+    async def reopen_topic(self, chat_id: int, thread_id: int) -> None:
+        try:
+            await self._bot.reopen_forum_topic(
+                chat_id=chat_id, message_thread_id=thread_id
+            )
+        except TelegramBadRequest as exc:
+            if "TOPIC_NOT_MODIFIED" not in str(exc):
+                raise
+            logger.info("Topic %s in %s was already open", thread_id, chat_id)
+
     async def close_topic(self, chat_id: int, thread_id: int) -> None:
         try:
             await self._bot.close_forum_topic(chat_id=chat_id, message_thread_id=thread_id)
@@ -175,6 +200,8 @@ class FakeGateway:
     def __init__(self) -> None:
         self.calls: list[Call] = []
         self.topics: dict[int, list[int]] = {}
+        self.topic_names: dict[tuple[int, int], str] = {}
+        self.reopened_topics: list[tuple[int, int]] = []
         self.closed_topics: list[tuple[int, int]] = []
         self.edits: dict[int, list[str]] = {}
         self._next_message_id = 1000
@@ -245,6 +272,18 @@ class FakeGateway:
         self.topics.setdefault(chat_id, []).append(self._next_topic_id)
         self.calls.append(Call("create_topic", chat_id, {"name": name}))
         return self._next_topic_id
+
+    async def rename_topic(self, chat_id: int, thread_id: int, name: str) -> None:
+        self._maybe_fail()
+        self.topic_names[(chat_id, thread_id)] = name
+        self.calls.append(
+            Call("rename_topic", chat_id, {"thread_id": thread_id, "name": name})
+        )
+
+    async def reopen_topic(self, chat_id: int, thread_id: int) -> None:
+        self._maybe_fail()
+        self.reopened_topics.append((chat_id, thread_id))
+        self.calls.append(Call("reopen_topic", chat_id, {"thread_id": thread_id}))
 
     async def close_topic(self, chat_id: int, thread_id: int) -> None:
         self._maybe_fail()

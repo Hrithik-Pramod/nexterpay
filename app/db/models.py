@@ -56,16 +56,31 @@ def _enum(py_enum, name: str):
 
 
 class Client(Base, TimestampMixin):
+    """A counterparty - a client or a supplier.
+
+    One table for both, because NexterPay confirmed a supplier request is the
+    same process with different labels. A supplier is not a different kind of
+    thing here, only a different role in a particular request: the same
+    organisation can be a client on one ticket and the supplier on another.
+    """
+
     __tablename__ = "clients"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+
+    # The four-letter code that leads every reference and topic title, and the
+    # thing you type into Telegram search to find everything for this
+    # counterparty. Nullable because counterparties registered before codes
+    # existed have none until one is assigned.
+    code: Mapped[str | None] = mapped_column(String(4), nullable=True, unique=True, index=True)
+
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     chats: Mapped[list[Chat]] = relationship(back_populates="client")
 
     def __repr__(self) -> str:
-        return f"<Client {self.name!r}>"
+        return f"<Client {self.code or '????'} {self.name!r}>"
 
 
 class Chat(Base, TimestampMixin):
@@ -147,6 +162,20 @@ class WorkItem(Base, TimestampMixin):
     # ownership to be clearly visible, and a stale header is not that.
     header_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
+    # Set after the fact by staff, using the File under button. A client
+    # raising a request does not know which supplier it concerns, and often
+    # nobody does until someone has looked at it.
+    supplier_id: Mapped[int | None] = mapped_column(ForeignKey("clients.id"), nullable=True)
+
+    # The codes are copied onto the work item rather than read through the
+    # relationships. Two reasons. Reading them live would mean lazy-loading
+    # inside async code, which is the error this project has already been
+    # bitten by. And a reference that is already in circulation - written in
+    # an email, quoted on a call - should not silently change because someone
+    # later edited a counterparty's code.
+    client_code: Mapped[str | None] = mapped_column(String(4), nullable=True)
+    supplier_code: Mapped[str | None] = mapped_column(String(4), nullable=True)
+
     raised_by_telegram_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     raised_by_name: Mapped[str] = mapped_column(String(200), nullable=False)
 
@@ -162,7 +191,9 @@ class WorkItem(Base, TimestampMixin):
     owner_staff_id: Mapped[int | None] = mapped_column(ForeignKey("staff.id"), nullable=True)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    client: Mapped[Client] = relationship()
+    # Both point at `clients`, so the join has to be spelled out.
+    client: Mapped[Client] = relationship(foreign_keys=[client_id])
+    supplier: Mapped[Client | None] = relationship(foreign_keys=[supplier_id])
     owner: Mapped[Staff | None] = relationship()
     source_chat: Mapped[Chat] = relationship(foreign_keys=[source_chat_id])
     operations_chat: Mapped[Chat] = relationship(foreign_keys=[operations_chat_id])
@@ -179,6 +210,24 @@ class WorkItem(Base, TimestampMixin):
 
     @property
     def display_reference(self) -> str:
+        """The internal reference. Carries the supplier code where there is one."""
+        if self.client_code and self.supplier_code:
+            return f"{self.client_code}-{self.supplier_code}-{self.reference}"
+        if self.client_code:
+            return f"{self.client_code}-{self.reference}"
+        # Raised before codes existed. Left alone rather than renumbered.
+        return f"#{self.reference}"
+
+    @property
+    def client_reference(self) -> str:
+        """What the client is shown. Never carries the supplier code.
+
+        A client who can see which supplier their issue was filed against can
+        work out who NexterPay use for what, and that is not always something
+        NexterPay would choose to disclose.
+        """
+        if self.client_code:
+            return f"{self.client_code}-{self.reference}"
         return f"#{self.reference}"
 
     @property
