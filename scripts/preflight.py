@@ -22,10 +22,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from aiogram import Bot  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 
+from app.bot import commands as cmd  # noqa: E402
 from app.config import get_settings  # noqa: E402
 from app.db.base import init_engine, session_scope  # noqa: E402
 from app.db.models import Chat, Staff  # noqa: E402
-from app.domain.enums import ChatKind, StaffRole  # noqa: E402
+from app.domain.enums import ChatKind  # noqa: E402
 
 OK = "  [ok]   "
 WARN = "  [warn] "
@@ -196,9 +197,10 @@ async def check_client_group(bot: Bot, chat: Chat) -> None:
             names = ", ".join(f"@{u.username or u.id}" for u in others)
             warn(
                 f"{info.title or label}: another bot is an administrator here ({names}). "
-                "Under privacy mode a plain /raise only reaches our bot if ours was "
-                "the last bot to post. Remove the other bot, or tell clients to use "
-                f"/raise@{me.username}."
+                f"Under privacy mode a plain /{cmd.RAISE} only reaches our bot if "
+                "ours was the last bot to post. The np prefix already stops the two "
+                "bots answering the same name, but not this. Remove the other bot, "
+                f"or tell clients to use /{cmd.RAISE}@{me.username}."
             )
     except Exception as exc:
         warn(f"{label}: could not list administrators ({exc})")
@@ -255,12 +257,12 @@ async def check_registry() -> tuple[list[Chat], list[Chat]]:
     if not ops:
         fail(
             "No Operations Groups registered",
-            "run /register_ops <department> inside each internal group",
+            f"run /{cmd.REGISTER_OPS} <department> inside each internal group",
         )
     if not clients:
         fail(
             "No client groups registered",
-            "run /register_client <department> <client name> inside each client group",
+            f"run /{cmd.REGISTER_CLIENT} <department> <client name> inside each client group",
         )
 
     for chat in clients:
@@ -269,7 +271,7 @@ async def check_registry() -> tuple[list[Chat], list[Chat]]:
             fail(
                 f"Client group {chat.telegram_chat_id} is {chat.department.value}, "
                 f"but no {chat.department.value} Operations Group exists",
-                f"run /register_ops {chat.department.value} in the right internal group",
+                f"run /{cmd.REGISTER_OPS} {chat.department.value} in the right internal group",
             )
     return ops, clients
 
@@ -283,23 +285,37 @@ async def check_staff() -> None:
     if not staff:
         fail(
             "No active staff registered",
-            "reply to each person with /adduser <role> <department>",
+            f"reply to each person with /{cmd.ADDUSER} <role> <department>",
         )
         return
 
     ok(f"{len(staff)} active staff")
-    admins = [s for s in staff if s.role is StaffRole.ADMINISTRATOR]
+    admins = [s for s in staff if s.is_administrator]
     if not admins:
         warn(
             "No administrator registered - ADMIN_BOOTSTRAP_ID is still doing that job. "
             "Add a real administrator and clear the bootstrap id."
         )
 
+    # Counted per desk rather than per person, so somebody who works two shows
+    # up in both. The totals will now exceed the head count, which is correct.
     by_department: dict[str, int] = {}
     for person in staff:
-        by_department[person.department.value] = by_department.get(person.department.value, 0) + 1
+        for membership in person.memberships:
+            key = membership.department.value
+            by_department[key] = by_department.get(key, 0) + 1
     for department, count in sorted(by_department.items()):
         ok(f"  {department}: {count}")
+
+    # A person with no desks resolves as staff and is refused everything, with
+    # a message about seniority rather than about not being anywhere. Worth
+    # surfacing here rather than leaving them to discover it.
+    stranded = [s.display_name for s in staff if not s.memberships]
+    if stranded:
+        warn(
+            f"Registered but working no department: {', '.join(stranded)}. "
+            f"Add them with /{cmd.ADDUSER}, or remove them with /{cmd.REMOVEUSER}."
+        )
 
 
 async def main() -> None:

@@ -209,10 +209,22 @@ def closure_text(item: WorkItem, resolution: str | None = None) -> str:
 
 
 def acknowledgement_text(item: WorkItem) -> str:
+    """What a counterparty sees when their request is opened.
+
+    Business closes differently, at NexterPay's request. A commercial enquiry
+    is a conversation being started rather than a fault being reported, and
+    "add anything further to it" is the wrong invitation when what the person
+    wants to know is that someone is coming back to them.
+    """
+    closing = (
+        "One of the Business team will get back to you. Reply to this message "
+        "to add anything further."
+        if item.department is Department.BUSINESS
+        else "Please reply to this message to add anything further to it."
+    )
     return (
         f"Request {item.client_reference} has been logged with our "
-        f"{item.department.label} team.\n\n"
-        f"Please reply to this message to add anything further to it."
+        f"{item.department.label} team.\n\n{closing}"
     )
 
 

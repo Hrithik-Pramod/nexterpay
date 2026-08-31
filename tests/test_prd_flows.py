@@ -475,3 +475,34 @@ async def test_header_edits_never_reach_the_client(
         if c.method == "edit_message_text" and c.chat_id == CLIENT_CHAT
     ]
     assert edits_to_client == []
+
+
+async def test_a_commercial_enquiry_says_someone_will_come_back(session, gw=None):
+    """NexterPay's wording, and only for Business.
+
+    "Reply to add anything further" is right for a fault and wrong for an
+    enquiry: the person is waiting to hear from someone, not to file more
+    detail. Support keeps the original line, so this checks both.
+    """
+    from app.bot.registry import register_client_chat, register_operations_chat
+    from app.domain.enums import Department
+    from app.services import relay
+    from app.services.gateway import FakeGateway
+
+    gw = FakeGateway()
+    await register_operations_chat(
+        session, telegram_chat_id=-1001000000007,
+        department=Department.BUSINESS, title="Business Operations",
+    )
+    business_chat = await register_client_chat(
+        session, telegram_chat_id=-1002000000007, client_name="Zenith Trading",
+        department=Department.BUSINESS, title="Zenith — Business",
+    )
+
+    enquiry = await relay.open_request(
+        session, gw, source_chat=business_chat, subject="New currencies",
+        body="Which corridors have you added?", raised_by_name="Ana Silva",
+    )
+    text = relay.acknowledgement_text(enquiry)
+    assert "One of the Business team will get back to you" in text
+    assert "add anything further to it" not in text

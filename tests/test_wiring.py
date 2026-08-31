@@ -358,8 +358,15 @@ def test_no_message_shown_to_a_person_names_an_unprefixed_command() -> None:
     names = sorted(
         {n[3:] for n in commands.ALL if n.startswith("np_")} - {commands.START}
     )
+    # scripts/ as well as app/. Restricting this to app/ is why preflight.py
+    # was still printing "/adduser" a release after the rename - nothing a
+    # person reads is safe just because it lives outside the bot package.
+    sources = [
+        *pathlib.Path("app").rglob("*.py"),
+        *pathlib.Path("scripts").rglob("*.py"),
+    ]
     offenders = []
-    for path in pathlib.Path("app").rglob("*.py"):
+    for path in sources:
         for number, line in enumerate(path.read_text().splitlines(), 1):
             stripped = line.strip()
             if stripped.startswith("#") or ('"' not in line and "'" not in line):
