@@ -63,8 +63,13 @@ async def test_prd_8_2_routing_by_source_group(session, gw, department):
     assert item.topic_id in gw.topics[ops.telegram_chat_id]
 
 
-async def test_prd_6_1_four_separate_operations_groups(session, gw):
-    """§6.1 — each department has its own dedicated Operations Group."""
+async def test_prd_6_1_every_department_has_its_own_operations_group(session, gw):
+    """§6.1 - each department has its own dedicated Operations Group.
+
+    Counted from the enum rather than hard-coded, so adding a department
+    tests the new one instead of failing on the old number. Compliance and
+    Risk was the fifth.
+    """
     ops_ids = {}
     for index, department in enumerate(Department):
         chat = await register_operations_chat(
@@ -72,7 +77,9 @@ async def test_prd_6_1_four_separate_operations_groups(session, gw):
         )
         ops_ids[department] = chat.id
 
-    assert len(set(ops_ids.values())) == 4, "departments must not share a group"
+    assert len(set(ops_ids.values())) == len(Department), (
+        "departments must not share a group"
+    )
 
 
 # ---------------------------------------------------------------------------

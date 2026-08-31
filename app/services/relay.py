@@ -122,7 +122,7 @@ def header_text(item: WorkItem, client_name: str, owner_name: str | None = None)
         f"{item.display_reference} — {item.subject}\n"
         f"Client: {client_name}\n"
         f"Raised by: {item.raised_by_name}\n"
-        f"Department: {item.department.value.title()}\n"
+        f"Department: {item.department.label}\n"
         f"Status: {item.status.label}   Priority: {item.priority.label}\n"
         f"Owner: {owner_name or 'unassigned'}"
     )
@@ -182,7 +182,7 @@ def closure_text(item: WorkItem, resolution: str | None = None) -> str:
 def acknowledgement_text(item: WorkItem) -> str:
     return (
         f"Request {item.client_reference} has been logged with our "
-        f"{item.department.value.title()} team.\n\n"
+        f"{item.department.label} team.\n\n"
         f"Please reply to this message to add anything further to it."
     )
 

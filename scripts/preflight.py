@@ -80,7 +80,7 @@ async def check_bot(bot: Bot) -> None:
 
 
 async def check_operations_group(bot: Bot, chat: Chat) -> None:
-    label = f"{chat.department.value.title()} Operations ({chat.telegram_chat_id})"
+    label = f"{chat.department.label} Operations ({chat.telegram_chat_id})"
     try:
         info = await bot.get_chat(chat.telegram_chat_id)
     except Exception as exc:
@@ -227,14 +227,14 @@ async def check_staff_anonymity(bot: Bot, chat: Chat) -> None:
     if anonymous:
         names = ", ".join(a.user.full_name for a in anonymous)
         warn(
-            f"{chat.department.value.title()} Operations: {names} "
+            f"{chat.department.label} Operations: {names} "
             f"{'are' if len(anonymous) > 1 else 'is'} an anonymous administrator. "
             "The bot cannot tell who they are and will refuse their commands. "
             "Dismiss them as Telegram admin, or turn off 'Remain Anonymous'."
         )
     elif people:
         ok(
-            f"{chat.department.value.title()} Operations: "
+            f"{chat.department.label} Operations: "
             f"{len(people)} human admin(s), none anonymous"
         )
 

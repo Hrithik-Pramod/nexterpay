@@ -14,6 +14,27 @@ class Department(str, enum.Enum):
     FINANCE = "finance"
     DEVELOPMENT = "development"
     BUSINESS = "business"
+    COMPLIANCE = "compliance"
+
+    @property
+    def label(self) -> str:
+        """The name people use, which is not always the stored value.
+
+        Compliance and Risk is the obvious case - titlecasing the value would
+        give "Compliance", which is not what NexterPay call the department.
+        """
+        return {
+            "support": "Support",
+            "finance": "Finance",
+            "development": "Development",
+            "business": "Business",
+            "compliance": "Compliance and Risk",
+        }[self.value]
+
+    @classmethod
+    def usage(cls) -> str:
+        """For help text, so adding a department never leaves a stale message."""
+        return "|".join(d.value for d in cls)
 
 
 class ChatKind(str, enum.Enum):

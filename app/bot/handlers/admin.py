@@ -67,7 +67,7 @@ async def cmd_register_ops(message: Message, command: CommandObject) -> None:
         department = _department(command.args or "")
         if department is None:
             await message.reply(
-                f"Usage: /{cmd.REGISTER_OPS} <support|finance|development|business>"
+                f"Usage: /{cmd.REGISTER_OPS} <{Department.usage()}>"
             )
             return
         await register_operations_chat(
@@ -79,7 +79,7 @@ async def cmd_register_ops(message: Message, command: CommandObject) -> None:
         logger.info("Registered ops group %s as %s", message.chat.id, department.value)
 
     await message.reply(
-        f"Registered this group as {department.value.title()} Operations.\n"
+        f"Registered this group as {department.label} Operations.\n"
         f"Make sure topics are enabled and the bot can manage them."
     )
 
@@ -104,7 +104,7 @@ async def _register_counterparty(
         if len(parts) < 2 or _department(parts[0]) is None:
             await message.reply(
                 f"Usage: /{which} "
-                f"<support|finance|development|business> <{noun} name>"
+                f"<{Department.usage()}> <{noun} name>"
             )
             return
         department = _department(parts[0])
@@ -123,7 +123,7 @@ async def _register_counterparty(
         )
 
     await message.reply(
-        f"Registered: {client_name} — {department.value.title()} ({noun}).\n"
+        f"Registered: {client_name} — {department.label} ({noun}).\n"
         f"Set their four-letter code with /{cmd.SETCODE} <CODE>."
     )
 
@@ -361,7 +361,7 @@ async def cmd_workload(message: Message) -> None:
         await message.reply("No open work items.")
         return
 
-    lines = [f"Open work items — {chat.department.value.title()} ({len(items)})", ""]
+    lines = [f"Open work items — {chat.department.label} ({len(items)})", ""]
     for item in items:
         owner = owners.get(item.owner_staff_id, "unassigned")
         lines.append(
