@@ -114,7 +114,7 @@ async def _register_counterparty(
             return
         department = _department(parts[0])
         client_name = parts[1].strip()
-        await register_client_chat(
+        chat = await register_client_chat(
             session,
             telegram_chat_id=message.chat.id,
             client_name=client_name,
@@ -126,6 +126,21 @@ async def _register_counterparty(
             "Registered %s group %s: %s / %s",
             noun, message.chat.id, client_name, department.value,
         )
+        # A counterparty can have a group per department, all sharing one
+        # record and therefore one code. Telling someone to set a code that
+        # already exists invites them to run /np_setcode here, which would
+        # change it for every group that counterparty has - and every
+        # reference already quoted in an email.
+        existing = await session.get(Client, chat.client_id)
+        code = existing.code if existing else None
+
+    if code:
+        await message.reply(
+            f"Registered: {client_name} — {department.label} ({noun}).\n"
+            f"They already have the code {code}, so requests raised here will "
+            f"read {code}-1042. Nothing else to do."
+        )
+        return
 
     await message.reply(
         f"Registered: {client_name} — {department.label} ({noun}).\n"
@@ -178,7 +193,7 @@ async def cmd_adduser(message: Message, command: CommandObject) -> None:
         # silently moved people, so saying what they now hold is the point.
         desks = [
             f"{m.department.label} ({m.role.value.replace('_', ' ')})"
-            for m in staff.memberships
+            for m in staff.desks
         ]
 
     await message.reply(
@@ -237,7 +252,7 @@ async def cmd_removeuser(message: Message, command: CommandObject) -> None:
             if staff is None:
                 await message.reply("That user is not registered.")
                 return
-            remaining = [m.department.label for m in staff.memberships]
+            remaining = [m.department.label for m in staff.desks]
             logger.info(
                 "Removed staff %s from %s (last=%s)", target_id, department.value, was_last
             )

@@ -230,3 +230,41 @@ async def test_reassignment_lists_someone_who_only_helps_out_here(
 
     names = [p.display_name for p in await staff_handlers._assignable(session, item)]
     assert "Dana Ruiz" in names
+
+
+async def test_whoami_is_readable_by_a_person_checking_their_own_record(session):
+    """The message the deploy check depends on.
+
+    After the upgrade, /np_whoami is how each member of staff confirms they
+    came through it unchanged. All three shapes matter: one desk, two desks,
+    and none at all - the last being the one that says the migration lost
+    them, and the only one nobody will have seen before.
+    """
+    from app.bot.main import whoami_text
+
+    one = await upsert_staff(
+        session, telegram_user_id=7101, display_name="Sarah Hill",
+        role=StaffRole.SENIOR_OPERATOR, department=Department.SUPPORT,
+    )
+    assert whoami_text(one) == "Sarah Hill\nSupport — senior operator"
+
+    # Ordered in Python, not in SQL, and this assertion is why.
+    #
+    # The relationship used to carry ORDER BY department, which sorts by text
+    # on SQLite and by the enum's declared order on Postgres. This test passed
+    # against the alphabetical order while the live server showed the other
+    # one - a test agreeing with itself rather than with production. Sorting
+    # by label makes both databases give the same answer.
+    two = await _spanning(session)
+    assert whoami_text(two) == (
+        "Dana Ruiz\nCompliance and Risk — operator\nSupport — manager"
+    )
+    assert [m.department for m in two.desks] == sorted(
+        two.departments, key=lambda d: d.label
+    )
+
+    two.memberships.clear()
+    await session.flush()
+    assert whoami_text(two) == (
+        "Dana Ruiz — registered, but not on any department."
+    )

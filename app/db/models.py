@@ -200,12 +200,26 @@ class Staff(Base, TimestampMixin):
     # Eager by default. Every permission check reads this, and a lazy load
     # inside async code raises MissingGreenlet - a failure this project has
     # already been bitten by once.
+    # Eager by default. Every permission check reads this, and a lazy load
+    # inside async code raises MissingGreenlet - a failure this project has
+    # already been bitten by once.
+    #
+    # Deliberately NOT ordered in SQL. `ORDER BY department` does two
+    # different things: on SQLite the column is text and sorts alphabetically,
+    # on Postgres it is a real enum and sorts by the order the values were
+    # declared. So the tests saw one order and the live server another, and
+    # the tests were the ones that were wrong. Ordering happens in `desks`
+    # instead, where both databases get the same answer.
     memberships: Mapped[list[StaffDepartment]] = relationship(
         back_populates="staff",
         cascade="all, delete-orphan",
         lazy="selectin",
-        order_by="StaffDepartment.department",
     )
+
+    @property
+    def desks(self) -> list[StaffDepartment]:
+        """Their departments, in a fixed order, for anything a person reads."""
+        return sorted(self.memberships, key=lambda m: m.department.label)
 
     def role_in(self, department: Department) -> StaffRole | None:
         """Their seniority on that desk, or None if they do not work it."""
@@ -216,7 +230,7 @@ class Staff(Base, TimestampMixin):
 
     @property
     def departments(self) -> list[Department]:
-        return [m.department for m in self.memberships]
+        return [m.department for m in self.desks]
 
     @property
     def is_administrator(self) -> bool:

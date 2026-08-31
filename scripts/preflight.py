@@ -301,7 +301,7 @@ async def check_staff() -> None:
     # up in both. The totals will now exceed the head count, which is correct.
     by_department: dict[str, int] = {}
     for person in staff:
-        for membership in person.memberships:
+        for membership in person.desks:
             key = membership.department.value
             by_department[key] = by_department.get(key, 0) + 1
     for department, count in sorted(by_department.items()):

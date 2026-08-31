@@ -36,6 +36,25 @@ from app.services.throttle import ThrottledGateway
 logger = logging.getLogger(__name__)
 
 
+def whoami_text(person) -> str:
+    """What `/np_whoami` replies.
+
+    Pulled out of the handler and given a test because of what the last line
+    means. After the migration that split a person's single department into a
+    set of desks, this command is how anyone checks their own record survived
+    - and "registered, but not on any department" is the sentence that says it
+    did not. A message that only appears when something has gone wrong is
+    exactly the one that is never exercised until the day it matters.
+    """
+    desks = [
+        f"{m.department.label} — {m.role.value.replace('_', ' ')}"
+        for m in person.desks
+    ]
+    if not desks:
+        return f"{person.display_name} — registered, but not on any department."
+    return f"{person.display_name}\n" + "\n".join(desks)
+
+
 def build_storage():
     """Keep half-finished requests alive across a restart.
 
@@ -110,15 +129,7 @@ def build_dispatcher() -> Dispatcher:
         if person is None:
             await message.reply("You are not registered as NexterPay staff.")
             return
-        desks = [
-            f"{m.department.label} — {m.role.value.replace('_', ' ')}"
-            for m in person.memberships
-        ]
-        await message.reply(
-            f"{person.display_name}\n" + "\n".join(desks)
-            if desks
-            else f"{person.display_name} — registered, but not on any department."
-        )
+        await message.reply(whoami_text(person))
 
     # Order matters. Admin commands first, then staff (Operations Groups),
     # then client. The client router ends in a catch-all, so it goes last.

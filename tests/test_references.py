@@ -239,3 +239,43 @@ async def test_a_counterparty_can_exist_without_a_telegram_group(
 
     assert item.display_reference == f"ACME-SPNG-{item.reference}"
     assert "SPNG" not in gw.all_text_to(CLIENT_CHAT)
+
+
+async def test_a_second_group_for_the_same_client_shares_its_code(
+    session, acme_support, support_ops
+):
+    """One counterparty, one code, however many groups they have.
+
+    NexterPay have a Support group and a Compliance group with the same
+    client. Both must resolve to one record, or the client appears twice in
+    every list and searching their code returns half their work.
+    """
+    from app.bot.registry import register_client_chat, register_operations_chat
+    from app.db.models import Client
+    from app.domain.enums import Department
+
+    client = await session.get(Client, acme_support.client_id)
+    client.code = "ACME"
+    await session.flush()
+
+    await register_operations_chat(
+        session, telegram_chat_id=-1001000000009,
+        department=Department.COMPLIANCE, title="Compliance Operations",
+    )
+    second = await register_client_chat(
+        session, telegram_chat_id=-1002000000009,
+        client_name="Acme Payments",          # the same name, deliberately
+        department=Department.COMPLIANCE, title="Acme — Compliance",
+    )
+
+    assert second.client_id == acme_support.client_id, "a duplicate client was created"
+
+    from app.services import relay
+    from app.services.gateway import FakeGateway
+
+    item = await relay.open_request(
+        session, FakeGateway(), source_chat=second, subject="KYC pack",
+        body="Please send the updated pack.", raised_by_name="Tom Baker",
+    )
+    assert item.client_reference.startswith("ACME-")
+    assert item.department is Department.COMPLIANCE
