@@ -621,6 +621,93 @@ async def _closed_by(session: AsyncSession, item: WorkItem):
     return await session.get(Staff, event.actor_staff_id)
 
 
+def outbound_opening_text(item: WorkItem, body: str) -> str:
+    """What the counterparty receives when NexterPay raise something with them.
+
+    Deliberately not the acknowledgement wording. "Request X has been logged
+    with our Support team" is nonsense when we are the ones raising it.
+    """
+    return (
+        f"{item.client_reference} · {item.subject}\n\n"
+        f"{body}\n\n"
+        f"Reply to this message to respond."
+    )
+
+
+async def open_outbound(
+    session: AsyncSession,
+    gateway: TelegramGateway,
+    *,
+    counterparty_chat: Chat,
+    subject: str,
+    body: str,
+    actor: Actor,
+    keyboard=None,
+) -> WorkItem:
+    """A request NexterPay raise with a client or supplier.
+
+    The mirror of open_request. Same work item, same topic, same everything
+    afterwards - the only differences are who wrote the first message and
+    which way the arrow points at the start.
+
+    The message posted into their group is recorded, so their reply resolves
+    through the routing that already exists rather than needing its own.
+    """
+    actor.require_any()
+
+    item = await wi.create_work_item(
+        session,
+        source_chat=counterparty_chat,
+        subject=subject,
+        original_message=body,
+        raised_by_name=actor.name,
+        raised_by_telegram_user_id=actor.telegram_user_id,
+    )
+    item.raised_by_us = True
+    await session.flush()
+
+    client = await session.get(Client, item.client_id)
+    client_name = client.name if client else "Unknown counterparty"
+    _, ops = await chats_for(session, item)
+
+    thread_id = await gateway.create_topic(ops.telegram_chat_id, topic_name(item, client_name))
+    await wi.attach_topic(session, item, thread_id)
+
+    header = await gateway.send_message(
+        ops.telegram_chat_id,
+        header_text(item, client_name),
+        thread_id=thread_id,
+        reply_markup=keyboard,
+    )
+    item.header_message_id = header.message_id
+    await _record_message(
+        session, item,
+        direction=MessageDirection.INTERNAL,
+        chat_id=ops.telegram_chat_id,
+        message_id=header.message_id,
+        sender_name="NexterPay Operations",
+        text=header_text(item, client_name),
+    )
+
+    await gateway.send_message(
+        ops.telegram_chat_id,
+        f"↳ Raised by {actor.name} with {client_name}:\n{body}",
+        thread_id=thread_id,
+    )
+
+    outbound = outbound_opening_text(item, body)
+    sent = await gateway.send_message(counterparty_chat.telegram_chat_id, outbound)
+    await _record_message(
+        session, item,
+        direction=MessageDirection.OUTBOUND,
+        chat_id=counterparty_chat.telegram_chat_id,
+        message_id=sent.message_id,
+        sender_name=actor.name,
+        text=outbound,
+    )
+    return item
+
+
 async def open_requests_for(session: AsyncSession, source_chat: Chat) -> list[WorkItem]:
     """Every open request raised from this client group, oldest first.
 

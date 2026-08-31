@@ -238,6 +238,12 @@ class WorkItem(Base, TimestampMixin):
     raised_by_telegram_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     raised_by_name: Mapped[str] = mapped_column(String(200), nullable=False)
 
+    # Which way round this one went. Without it, "issues we raised with this
+    # supplier" and "issues this client raised with us" are indistinguishable
+    # once they are both sitting in the same topic list, and NexterPay need to
+    # tell them apart for the integration work.
+    raised_by_us: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
     subject: Mapped[str] = mapped_column(String(300), nullable=False)
     original_message: Mapped[str] = mapped_column(Text, nullable=False)
 

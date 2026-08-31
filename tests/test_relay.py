@@ -432,11 +432,22 @@ def test_only_these_functions_may_write_to_a_client_chat() -> None:
 
     allowed = {
         "open_request",       # the acknowledgement carrying the reference
+        "open_outbound",      # a request NexterPay raise with a counterparty
         "post_anchor",        # a fresh message to reply to, from the list
         "send_client_reply",  # the only route for staff-written words
         "relay_client_message",  # telling someone a request is already closed
         "close",              # the closure notice
     }
+
+    # Every name a counterparty chat is held under in this module. Missing one
+    # would leave a new outward path invisible to this test, which is the one
+    # failure it exists to prevent - open_outbound was written with a
+    # different variable name and would have slipped through.
+    chat_names = (
+        "source.telegram_chat_id",
+        "source_chat.telegram_chat_id",
+        "counterparty_chat.telegram_chat_id",
+    )
 
     source = pathlib.Path("app/services/relay.py").read_text().splitlines()
     writers, current = set(), None
@@ -445,8 +456,8 @@ def test_only_these_functions_may_write_to_a_client_chat() -> None:
         if named:
             current = named.group(1)
         window = "".join(source[index:index + 4])
-        if re.search(r"gateway\.send_(message|file)\(", line) and (
-            "source.telegram_chat_id" in window or "source_chat.telegram_chat_id" in window
+        if re.search(r"gateway\.send_(message|file)\(", line) and any(
+            name in window for name in chat_names
         ):
             writers.add(current)
 

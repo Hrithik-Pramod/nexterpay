@@ -25,7 +25,7 @@ from aiogram.types import Message
 
 from app.bot import commands as cmd
 from app.bot import deps
-from app.bot.handlers import admin, broadcast, client, staff
+from app.bot.handlers import admin, broadcast, client, outbound, staff
 from app.bot.registry import resolve_chat, resolve_staff
 from app.bot.routing import build_strategy
 from app.config import get_settings
@@ -121,6 +121,7 @@ def build_dispatcher() -> Dispatcher:
     # forum carries a thread id and would otherwise be eaten by the staff
     # topic catch-all - the same trap that hid the client-reply bug.
     dp.include_router(broadcast.router)
+    dp.include_router(outbound.router)
     dp.include_router(staff.router)
     dp.include_router(client.router)
 
