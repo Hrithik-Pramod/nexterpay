@@ -67,6 +67,36 @@ async def test_the_direction_is_recorded(
     assert theirs.raised_by_us is False
 
 
+async def test_the_pinned_header_says_which_way_the_request_runs(
+    session, acme_support, support_ops, operator, gw
+):
+    """A name on its own does not say who is chasing whom.
+
+    The "Raised by X with Y" line sits at the very top of the topic and
+    scrolls away within a few messages. The header is the thing still on
+    screen a week later, so the direction has to be there too - and spelled
+    out on both sides, because absence of a label teaches nobody anything.
+    """
+    ours = await relay.open_outbound(
+        session, gw, counterparty_chat=acme_support, subject="Chasing",
+        body="Any update?", actor=Actor.of(operator),
+    )
+    theirs = await relay.open_request(
+        session, gw, source_chat=acme_support, subject="Settlement",
+        body="Not received.", raised_by_name="Tom Baker",
+    )
+
+    assert "we raised this" in relay.header_text(ours, "Acme Payments")
+    assert "they raised this" in relay.header_text(theirs, "Acme Payments")
+
+    # And it stays inside the Operations Group. Telling a client "we raised
+    # this" in their own group is both confusing and a needless glimpse of
+    # how the desk is run.
+    seen_by_them = gw.all_text_to(CLIENT_CHAT).lower()
+    assert "we raised this" not in seen_by_them
+    assert "they raised this" not in seen_by_them
+
+
 async def test_the_counterparty_is_not_told_it_is_a_logged_request(
     session, acme_support, support_ops, operator, gw
 ):

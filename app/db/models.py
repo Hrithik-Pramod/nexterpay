@@ -26,6 +26,7 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -177,18 +178,88 @@ class BroadcastDelivery(Base):
 
 
 class Staff(Base, TimestampMixin):
+    """A person. Which desks they work is held separately, in `memberships`.
+
+    Originally a person had one department and one role, both columns here.
+    NexterPay confirmed during testing that they have people who genuinely
+    span two, so seniority is now a fact about a person *in a department*
+    rather than about the person: someone can be a Manager on their own desk
+    and an Operator on the one they help out with. Collapsing that back to a
+    single role would mean either over-promoting them somewhere or refusing
+    them where they belong.
+    """
+
     __tablename__ = "staff"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     telegram_user_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False)
     display_name: Mapped[str] = mapped_column(String(200), nullable=False)
-    role: Mapped[StaffRole] = mapped_column(_enum(StaffRole, "staff_role"), nullable=False)
-    department: Mapped[Department] = mapped_column(_enum(Department, "department"), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     deactivated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Eager by default. Every permission check reads this, and a lazy load
+    # inside async code raises MissingGreenlet - a failure this project has
+    # already been bitten by once.
+    memberships: Mapped[list[StaffDepartment]] = relationship(
+        back_populates="staff",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        order_by="StaffDepartment.department",
+    )
+
+    def role_in(self, department: Department) -> StaffRole | None:
+        """Their seniority on that desk, or None if they do not work it."""
+        for membership in self.memberships:
+            if membership.department is department:
+                return membership.role
+        return None
+
+    @property
+    def departments(self) -> list[Department]:
+        return [m.department for m in self.memberships]
+
+    @property
+    def is_administrator(self) -> bool:
+        """Administrator anywhere means administrator everywhere.
+
+        Registering groups and adding people are not departmental acts, and
+        an administrator who had to be added to all five desks before they
+        could configure them would be a worse arrangement than the one this
+        replaced.
+        """
+        return any(m.role is StaffRole.ADMINISTRATOR for m in self.memberships)
+
     def __repr__(self) -> str:
-        return f"<Staff {self.display_name!r} {self.role.value}>"
+        desks = ", ".join(f"{m.department.value}:{m.role.value}" for m in self.memberships)
+        return f"<Staff {self.display_name!r} {desks or 'no departments'}>"
+
+
+class StaffDepartment(Base, TimestampMixin):
+    """One person on one desk, at one level of seniority.
+
+    A person with no rows here is registered but works nowhere, which is
+    treated exactly as not being staff. That is deliberate: removing someone
+    from their last department should not silently leave them with access.
+    """
+
+    __tablename__ = "staff_departments"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    staff_id: Mapped[int] = mapped_column(ForeignKey("staff.id"), nullable=False)
+    department: Mapped[Department] = mapped_column(
+        _enum(Department, "department"), nullable=False
+    )
+    role: Mapped[StaffRole] = mapped_column(_enum(StaffRole, "staff_role"), nullable=False)
+
+    staff: Mapped[Staff] = relationship(back_populates="memberships")
+
+    __table_args__ = (
+        UniqueConstraint("staff_id", "department", name="uq_staff_department"),
+        Index("ix_staff_departments_department", "department"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<StaffDepartment {self.department.value} {self.role.value}>"
 
 
 class ReferenceCounter(Base):
@@ -301,6 +372,62 @@ class WorkItem(Base, TimestampMixin):
 
     def __repr__(self) -> str:
         return f"<WorkItem {self.display_reference} {self.status.value}>"
+
+
+class WorkItemLink(Base, TimestampMixin):
+    """Two tickets that concern the same underlying problem.
+
+    A link is symmetric: whichever one you are reading, the other is visible.
+    That is enforced by the storage rather than by the code - the pair is
+    always written with the lower id first, so "A is linked to B" and "B is
+    linked to A" are the same row. Without that ordering, linking twice in
+    opposite directions would produce two rows and the other ticket would
+    appear in the list twice, which is the sort of thing nobody notices until
+    a client is looking at it.
+
+    The check constraint makes a ticket linking to itself impossible rather
+    than merely refused, and the unique constraint makes a duplicate
+    impossible for the same reason. Both are also checked in the service layer
+    so the person gets a sentence rather than a database error, but the
+    constraints are what makes it true.
+
+    Deliberately flat. NexterPay were offered a parent-and-child hierarchy and
+    it was rejected: hierarchies require everyone to agree which ticket is the
+    senior one, and that argument is not worth having.
+    """
+
+    __tablename__ = "work_item_links"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    lower_work_item_id: Mapped[int] = mapped_column(
+        ForeignKey("work_items.id"), nullable=False
+    )
+    higher_work_item_id: Mapped[int] = mapped_column(
+        ForeignKey("work_items.id"), nullable=False
+    )
+
+    # Kept even after someone leaves, like every other actor name on the
+    # platform, so the trail still resolves to a person.
+    created_by_staff_id: Mapped[int | None] = mapped_column(
+        ForeignKey("staff.id"), nullable=True
+    )
+    created_by_name: Mapped[str] = mapped_column(String(200), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "lower_work_item_id", "higher_work_item_id", name="uq_work_item_link"
+        ),
+        CheckConstraint(
+            "lower_work_item_id < higher_work_item_id", name="ck_work_item_link_order"
+        ),
+        # Lookups go both ways: "what is linked to this one" has to find rows
+        # where this ticket is on either side.
+        Index("ix_work_item_links_lower", "lower_work_item_id"),
+        Index("ix_work_item_links_higher", "higher_work_item_id"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<WorkItemLink {self.lower_work_item_id}<->{self.higher_work_item_id}>"
 
 
 class Message(Base):

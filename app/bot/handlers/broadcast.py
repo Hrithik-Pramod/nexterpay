@@ -96,7 +96,10 @@ async def start(message: Message, state: FSMContext) -> None:
         )
         if ctx is None:
             await message.reply(
-                refusal_reason(message.from_user.id if message.from_user else None)
+                await refusal_reason(
+                    message.from_user.id if message.from_user else None,
+                    session, message.chat.id,
+                )
             )
             return
         _, actor = ctx

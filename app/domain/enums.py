@@ -164,6 +164,8 @@ class EventType(str, enum.Enum):
     STAFF_REPLY_SENT = "staff_reply_sent"
     ATTACHMENT_RECEIVED = "attachment_received"
     SUPPLIER_FILED = "supplier_filed"
+    TICKETS_LINKED = "tickets_linked"
+    TICKETS_UNLINKED = "tickets_unlinked"
     WORK_ITEM_CLOSED = "work_item_closed"
     WORK_ITEM_REOPENED = "work_item_reopened"
     TOPIC_CLOSED = "topic_closed"

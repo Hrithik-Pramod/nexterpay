@@ -29,6 +29,7 @@ from app.bot.deps import (
 from app.bot.registry import resolve_chat
 from app.db.base import session_scope
 from app.db.models import Client, Staff, WorkItem
+from app.domain import work_items as wi
 from app.domain.enums import ChatKind, Priority, WorkItemStatus
 from app.domain.history import load_events, render_history
 from app.domain.work_items import ROLE_REQUIRED_TO_REASSIGN
@@ -71,7 +72,10 @@ async def cmd_reply(message: Message, command: CommandObject) -> None:
                 message.message_thread_id,
             )
             await message.reply(
-                refusal_reason(message.from_user.id if message.from_user else None)
+                await refusal_reason(
+                    message.from_user.id if message.from_user else None,
+                    session, message.chat.id,
+                )
             )
             return
         _, actor, item = resolved
@@ -159,6 +163,70 @@ async def cmd_assign(message: Message, command: CommandObject) -> None:
             await message.reply(explain(exc))
 
 
+@router.message(Command(cmd.LINK))
+async def cmd_link(message: Message, command: CommandObject) -> None:
+    """`/np_link ACME-1042`, from inside the topic of the other ticket.
+
+    The button covers the common case - something open, in this department,
+    raised recently. This covers everything else: an old ticket, a closed one,
+    or one belonging to another department. Both end in the same place.
+    """
+    await _link_by_reference(message, command, remove=False)
+
+
+@router.message(Command(cmd.UNLINK))
+async def cmd_unlink(message: Message, command: CommandObject) -> None:
+    """`/np_unlink ACME-1042`. The link goes; the events recording it stay."""
+    await _link_by_reference(message, command, remove=True)
+
+
+async def _link_by_reference(message: Message, command: CommandObject, *, remove: bool) -> None:
+    name = cmd.UNLINK if remove else cmd.LINK
+    raw = (command.args or "").strip()
+    if not raw:
+        await message.reply(f"Usage: /{name} <reference>, for example /{name} ACME-1042")
+        return
+
+    reference = wi.parse_reference(raw)
+    if reference is None:
+        await message.reply(
+            f"{raw!r} does not look like a reference. Any of ACME-SPEX-1042, "
+            f"ACME-1042 or 1042 will do."
+        )
+        return
+
+    async with session_scope() as session:
+        resolved = await _resolve(session, message, message.message_thread_id)
+        if resolved is None:
+            return
+        _, actor, item = resolved
+        if item is None:
+            await message.reply("Send this inside the topic of the ticket you want to link.")
+            return
+
+        other = await wi.by_reference(session, reference)
+        if other is None:
+            await message.reply(f"No ticket found with reference {reference}.")
+            return
+
+        try:
+            if remove:
+                removed = await relay.unlink(session, gateway(), item, other, actor)
+                await message.reply(
+                    f"Link to {other.display_reference} removed."
+                    if removed
+                    else f"{item.display_reference} and {other.display_reference} "
+                    f"were not linked."
+                )
+            else:
+                await relay.link(session, gateway(), item, other, actor)
+                await message.reply(
+                    f"{item.display_reference} and {other.display_reference} are now linked."
+                )
+        except Exception as exc:
+            await message.reply(explain(exc))
+
+
 class StaffCompose(StatesGroup):
     """Composing a message from a button rather than typing a command.
 
@@ -241,7 +309,10 @@ async def capture_note_text(message: Message, state: FSMContext) -> None:
         resolved = await _resolve(session, message, message.message_thread_id)
         if resolved is None:
             await message.reply(
-                refusal_reason(message.from_user.id if message.from_user else None)
+                await refusal_reason(
+                    message.from_user.id if message.from_user else None,
+                    session, message.chat.id,
+                )
             )
             return
         _, actor, item = resolved
@@ -267,7 +338,10 @@ async def on_action(query: CallbackQuery, state: FSMContext) -> None:
             session, message.chat.id, query.from_user.id if query.from_user else None
         )
         if ctx is None:
-            reason = refusal_reason(query.from_user.id if query.from_user else None)
+            reason = await refusal_reason(
+                query.from_user.id if query.from_user else None,
+                session, query.message.chat.id,
+            )
             await query.answer(reason[:190], show_alert=True)
             return
         _, actor = ctx
@@ -353,7 +427,7 @@ async def _apply(
         if not people:
             return "No other active staff in this department"
         await query.message.edit_reply_markup(
-            reply_markup=kb.assignee_choices(item.id, people)
+            reply_markup=kb.assignee_choices(item.id, people, item.department)
         )
         return "Choose who to assign it to"
 
@@ -365,6 +439,37 @@ async def _apply(
             reply_markup=kb.supplier_choices(item.id, options)
         )
         return "Which supplier is this about?"
+
+    if action == "link":
+        linked = await wi.linked_to(session, item)
+        candidates = await _linkable(session, item, linked)
+        if not candidates and not linked:
+            return (
+                "Nothing else to link to yet. Use /np_link with a reference for "
+                "an older or closed ticket."
+            )
+        await query.message.edit_reply_markup(
+            reply_markup=kb.link_choices(item.id, candidates, linked)
+        )
+        return "Linked tickets carry a cross; tap one below to connect it"
+
+    if action == "dolink":
+        other = await session.get(WorkItem, int(value)) if value else None
+        if other is None:
+            return "That ticket no longer exists"
+        await relay.link(session, gw, item, other, actor)
+        await _refresh_keyboard(query, item.id, claimed=item.owner_staff_id is not None)
+        return f"Linked to {other.display_reference}"
+
+    if action == "unlink":
+        other = await session.get(WorkItem, int(value)) if value else None
+        if other is None:
+            return "That ticket no longer exists"
+        removed = await relay.unlink(session, gw, item, other, actor)
+        await _refresh_keyboard(query, item.id, claimed=item.owner_staff_id is not None)
+        return (
+            f"Link to {other.display_reference} removed" if removed else "They were not linked"
+        )
 
     if action == "setsupplier":
         supplier = await session.get(Client, int(value)) if value else None
@@ -449,15 +554,49 @@ async def _codeable(session, item: WorkItem) -> list[Client]:
     return list(result.scalars().all())
 
 
-async def _assignable(session, item: WorkItem) -> list[Staff]:
-    """Active staff in this department, minus whoever already owns it."""
+async def _linkable(session, item: WorkItem, already_linked: list[WorkItem]) -> list[WorkItem]:
+    """Tickets offered as link candidates on the keyboard.
+
+    Open ones in the same Operations Group, most recently touched first, and
+    capped. This is the quick path, not the complete one: a desk with forty
+    open tickets cannot pick from forty buttons, and the ticket someone
+    actually wants is usually one they were looking at minutes ago. Anything
+    older, closed, or in another department goes through /np_link with a
+    reference, which has no such limit.
+    """
     from sqlalchemy import select
+
+    excluded = {item.id} | {other.id for other in already_linked}
+    result = await session.execute(
+        select(WorkItem)
+        .where(
+            WorkItem.operations_chat_id == item.operations_chat_id,
+            WorkItem.status != WorkItemStatus.CLOSED,
+            WorkItem.id.not_in(excluded),
+        )
+        .order_by(WorkItem.updated_at.desc())
+        .limit(8)
+    )
+    return list(result.scalars().all())
+
+
+async def _assignable(session, item: WorkItem) -> list[Staff]:
+    """Active staff on this desk, minus whoever already owns it.
+
+    Joined through memberships rather than read off the person, so someone who
+    works both Support and Compliance appears in both lists - which is the
+    whole point of letting them span two.
+    """
+    from sqlalchemy import select
+
+    from app.db.models import StaffDepartment
 
     result = await session.execute(
         select(Staff)
+        .join(StaffDepartment, StaffDepartment.staff_id == Staff.id)
         .where(
             Staff.is_active.is_(True),
-            Staff.department == item.department,
+            StaffDepartment.department == item.department,
             Staff.id != item.owner_staff_id,
         )
         .order_by(Staff.display_name)

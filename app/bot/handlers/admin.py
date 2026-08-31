@@ -22,13 +22,14 @@ from app.bot.registry import (
     deactivate_staff,
     register_client_chat,
     register_operations_chat,
+    remove_staff_from_department,
     resolve_chat,
     resolve_staff,
     upsert_staff,
 )
 from app.config import get_settings
 from app.db.base import session_scope
-from app.db.models import Client, Staff, WorkItem
+from app.db.models import Client, Staff, StaffDepartment, WorkItem
 from app.domain.enums import Department, StaffRole, WorkItemStatus
 
 logger = logging.getLogger(__name__)
@@ -41,14 +42,18 @@ async def _is_admin(session, user_id: int | None) -> bool:
     settings = get_settings()
     if settings.admin_bootstrap_id and user_id == settings.admin_bootstrap_id:
         count = await session.scalar(
-            select(func.count()).select_from(Staff).where(
-                Staff.role == StaffRole.ADMINISTRATOR, Staff.is_active.is_(True)
+            select(func.count())
+            .select_from(StaffDepartment)
+            .join(Staff, Staff.id == StaffDepartment.staff_id)
+            .where(
+                StaffDepartment.role == StaffRole.ADMINISTRATOR,
+                Staff.is_active.is_(True),
             )
         )
         if not count:
             return True
     staff = await resolve_staff(session, user_id)
-    return staff is not None and staff.role is StaffRole.ADMINISTRATOR
+    return staff is not None and staff.is_administrator
 
 
 def _department(value: str) -> Department | None:
@@ -159,7 +164,7 @@ async def cmd_adduser(message: Message, command: CommandObject) -> None:
             await message.reply("Unknown department.")
             return
 
-        await upsert_staff(
+        staff = await upsert_staff(
             session,
             telegram_user_id=target.id,
             display_name=target.full_name,
@@ -168,13 +173,27 @@ async def cmd_adduser(message: Message, command: CommandObject) -> None:
         )
         logger.info("Added staff %s (%s) as %s", target.id, target.full_name, role.value)
         name = target.full_name
+        # Read inside the session; the relationship is not available after it
+        # closes and the reply names every desk on purpose - the old behaviour
+        # silently moved people, so saying what they now hold is the point.
+        desks = [
+            f"{m.department.label} ({m.role.value.replace('_', ' ')})"
+            for m in staff.memberships
+        ]
 
-    await message.reply(f"{name} added as {role.value} in {department.value}.")
+    await message.reply(
+        f"{name} added as {role.value.replace('_', ' ')} in {department.label}.\n"
+        f"They now work: {', '.join(desks)}."
+    )
 
 
 @router.message(Command(cmd.REMOVEUSER))
 async def cmd_removeuser(message: Message, command: CommandObject) -> None:
-    """`/np_removeuser` - as a reply, or with a telegram id.
+    """`/np_removeuser [department]` - as a reply, or with a telegram id.
+
+    Naming a department takes that desk off them and leaves the others, which
+    is what "they have stopped covering Compliance" means. Naming none removes
+    them from the platform entirely.
 
     Deactivates rather than deletes, so past events keep resolving to a name.
     Offboarding matters more than onboarding here.
@@ -183,25 +202,59 @@ async def cmd_removeuser(message: Message, command: CommandObject) -> None:
         if not await _is_admin(session, message.from_user.id if message.from_user else None):
             return
 
+        args = (command.args or "").split()
         target_id = None
         if message.reply_to_message and message.reply_to_message.from_user:
             target_id = message.reply_to_message.from_user.id
-        elif command.args and command.args.strip().isdigit():
-            target_id = int(command.args.strip())
+        elif args and args[0].isdigit():
+            target_id = int(args.pop(0))
         if target_id is None:
             await message.reply(
-                f"Reply to the person, or use /{cmd.REMOVEUSER} <telegram id>."
+                f"Reply to the person, or use /{cmd.REMOVEUSER} <telegram id> "
+                f"[department]."
             )
             return
 
-        staff = await deactivate_staff(session, target_id)
-        if staff is None:
-            await message.reply("That user is not registered.")
+        department = _department(args[0]) if args else None
+        if args and department is None:
+            await message.reply(f"Unknown department. One of: {Department.usage()}.")
             return
-        logger.info("Deactivated staff %s", target_id)
-        name = staff.display_name
 
-    await message.reply(f"{name} deactivated. They can no longer act on work items.")
+        if department is None:
+            staff = await deactivate_staff(session, target_id)
+            if staff is None:
+                await message.reply("That user is not registered.")
+                return
+            logger.info("Deactivated staff %s", target_id)
+            reply = (
+                f"{staff.display_name} deactivated. They can no longer act on "
+                f"work items."
+            )
+        else:
+            staff, was_last = await remove_staff_from_department(
+                session, target_id, department
+            )
+            if staff is None:
+                await message.reply("That user is not registered.")
+                return
+            remaining = [m.department.label for m in staff.memberships]
+            logger.info(
+                "Removed staff %s from %s (last=%s)", target_id, department.value, was_last
+            )
+            if was_last:
+                reply = (
+                    f"{staff.display_name} removed from {department.label}. That was "
+                    f"their only department, so they have been deactivated."
+                )
+            elif not remaining:
+                reply = f"{staff.display_name} was not registered for {department.label}."
+            else:
+                reply = (
+                    f"{staff.display_name} removed from {department.label}. "
+                    f"They still work: {', '.join(remaining)}."
+                )
+
+    await message.reply(reply)
 
 
 @router.message(Command(cmd.REGISTER_SUPPLIER))
@@ -364,8 +417,13 @@ async def cmd_workload(message: Message) -> None:
     lines = [f"Open work items — {chat.department.label} ({len(items)})", ""]
     for item in items:
         owner = owners.get(item.owner_staff_id, "unassigned")
+        # Only the outbound ones are marked. Most work is inbound, so labelling
+        # both sides here would put the same word on nearly every line and stop
+        # anyone noticing it. The pinned header spells both out; a list wants
+        # the exception to stand out.
+        direction = "  · outbound" if item.raised_by_us else ""
         lines.append(
             f"{item.display_reference}  [{item.priority.label}]  "
-            f"{item.status.label}  — {owner}\n    {item.subject[:60]}"
+            f"{item.status.label}  — {owner}{direction}\n    {item.subject[:60]}"
         )
     await message.reply("\n".join(lines)[:4000])

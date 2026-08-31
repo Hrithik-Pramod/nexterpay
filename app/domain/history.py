@@ -89,6 +89,13 @@ def _fmt(event: Event, *, verbose: bool = False) -> str:
         if was and now:
             return f"Filed under {supplier} by {actor} ({was} → {now})"
         return f"Filed under {supplier} by {actor}"
+    if t is EventType.TICKETS_LINKED:
+        other = p.get("other_reference") or "another ticket"
+        subject = p.get("other_subject")
+        line = f"Linked to {other} by {actor}"
+        return line + (_quote(subject, limit=80) if verbose and subject else "")
+    if t is EventType.TICKETS_UNLINKED:
+        return f"Link to {p.get('other_reference') or 'another ticket'} removed by {actor}"
     if t is EventType.WORK_ITEM_CLOSED:
         return f"Closed by {actor}"
     if t is EventType.WORK_ITEM_REOPENED:

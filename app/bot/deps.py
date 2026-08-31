@@ -12,9 +12,10 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.bot import commands
 from app.bot.registry import resolve_chat, resolve_staff
 from app.db.models import Chat, WorkItem
-from app.domain.enums import ChatKind
+from app.domain.enums import ChatKind, StaffRole
 from app.domain.errors import DomainError
 from app.domain.work_items import Actor
 
@@ -70,18 +71,37 @@ async def staff_context(
     staff = await resolve_staff(session, telegram_user_id)
     if staff is None:
         return None
-    if staff.department is not chat.department and staff.role.value != "administrator":
-        # Staff work their own department's group. Administrators are exempt so
-        # they can configure any of them.
-        return None
-    return chat, Actor.of(staff)
+
+    # The role for *this* desk, not the person's most senior one anywhere.
+    # Someone who is a Manager in Support and an Operator in Compliance must
+    # not be able to reopen a Compliance ticket.
+    role = staff.role_in(chat.department)
+    if role is None:
+        if not staff.is_administrator:
+            return None
+        # Administrators configure every department, so they are admitted to
+        # a group they do not belong to - with administrator rights, which is
+        # what they already had everywhere else.
+        return chat, Actor(
+            name=staff.display_name,
+            staff=staff,
+            telegram_user_id=staff.telegram_user_id,
+            role=StaffRole.ADMINISTRATOR,
+        )
+    return chat, Actor.of(staff, chat.department)
 
 
-def refusal_reason(telegram_user_id: int | None) -> str:
+async def refusal_reason(
+    telegram_user_id: int | None, session: AsyncSession | None = None,
+    telegram_chat_id: int | None = None,
+) -> str:
     """Why an action was refused, in words the person can act on.
 
-    "You are not registered" is unhelpful when the real problem is that
-    Telegram is hiding who they are.
+    staff_context returns None for three quite different reasons and the
+    caller cannot tell them apart, so this works out which it was. Getting
+    this wrong is not cosmetic: "you are not registered as staff" sent
+    someone hunting for a permissions problem when they were simply standing
+    in the wrong room.
     """
     if is_anonymous_admin(telegram_user_id):
         return (
@@ -90,10 +110,36 @@ def refusal_reason(telegram_user_id: int | None) -> str:
             "or ask to be removed as a Telegram admin - staff only need to be "
             "members here."
         )
+
+    if session is not None and telegram_chat_id is not None:
+        chat = await resolve_chat(session, telegram_chat_id)
+        if chat is None:
+            return (
+                "This group is not registered. An administrator needs to "
+                "register it before the bot will do anything here."
+            )
+        if chat.kind is not ChatKind.OPERATIONS:
+            return (
+                "This is a client group, and that is a staff command. Send it "
+                "in your Operations Group instead - the internal one where the "
+                "request topics are."
+            )
+
+        if telegram_user_id is not None:
+            staff = await resolve_staff(session, telegram_user_id)
+            if staff is not None and staff.role_in(chat.department) is None:
+                desks = ", ".join(d.label for d in staff.departments) or "no departments"
+                return (
+                    f"You are registered for {desks}, and this is the "
+                    f"{chat.department.label} group. You can belong to more than "
+                    f"one - ask an administrator to add you here as well, with "
+                    f"/{commands.ADDUSER} <role> {chat.department.value}."
+                )
+
     return (
         "You are not registered as active staff for this department. "
         "An administrator can add you: ask them to reply to one of your "
-        "messages with /adduser operator <department>."
+        f"messages with /{commands.ADDUSER} operator <department>."
     )
 
 

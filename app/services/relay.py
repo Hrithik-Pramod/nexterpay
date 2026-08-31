@@ -8,9 +8,16 @@ asserts this directly.
 
 A short, named set of functions also writes to a client chat, but only ever
 with text this module composes itself: the acknowledgement in `open_request`,
-the anchor in `post_anchor`, the closure notice in `close`, and the note in
-`relay_client_message` telling someone a request is already closed. Nothing
-in that list can carry staff wording.
+the opening message in `open_outbound`, the anchor in `post_anchor`, the
+closure notice in `close`, and the note in `relay_client_message` telling
+someone a request is already closed. Nothing in that list can carry staff
+wording. `test_only_these_functions_may_write_to_a_client_chat` holds the same
+list and fails if a sixth appears.
+
+`link` is deliberately not on it and must never join it. A link is an internal
+observation that two pieces of work are the same problem, and the reference it
+names can belong to another client or carry a supplier code - neither of which
+the client whose topic it appears in is entitled to see.
 
 Two other things happen here by design:
 
@@ -111,21 +118,40 @@ def topic_name(item: WorkItem, client_name: str) -> str:
     return f"{item.display_reference} · {client_name} · {item.subject}"[:128]
 
 
-def header_text(item: WorkItem, client_name: str, owner_name: str | None = None) -> str:
+def header_text(
+    item: WorkItem,
+    client_name: str,
+    owner_name: str | None = None,
+    linked_references: list[str] | None = None,
+) -> str:
     """The live summary at the top of the topic.
 
     Edited in place whenever ownership, status or priority changes. PRD 7.3
     requires ownership to be clearly visible to everyone in the Operations
     Group; a header frozen at "unassigned" would not satisfy that.
+
+    Direction is spelled out on both sides rather than marking only the
+    outbound ones. The topic carries a "Raised by X with Y" line at the very
+    top, but that scrolls away within a few messages while the header stays
+    pinned - and a name on its own does not say which way the request runs.
+    Someone opening a topic cold needs to know whether they are chasing this
+    counterparty or answering them, before they read a word of the thread.
     """
-    return (
-        f"{item.display_reference} — {item.subject}\n"
-        f"Client: {client_name}\n"
-        f"Raised by: {item.raised_by_name}\n"
-        f"Department: {item.department.label}\n"
-        f"Status: {item.status.label}   Priority: {item.priority.label}\n"
-        f"Owner: {owner_name or 'unassigned'}"
-    )
+    direction = "we raised this" if item.raised_by_us else "they raised this"
+    lines = [
+        f"{item.display_reference} — {item.subject}",
+        f"Client: {client_name}",
+        f"Raised by: {item.raised_by_name} ({direction})",
+        f"Department: {item.department.label}",
+        f"Status: {item.status.label}   Priority: {item.priority.label}",
+        f"Owner: {owner_name or 'unassigned'}",
+    ]
+    # Only when there is something to say. Most tickets are linked to nothing,
+    # and a permanent "Linked: none" would be a line of noise on every header
+    # to save a moment's thought on a few.
+    if linked_references:
+        lines.append(f"Linked: {', '.join(linked_references)}")
+    return "\n".join(lines)
 
 
 async def refresh_header(
@@ -138,6 +164,8 @@ async def refresh_header(
     client = await session.get(Client, item.client_id)
     owner = await session.get(Staff, item.owner_staff_id) if item.owner_staff_id else None
 
+    linked = [other.display_reference for other in await wi.linked_to(session, item)]
+
     try:
         await gateway.edit_message_text(
             ops.telegram_chat_id,
@@ -146,6 +174,7 @@ async def refresh_header(
                 item,
                 client.name if client else "Unknown client",
                 owner.display_name if owner else None,
+                linked_references=linked,
             ),
         )
     except Exception:
@@ -806,6 +835,58 @@ async def file_under(
         )
     await announce(session, gateway, item, await _latest_event(session, item))
     await refresh_header(session, gateway, item)
+
+
+async def link(
+    session: AsyncSession,
+    gateway: TelegramGateway,
+    item: WorkItem,
+    other: WorkItem,
+    actor: Actor,
+) -> None:
+    """Tie two tickets together, visibly from both sides.
+
+    Everything here is internal. A link is a note to NexterPay's own team that
+    two pieces of work are the same problem; the client whose ticket it is has
+    no business knowing that their issue is filed alongside another client's,
+    and the other ticket's reference can carry a supplier code. So nothing is
+    written to a counterparty group by this function, and `test_linking`
+    asserts that rather than trusting the comment.
+
+    Both topics are updated, because a link visible from one side only would
+    not be the thing that was agreed. If the two tickets belong to different
+    departments, that means writing into two different Operations Groups -
+    both internal, both NexterPay's own.
+    """
+    await wi.link_tickets(session, item, other, actor)
+
+    for this in (item, other):
+        await announce(session, gateway, this, await _latest_event(session, this))
+        await refresh_header(session, gateway, this)
+
+
+async def unlink(
+    session: AsyncSession,
+    gateway: TelegramGateway,
+    item: WorkItem,
+    other: WorkItem,
+    actor: Actor,
+) -> bool:
+    """Remove a link, from both sides. False if there was not one.
+
+    Any member of staff can undo one. The events stay either way, so a link
+    made in error can be taken off the header without taking it out of the
+    record - which is what makes it safe to let people correct themselves
+    rather than escalating a typo to a manager.
+    """
+    removed = await wi.unlink_tickets(session, item, other, actor)
+    if not removed:
+        return False
+
+    for this in (item, other):
+        await announce(session, gateway, this, await _latest_event(session, this))
+        await refresh_header(session, gateway, this)
+    return True
 
 
 async def close(

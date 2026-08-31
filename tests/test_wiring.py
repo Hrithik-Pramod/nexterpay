@@ -109,22 +109,23 @@ def test_handler_modules_import_cleanly():
     assert staff.router.name == "staff"
 
 
-def test_anonymous_admin_gets_a_useful_refusal():
+async def test_anonymous_admin_gets_a_useful_refusal():
     """A Telegram admin with 'Remain Anonymous' on posts as the group, so the
     bot cannot identify them. Saying 'not registered' sends them hunting for
     the wrong fix."""
+    from app.bot import commands
     from app.bot.deps import ANONYMOUS_ADMIN_ID, is_anonymous_admin, refusal_reason
 
     assert is_anonymous_admin(ANONYMOUS_ADMIN_ID)
     assert not is_anonymous_admin(5001)
 
-    anon = refusal_reason(ANONYMOUS_ADMIN_ID)
+    anon = await refusal_reason(ANONYMOUS_ADMIN_ID)
     assert "anonymously" in anon.lower()
     assert "Remain Anonymous" in anon
 
-    ordinary = refusal_reason(5001)
+    ordinary = await refusal_reason(5001)
     assert "not registered" in ordinary.lower()
-    assert "/adduser" in ordinary
+    assert f"/{commands.ADDUSER}" in ordinary
 
 
 async def test_anonymous_admin_is_never_treated_as_staff(session, support_ops, senior):
@@ -291,3 +292,83 @@ def test_the_front_door_is_just_np() -> None:
 
     assert commands.FRONT_DOOR == "np"
     assert commands.RAISE == "np_raise", "underscore form was agreed with the client"
+
+
+async def test_a_staff_command_in_a_client_group_says_so(session, acme_support):
+    """The refusal has to name the real problem.
+
+    Reported in testing: someone sent a staff command in the client group and
+    was told "you are not registered as active staff for this department".
+    They then spent time hunting a permissions problem when they were simply
+    in the wrong group.
+    """
+    from app.bot.deps import refusal_reason
+
+    reason = await refusal_reason(1184638351, session, acme_support.telegram_chat_id)
+    assert "client group" in reason.lower()
+    assert "operations group" in reason.lower()
+    assert "not registered as active staff" not in reason
+
+
+async def test_an_unregistered_group_says_that_instead(session):
+    from app.bot.deps import refusal_reason
+
+    reason = await refusal_reason(1184638351, session, -1009999999999)
+    assert "not registered" in reason.lower()
+    assert "administrator needs to register it" in reason.lower()
+
+
+async def test_the_wrong_department_names_both(session, support_ops, operator):
+    """Staff belong to one department, which is not obvious when refused."""
+    from app.bot.deps import refusal_reason
+    from app.bot.registry import register_operations_chat
+    from app.domain.enums import Department
+
+    compliance_ops = await register_operations_chat(
+        session, telegram_chat_id=-1001000000055,
+        department=Department.COMPLIANCE, title="Compliance Operations",
+    )
+    reason = await refusal_reason(
+        operator.telegram_user_id, session, compliance_ops.telegram_chat_id
+    )
+    assert "Support" in reason
+    assert "Compliance and Risk" in reason
+
+
+def test_no_message_shown_to_a_person_names_an_unprefixed_command() -> None:
+    """The prefix has to reach the words people read, not just the handlers.
+
+    The rename covered every Command filter but left "/adduser" sitting in the
+    refusal message, so the bot spent a day telling people to run a command
+    that no longer existed. The earlier guard could not catch it: it only
+    inspected filters.
+
+    Heuristic, and worth knowing its limit - it looks at lines carrying a
+    quote character, so a command named only in a comment or docstring is not
+    flagged. Those are for us to read, not for anyone using the bot.
+    """
+    import re
+
+    from app.bot import commands
+
+    # The bare form of each prefixed command. /start is excluded because it
+    # is deliberately unprefixed and correct wherever it appears.
+    # The bare form of each prefixed command, minus "start": np_start strips
+    # to it, but /start is deliberately unprefixed and correct anywhere.
+    names = sorted(
+        {n[3:] for n in commands.ALL if n.startswith("np_")} - {commands.START}
+    )
+    offenders = []
+    for path in pathlib.Path("app").rglob("*.py"):
+        for number, line in enumerate(path.read_text().splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith("#") or ('"' not in line and "'" not in line):
+                continue
+            for name in names:
+                if re.search(rf'(?<!np_)/{name}(?![\w_])', line):
+                    offenders.append(f"{path}:{number}  {stripped[:80]}")
+
+    assert not offenders, (
+        "these messages name a command that no longer exists:\n  "
+        + "\n  ".join(offenders)
+    )

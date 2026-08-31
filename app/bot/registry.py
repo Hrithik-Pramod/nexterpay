@@ -10,7 +10,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Chat, Client, Staff
+from app.db.models import Chat, Client, Staff, StaffDepartment
 from app.domain.enums import ChatKind, Department, StaffRole
 
 
@@ -104,17 +104,70 @@ async def upsert_staff(
     )
     staff = result.scalar_one_or_none()
     if staff is None:
-        staff = Staff(telegram_user_id=telegram_user_id, display_name=display_name,
-                      role=role, department=department)
+        # memberships=[] is not decoration. Without it the collection is
+        # unloaded on a freshly flushed object, and the next line touching it
+        # triggers a lazy load inside async code - MissingGreenlet, again.
+        staff = Staff(
+            telegram_user_id=telegram_user_id, display_name=display_name, memberships=[]
+        )
         session.add(staff)
+        await session.flush()
     else:
         staff.display_name = display_name
-        staff.role = role
-        staff.department = department
         staff.is_active = True
         staff.deactivated_at = None
+
+    # Adds a desk; it does not move them off the others. This used to
+    # overwrite, so registering someone for Compliance quietly removed them
+    # from Support and they discovered it by being refused their own work.
+    existing = next(
+        (m for m in staff.memberships if m.department is department), None
+    )
+    if existing is None:
+        staff.memberships.append(StaffDepartment(department=department, role=role))
+    else:
+        existing.role = role
+
     await session.flush()
+    await session.refresh(staff, ["memberships"])
     return staff
+
+
+async def remove_staff_from_department(
+    session: AsyncSession, telegram_user_id: int, department: Department
+) -> tuple[Staff | None, bool]:
+    """Take one desk off someone, leaving the rest.
+
+    Returns the person and whether that was their last department. Losing the
+    last one deactivates them, because a registered person who works nowhere
+    would otherwise resolve as staff and be refused every action with a
+    message about seniority rather than about not being there at all.
+    """
+    from app.db.base import utcnow
+
+    result = await session.execute(
+        select(Staff).where(Staff.telegram_user_id == telegram_user_id)
+    )
+    staff = result.scalar_one_or_none()
+    if staff is None:
+        return None, False
+
+    membership = next(
+        (m for m in staff.memberships if m.department is department), None
+    )
+    if membership is None:
+        return staff, False
+
+    staff.memberships.remove(membership)
+    await session.flush()
+    await session.refresh(staff, ["memberships"])
+
+    if not staff.memberships:
+        staff.is_active = False
+        staff.deactivated_at = utcnow()
+        await session.flush()
+        return staff, True
+    return staff, False
 
 
 async def deactivate_staff(session: AsyncSession, telegram_user_id: int) -> Staff | None:

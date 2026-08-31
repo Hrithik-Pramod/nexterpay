@@ -60,7 +60,10 @@ def work_item_actions(work_item_id: int, *, claimed: bool) -> InlineKeyboardMark
             [
                 InlineKeyboardButton(
                     text="File under supplier", callback_data=cb("file", work_item_id)
-                )
+                ),
+                InlineKeyboardButton(
+                    text="Link ticket", callback_data=cb("link", work_item_id)
+                ),
             ],
             [InlineKeyboardButton(text="Close", callback_data=cb("close", work_item_id))],
         ]
@@ -129,7 +132,37 @@ def supplier_choices(work_item_id: int, counterparties) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def assignee_choices(work_item_id: int, people) -> InlineKeyboardMarkup:
+def link_choices(work_item_id: int, candidates, linked) -> InlineKeyboardMarkup:
+    """Tickets this one can be tied to, and the ones it already is.
+
+    Both lists are on the same keyboard on purpose. Someone opening this is
+    asking "what is this connected to", and answering that with a list of
+    things it is *not* connected to would be an odd way round. The existing
+    links carry a cross, so the same screen adds and removes.
+    """
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"✕ {i.display_reference} · {i.subject}"[:60],
+                callback_data=cb("unlink", work_item_id, str(i.id)),
+            )
+        ]
+        for i in linked
+    ]
+    rows += [
+        [
+            InlineKeyboardButton(
+                text=f"{i.display_reference} · {i.subject}"[:60],
+                callback_data=cb("dolink", work_item_id, str(i.id)),
+            )
+        ]
+        for i in candidates
+    ]
+    rows.append([InlineKeyboardButton(text="← Back", callback_data=cb("back", work_item_id))])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def assignee_choices(work_item_id: int, people, department=None) -> InlineKeyboardMarkup:
     """Who to hand the request to, as buttons.
 
     The alternative was `/assign <telegram id>`, which nobody knows, or
@@ -137,10 +170,20 @@ def assignee_choices(work_item_id: int, people) -> InlineKeyboardMarkup:
     to have posted in that topic already. Neither is usable on a fresh
     request, which is precisely when reassignment happens.
     """
+    def label(person) -> str:
+        # Their seniority on this desk. Someone who is a Manager in Support
+        # and an Operator in Compliance should read as an Operator here, or
+        # the list would misrepresent what they can actually do with it.
+        role = person.role_in(department) if department is not None else None
+        if role is None and len(person.memberships) == 1:
+            role = person.memberships[0].role
+        suffix = f" · {role.value.replace('_', ' ')}" if role else ""
+        return f"{person.display_name}{suffix}"
+
     rows = [
         [
             InlineKeyboardButton(
-                text=f"{p.display_name} · {p.role.value.replace('_', ' ')}",
+                text=label(p),
                 callback_data=cb("setowner", work_item_id, str(p.id)),
             )
         ]

@@ -47,6 +47,8 @@ REPLY = _c("reply")
 NOTE = _c("note")
 HISTORY = _c("history")
 ASSIGN = _c("assign")
+LINK = _c("link")
+UNLINK = _c("unlink")
 
 # Administration
 REGISTER_OPS = _c("register_ops")
@@ -70,7 +72,7 @@ WHOAMI = _c("whoami")
 ALL = [
     FRONT_DOOR,
     RAISE, REQUEST, ENQUIRY, TICKETS,
-    REPLY, NOTE, HISTORY, ASSIGN,
+    REPLY, NOTE, HISTORY, ASSIGN, LINK, UNLINK,
     REGISTER_OPS, REGISTER_CLIENT, REGISTER_SUPPLIER, ADDUSER, REMOVEUSER,
     WORKLOAD, SETCODE, ADDPARTY, BROADCAST, NEW,
     START, START_ALIAS, WHOAMI,

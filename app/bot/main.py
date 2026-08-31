@@ -110,8 +110,14 @@ def build_dispatcher() -> Dispatcher:
         if person is None:
             await message.reply("You are not registered as NexterPay staff.")
             return
+        desks = [
+            f"{m.department.label} — {m.role.value.replace('_', ' ')}"
+            for m in person.memberships
+        ]
         await message.reply(
-            f"{person.display_name} — {person.role.value}, {person.department.value}"
+            f"{person.display_name}\n" + "\n".join(desks)
+            if desks
+            else f"{person.display_name} — registered, but not on any department."
         )
 
     # Order matters. Admin commands first, then staff (Operations Groups),

@@ -17,7 +17,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import utcnow
-from app.db.models import Chat, Client, Event, ReferenceCounter, Staff, WorkItem
+from app.db.models import (
+    Chat,
+    Client,
+    Event,
+    ReferenceCounter,
+    Staff,
+    WorkItem,
+    WorkItemLink,
+)
 from app.domain.enums import (
     ChatKind,
     Department,
@@ -28,6 +36,7 @@ from app.domain.enums import (
 )
 from app.domain.errors import (
     AlreadyOwned,
+    DomainError,
     InvalidTransition,
     NotAuthorised,
     WorkItemClosed,
@@ -43,19 +52,50 @@ ROLE_REQUIRED_TO_REOPEN = StaffRole.MANAGER
 
 @dataclass(frozen=True)
 class Actor:
-    """Who performed an action. `staff` is None for clients and the system."""
+    """Who performed an action, and with what seniority.
+
+    `staff` is None for clients and the system. `role` is the person's role
+    *in the department they are acting in*, which is not a property of the
+    person: someone can be a Manager on their own desk and an Operator on the
+    one they help out with. Carrying the role here rather than reading it off
+    the Staff record is what stops Support seniority applying inside
+    Compliance.
+    """
 
     name: str
     staff: Staff | None = None
     telegram_user_id: int | None = None
+    role: StaffRole | None = None
 
     @classmethod
     def system(cls) -> Actor:
         return cls(name="System")
 
     @classmethod
-    def of(cls, staff: Staff) -> Actor:
-        return cls(name=staff.display_name, staff=staff, telegram_user_id=staff.telegram_user_id)
+    def of(cls, staff: Staff, department: Department | None = None) -> Actor:
+        """The person acting on one desk.
+
+        The department may be left out only when there is no ambiguity - if
+        someone belongs to exactly one, that is necessarily the one they are
+        acting in. Once they span two it becomes a question with no answer,
+        so this raises rather than picking. Picking wrong would either grant
+        seniority they do not have on that desk or refuse them work they do.
+        """
+        if department is not None:
+            role = staff.role_in(department)
+        elif len(staff.memberships) == 1:
+            role = staff.memberships[0].role
+        else:
+            raise ValueError(
+                f"{staff.display_name} belongs to "
+                f"{len(staff.memberships)} departments; say which one this is."
+            )
+        return cls(
+            name=staff.display_name,
+            staff=staff,
+            telegram_user_id=staff.telegram_user_id,
+            role=role,
+        )
 
     def require_any(self) -> Staff:
         """Any active staff member. Used where the action carries no privilege
@@ -65,10 +105,16 @@ class Actor:
     def require(self, role: StaffRole) -> Staff:
         if self.staff is None or not self.staff.is_active:
             raise NotAuthorised("Action requires an active staff account")
-        if not self.staff.role.at_least(role):
+        if self.role is None:
+            # Registered, but not on this desk. Distinct from having too
+            # junior a role, and worth saying so - the fix is different.
+            raise NotAuthorised(
+                f"{self.staff.display_name} is not registered for this department"
+            )
+        if not self.role.at_least(role):
             raise NotAuthorised(
                 f"Action requires {role.value}; "
-                f"{self.staff.display_name} is {self.staff.role.value}"
+                f"{self.staff.display_name} is {self.role.value} here"
             )
         return self.staff
 
@@ -336,6 +382,147 @@ async def reopen(session: AsyncSession, work_item: WorkItem, actor: Actor) -> Wo
     work_item.closed_at = None
     await record_event(session, work_item, EventType.WORK_ITEM_REOPENED, actor)
     return work_item
+
+
+def parse_reference(text: str) -> int | None:
+    """Pull the ticket number out of whatever form someone typed.
+
+    All of ACME-SPEX-1042, ACME-1042, #1042 and 1042 name the same ticket, and
+    a person copying one out of a topic title, an email or a colleague's
+    message will produce any of them. The number at the end is the unique key,
+    so everything before it can be ignored. Being fussy here would only mean
+    refusing references that are perfectly clear.
+    """
+    tail = (text or "").strip().rsplit("-", 1)[-1].lstrip("#").strip()
+    return int(tail) if tail.isdigit() else None
+
+
+async def by_reference(session: AsyncSession, reference: int) -> WorkItem | None:
+    result = await session.execute(
+        select(WorkItem).where(WorkItem.reference == reference)
+    )
+    return result.scalar_one_or_none()
+
+
+def _pair(a: WorkItem, b: WorkItem) -> tuple[int, int]:
+    return (a.id, b.id) if a.id < b.id else (b.id, a.id)
+
+
+async def existing_link(
+    session: AsyncSession, a: WorkItem, b: WorkItem
+) -> WorkItemLink | None:
+    lower, higher = _pair(a, b)
+    result = await session.execute(
+        select(WorkItemLink).where(
+            WorkItemLink.lower_work_item_id == lower,
+            WorkItemLink.higher_work_item_id == higher,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def linked_to(session: AsyncSession, work_item: WorkItem) -> list[WorkItem]:
+    """The tickets connected to this one, in the order they were linked.
+
+    A link row names two tickets and this one is on an unpredictable side of
+    it, so the query fetches rows matching either side and then picks whichever
+    id is not ours.
+    """
+    result = await session.execute(
+        select(WorkItemLink)
+        .where(
+            (WorkItemLink.lower_work_item_id == work_item.id)
+            | (WorkItemLink.higher_work_item_id == work_item.id)
+        )
+        .order_by(WorkItemLink.id)
+    )
+    others = [
+        link.higher_work_item_id
+        if link.lower_work_item_id == work_item.id
+        else link.lower_work_item_id
+        for link in result.scalars().all()
+    ]
+    if not others:
+        return []
+
+    found = await session.execute(select(WorkItem).where(WorkItem.id.in_(others)))
+    by_id = {item.id: item for item in found.scalars().all()}
+    # Reordered to match the link order, which `IN` does not preserve.
+    return [by_id[i] for i in others if i in by_id]
+
+
+async def link_tickets(
+    session: AsyncSession, a: WorkItem, b: WorkItem, actor: Actor
+) -> WorkItemLink:
+    """Connect two tickets that concern the same underlying problem.
+
+    Not a merge. Each keeps its own owner, status and conversation - the link
+    only says the other one exists, so that whoever is reading either can find
+    it.
+
+    Closed tickets are deliberately allowed on both sides. "This is the same
+    thing we closed for them last month" is one of the more useful links there
+    is, and refusing it would mean the connection can only be recorded while
+    both are still live, which is rarely when anyone notices.
+    """
+    actor.require_any()
+
+    if a.id == b.id:
+        raise DomainError("A ticket cannot be linked to itself.")
+
+    already = await existing_link(session, a, b)
+    if already is not None:
+        raise DomainError(
+            f"{a.display_reference} and {b.display_reference} are already linked."
+        )
+
+    lower, higher = _pair(a, b)
+    link = WorkItemLink(
+        lower_work_item_id=lower,
+        higher_work_item_id=higher,
+        created_by_staff_id=actor.staff.id if actor.staff else None,
+        created_by_name=actor.name,
+    )
+    session.add(link)
+    await session.flush()
+
+    # Recorded against both, because the history of either has to show it. A
+    # link visible from only one side is not a link, it is a footnote.
+    for this, other in ((a, b), (b, a)):
+        await record_event(
+            session, this, EventType.TICKETS_LINKED, actor,
+            other_work_item_id=other.id,
+            other_reference=other.display_reference,
+            other_subject=other.subject,
+        )
+    return link
+
+
+async def unlink_tickets(
+    session: AsyncSession, a: WorkItem, b: WorkItem, actor: Actor
+) -> bool:
+    """Remove a link. Returns False if there was not one.
+
+    The link row goes; the events that recorded it stay, as every event does.
+    So removing a link never removes the fact that it was once made, which is
+    what makes it safe to let anyone undo their own mistake.
+    """
+    actor.require_any()
+
+    link = await existing_link(session, a, b)
+    if link is None:
+        return False
+
+    await session.delete(link)
+    await session.flush()
+
+    for this, other in ((a, b), (b, a)):
+        await record_event(
+            session, this, EventType.TICKETS_UNLINKED, actor,
+            other_work_item_id=other.id,
+            other_reference=other.display_reference,
+        )
+    return True
 
 
 async def open_items_for_chat(session: AsyncSession, chat: Chat) -> list[WorkItem]:
