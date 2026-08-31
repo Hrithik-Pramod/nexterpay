@@ -89,6 +89,26 @@ async def audience_for(
     ]
 
 
+async def broadcast_behind(
+    session: AsyncSession, telegram_chat_id: int, telegram_message_id: int
+) -> Broadcast | None:
+    """The broadcast a client is replying to, if that is what they replied to.
+
+    Returns the record rather than a yes/no, because whoever picks the
+    resulting request up needs to see what it was a reply to. A ticket that
+    says only "why so?" is unworkable.
+    """
+    result = await session.execute(
+        select(Broadcast)
+        .join(BroadcastDelivery, BroadcastDelivery.broadcast_id == Broadcast.id)
+        .where(
+            BroadcastDelivery.telegram_chat_id == telegram_chat_id,
+            BroadcastDelivery.telegram_message_id == telegram_message_id,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
 async def was_broadcast(
     session: AsyncSession, telegram_chat_id: int, telegram_message_id: int
 ) -> bool:

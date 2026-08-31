@@ -284,3 +284,57 @@ async def test_a_broadcast_message_is_recognisable_as_one(
     assert await bc.was_broadcast(session, CLIENT_CHAT, delivery.telegram_message_id)
     assert not await bc.was_broadcast(session, CLIENT_CHAT, 999999)
     assert not await bc.was_broadcast(session, OPS_CHAT, delivery.telegram_message_id)
+
+
+async def test_a_request_from_a_broadcast_says_so_in_the_topic(
+    session, acme_support, support_ops, manager, gw
+):
+    """Whoever picks it up must be able to see what it was a reply to.
+
+    Reported during testing: a client replied "why so?" to a broadcast and the
+    resulting topic showed only those two words. Nobody reading it could tell
+    what it was about.
+    """
+    from app.bot.handlers.client import _broadcast_context
+    from app.services import relay
+
+    recipients = await bc.audience_for(session, bc.CLIENTS)
+    record = await bc.send(
+        session, gw, body="Scheduled maintenance Saturday 02:00 to 04:00.",
+        audience=bc.CLIENTS, recipients=recipients, actor=Actor.of(manager),
+    )
+    delivery = (await bc.deliveries_for(session, record))[0]
+
+    behind = await bc.broadcast_behind(
+        session, CLIENT_CHAT, delivery.telegram_message_id
+    )
+    assert behind is not None and behind.id == record.id
+
+    await relay.open_request(
+        session, gw, source_chat=acme_support, subject="why so?",
+        body="why so?", raised_by_name="Charley",
+        context=_broadcast_context(behind),
+    )
+
+    topic = gw.all_text_to(OPS_CHAT)
+    assert "Raised in reply to the broadcast" in topic
+    assert "Scheduled maintenance Saturday" in topic
+    assert manager.display_name in topic
+
+
+async def test_the_client_is_not_told_about_the_context(
+    session, acme_support, support_ops, manager, gw
+):
+    """The context line is for the team. It is not sent outward."""
+    from app.services import relay
+
+    before = len(gw.messages_to(CLIENT_CHAT))
+    await relay.open_request(
+        session, gw, source_chat=acme_support, subject="why so?",
+        body="why so?", raised_by_name="Charley",
+        context="↳ Raised in reply to the broadcast sent 31 Aug by Priya Nair",
+    )
+    # Only the acknowledgement, not the context line.
+    new = gw.messages_to(CLIENT_CHAT)[before:]
+    assert len(new) == 1
+    assert "Raised in reply to the broadcast" not in new[0]

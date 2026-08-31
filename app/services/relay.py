@@ -199,6 +199,7 @@ async def open_request(
     attachments: list[IncomingAttachment] | None = None,
     keyboard=None,
     ack_keyboard=None,
+    context: str | None = None,
 ) -> WorkItem:
     """A client request becomes a work item, a topic, and an acknowledgement.
 
@@ -235,6 +236,13 @@ async def open_request(
         sender_name="NexterPay Operations",
         text=header_text(item, client_name),
     )
+
+    if context:
+        # Posted before the client's words, because without it their words may
+        # make no sense on their own. "why so?" is a real example.
+        await gateway.send_message(
+            ops.telegram_chat_id, context, thread_id=thread_id
+        )
 
     await gateway.send_message(
         ops.telegram_chat_id,

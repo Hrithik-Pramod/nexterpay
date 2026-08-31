@@ -128,7 +128,23 @@ async def capture_request(message: Message, state: FSMContext) -> None:
     await _open_from(message, body)
 
 
-async def _open_from(message: Message, body: str) -> None:
+def _broadcast_context(record) -> str:
+    """What the team sees at the top of a request raised from a broadcast.
+
+    Without it the topic can read "why so?" and nothing else, which tells
+    whoever picks it up nothing at all.
+    """
+    when = record.created_at.strftime("%d %b %H:%M") if record.created_at else "earlier"
+    quoted = " ".join((record.body or "").split())
+    if len(quoted) > 300:
+        quoted = quoted[:299].rstrip() + "…"
+    return (
+        f"↳ Raised in reply to the broadcast sent {when} by {record.sent_by_name}:\n"
+        f'"{quoted}"'
+    )
+
+
+async def _open_from(message: Message, body: str, *, context: str | None = None) -> None:
     """Create the work item and post its action keyboard. The single path in."""
     subject = (body.splitlines()[0] if body else "Attachment")[:120] or "New request"
 
@@ -148,6 +164,7 @@ async def _open_from(message: Message, body: str) -> None:
             attachments=extract_attachments(message),
             keyboard=None,  # attached after creation, once the id exists
             ack_keyboard=kb.acknowledgement_actions(),
+            context=context,
         )
         work_item_id = item.id
         ops_chat_id = (await relay.chats_for(session, item))[1].telegram_chat_id
@@ -263,10 +280,15 @@ async def client_reply(message: Message) -> None:
             # is not a ticket. NexterPay asked that it open a fresh request
             # rather than disappear - a client answering a message we sent
             # them should never go unanswered.
-            if incoming.reply_to_message_id is not None and await broadcast_service.was_broadcast(
-                session, message.chat.id, incoming.reply_to_message_id
-            ):
-                opened_from_broadcast = True
+            replied_to = (
+                await broadcast_service.broadcast_behind(
+                    session, message.chat.id, incoming.reply_to_message_id
+                )
+                if incoming.reply_to_message_id is not None
+                else None
+            )
+            if replied_to is not None:
+                opened_from_broadcast = _broadcast_context(replied_to)
             else:
                 logger.info(
                     "Unrouted client message in chat %s (not a reply to one of ours)",
@@ -274,12 +296,12 @@ async def client_reply(message: Message) -> None:
                 )
                 return
         else:
-            opened_from_broadcast = False
+            opened_from_broadcast = None
 
     if opened_from_broadcast:
         body = (message.text or message.caption or "").strip()
         if body or extract_attachments(message):
-            await _open_from(message, body)
+            await _open_from(message, body, context=opened_from_broadcast)
         return
 
     async with session_scope() as session:
