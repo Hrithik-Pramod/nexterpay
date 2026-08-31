@@ -211,3 +211,31 @@ async def test_filing_the_same_supplier_twice_does_nothing(
 
     await relay.file_under(session, gw, item, supplier, Actor.of(operator))
     assert len([c for c in gw.calls if c.method == "rename_topic"]) == renames
+
+
+async def test_a_counterparty_can_exist_without_a_telegram_group(
+    session, acme_support, support_ops, operator, gw
+):
+    """Suppliers can be filed against without ever having a group.
+
+    Most of NexterPay's suppliers will never have a Telegram group with them.
+    If filing required one, the filing structure would be unusable for exactly
+    the cases it was asked for.
+    """
+    await _coded(session, acme_support, "ACME")
+    item = await relay.open_request(
+        session, gw, source_chat=acme_support, subject="Settlement",
+        body="Missing.", raised_by_name="Tom Baker",
+    )
+
+    # No chat, no registration - just the counterparty. (Deliberately not
+    # asserting on .chats: touching a relationship here lazy-loads, which is
+    # the MissingGreenlet trap this codebase has hit more than once.)
+    groupless = Client(name="Supplier With No Group", code="SPNG")
+    session.add(groupless)
+    await session.flush()
+
+    await relay.file_under(session, gw, item, groupless, Actor.of(operator))
+
+    assert item.display_reference == f"ACME-SPNG-{item.reference}"
+    assert "SPNG" not in gw.all_text_to(CLIENT_CHAT)

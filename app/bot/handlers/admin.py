@@ -189,6 +189,62 @@ async def cmd_removeuser(message: Message, command: CommandObject) -> None:
     await message.reply(f"{name} deactivated. They can no longer act on work items.")
 
 
+@router.message(Command(cmd.ADDPARTY))
+async def cmd_addparty(message: Message, command: CommandObject) -> None:
+    """`/np_addparty <CODE> <name>` - register a counterparty with no group.
+
+    Filing needs the supplier to exist on the platform, but plenty of
+    suppliers have no Telegram group with NexterPay and never will. Without
+    this they could not be filed against at all, which would make the filing
+    structure useless for exactly the cases it was asked for.
+
+    Run in an Operations Group. Creates the counterparty and nothing else -
+    no chat, no messages. If a group is set up for them later,
+    /np_register_client links it to the same record by name.
+    """
+    parts = (command.args or "").split(maxsplit=1)
+
+    async with session_scope() as session:
+        if not await _is_admin(session, message.from_user.id if message.from_user else None):
+            return
+
+        if len(parts) < 2:
+            await message.reply(
+                f"Usage: /{cmd.ADDPARTY} <CODE> <name>\n"
+                f"For example: /{cmd.ADDPARTY} SPEX Supplier Pexi"
+            )
+            return
+
+        code, name = parts[0].strip().upper(), parts[1].strip()
+        if not (len(code) == 4 and code.isascii() and code.isalpha()):
+            await message.reply("The code must be exactly four letters, for example SPEX.")
+            return
+
+        clash = await session.execute(select(Client).where(Client.code == code))
+        holder = clash.scalar_one_or_none()
+        if holder is not None:
+            await message.reply(f"{code} already belongs to {holder.name}.")
+            return
+
+        existing = await session.execute(select(Client).where(Client.name == name))
+        party = existing.scalar_one_or_none()
+        if party is not None:
+            was = party.code
+            party.code = code
+            await session.flush()
+            outcome = (
+                f"{name} already existed and is now {code}."
+                if was is None else f"{name} is now {code} (was {was})."
+            )
+        else:
+            session.add(Client(name=name, code=code))
+            await session.flush()
+            outcome = f"{name} added as {code}. It can now be filed against."
+        logger.info("Counterparty %s registered as %s", name, code)
+
+    await message.reply(outcome)
+
+
 @router.message(Command(cmd.SETCODE))
 async def cmd_setcode(message: Message, command: CommandObject) -> None:
     """`/np_setcode <CODE>` - assign a counterparty's four-letter code.
