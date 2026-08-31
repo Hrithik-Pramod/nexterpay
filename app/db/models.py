@@ -98,6 +98,17 @@ class Chat(Base, TimestampMixin):
     department: Mapped[Department] = mapped_column(_enum(Department, "department"), nullable=False)
     client_id: Mapped[int | None] = mapped_column(ForeignKey("clients.id"), nullable=True)
     title: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
+    # Whether this counterparty group is a supplier rather than a client.
+    #
+    # A flag rather than a third ChatKind on purpose. Suppliers behave exactly
+    # like clients - NexterPay confirmed it is the same process with different
+    # labels - so making them a separate kind would mean revisiting every
+    # permission and routing decision that currently turns on ChatKind.CLIENT.
+    # The only thing that genuinely needs to tell them apart is broadcasting,
+    # which targets clients only or suppliers only.
+    is_supplier: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     client: Mapped[Client | None] = relationship(back_populates="chats")
@@ -115,6 +126,54 @@ class Chat(Base, TimestampMixin):
 
     def __repr__(self) -> str:
         return f"<Chat {self.kind.value}/{self.department.value} tg={self.telegram_chat_id}>"
+
+
+class Broadcast(Base, TimestampMixin):
+    """One message sent to many counterparty groups at once.
+
+    Recorded in full because a broadcast is the highest-reach action on the
+    platform: it needs to be answerable later who sent what, to whom, and
+    whether it actually arrived. The per-recipient rows also make the recall
+    possible - Telegram will delete a bot's own message for 48 hours, but only
+    if you know which message in which chat.
+    """
+
+    __tablename__ = "broadcasts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sent_by_staff_id: Mapped[int | None] = mapped_column(ForeignKey("staff.id"), nullable=True)
+    sent_by_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    audience: Mapped[str] = mapped_column(String(60), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    recalled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    deliveries: Mapped[list[BroadcastDelivery]] = relationship(
+        back_populates="broadcast", cascade="all, delete-orphan"
+    )
+
+    def __repr__(self) -> str:
+        return f"<Broadcast {self.id} {self.audience!r}>"
+
+
+class BroadcastDelivery(Base):
+    """One broadcast, one group. Records failures rather than hiding them."""
+
+    __tablename__ = "broadcast_deliveries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    broadcast_id: Mapped[int] = mapped_column(
+        ForeignKey("broadcasts.id"), nullable=False, index=True
+    )
+    telegram_chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    chat_title: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    telegram_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # Populated when a send fails - a bot removed from a group fails quietly
+    # otherwise, and "it went to everyone" would be a lie.
+    error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
+    broadcast: Mapped[Broadcast] = relationship(back_populates="deliveries")
 
 
 class Staff(Base, TimestampMixin):

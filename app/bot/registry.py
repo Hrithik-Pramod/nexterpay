@@ -43,6 +43,7 @@ async def register_client_chat(
     client_name: str,
     department: Department,
     title: str | None = None,
+    is_supplier: bool = False,
 ) -> Chat:
     result = await session.execute(select(Client).where(Client.name == client_name))
     client = result.scalar_one_or_none()
@@ -60,6 +61,7 @@ async def register_client_chat(
     chat.client_id = client.id
     chat.department = department
     chat.title = title
+    chat.is_supplier = is_supplier
     chat.is_active = True
     await session.flush()
     return chat
@@ -81,6 +83,9 @@ async def register_operations_chat(
     chat.client_id = None
     chat.department = department
     chat.title = title
+    # An Operations Group belongs to NexterPay, so it is never a counterparty
+    # of either sort - and must never be a broadcast recipient.
+    chat.is_supplier = False
     chat.is_active = True
     await session.flush()
     return chat

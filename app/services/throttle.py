@@ -162,6 +162,11 @@ class ThrottledGateway:
             chat_id, self._inner.close_topic, chat_id, thread_id
         )
 
+    async def delete_message(self, chat_id: int, message_id: int) -> None:
+        return await self._guarded(
+            chat_id, self._inner.delete_message, chat_id, message_id
+        )
+
     async def reopen_topic(self, chat_id: int, thread_id: int) -> None:
         return await self._guarded(
             chat_id, self._inner.reopen_topic, chat_id, thread_id

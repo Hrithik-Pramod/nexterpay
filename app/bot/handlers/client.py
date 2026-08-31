@@ -23,6 +23,7 @@ from app.bot.routing import IncomingMessage, build_strategy
 from app.config import get_settings
 from app.db.base import session_scope
 from app.db.models import WorkItem
+from app.services import broadcast as broadcast_service
 from app.services import relay
 
 logger = logging.getLogger(__name__)
@@ -258,10 +259,35 @@ async def client_reply(message: Message) -> None:
         )
         item = await strategy.resolve(session, chat, incoming)
         if item is None:
-            logger.info(
-                "Unrouted client message in chat %s (not a reply to one of ours)",
-                message.chat.id,
-            )
+            # A reply to a broadcast resolves to nothing, because a broadcast
+            # is not a ticket. NexterPay asked that it open a fresh request
+            # rather than disappear - a client answering a message we sent
+            # them should never go unanswered.
+            if incoming.reply_to_message_id is not None and await broadcast_service.was_broadcast(
+                session, message.chat.id, incoming.reply_to_message_id
+            ):
+                opened_from_broadcast = True
+            else:
+                logger.info(
+                    "Unrouted client message in chat %s (not a reply to one of ours)",
+                    message.chat.id,
+                )
+                return
+        else:
+            opened_from_broadcast = False
+
+    if opened_from_broadcast:
+        body = (message.text or message.caption or "").strip()
+        if body or extract_attachments(message):
+            await _open_from(message, body)
+        return
+
+    async with session_scope() as session:
+        chat = await client_context(session, message.chat.id)
+        if chat is None:
+            return
+        item = await strategy.resolve(session, chat, incoming)
+        if item is None:
             return
 
         await relay.relay_client_message(

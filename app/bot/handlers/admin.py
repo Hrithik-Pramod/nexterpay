@@ -87,14 +87,24 @@ async def cmd_register_ops(message: Message, command: CommandObject) -> None:
 @router.message(Command(cmd.REGISTER_CLIENT))
 async def cmd_register_client(message: Message, command: CommandObject) -> None:
     """`/np_register_client <department> <client name>` - run in the client group."""
+    await _register_counterparty(message, command, is_supplier=False)
+
+
+async def _register_counterparty(
+    message: Message, command: CommandObject, *, is_supplier: bool
+) -> None:
+    """Shared by the client and supplier commands - they differ by one flag."""
+    which = cmd.REGISTER_SUPPLIER if is_supplier else cmd.REGISTER_CLIENT
+    noun = "supplier" if is_supplier else "client"
     parts = (command.args or "").split(maxsplit=1)
+
     async with session_scope() as session:
         if not await _is_admin(session, message.from_user.id if message.from_user else None):
             return
         if len(parts) < 2 or _department(parts[0]) is None:
             await message.reply(
-                f"Usage: /{cmd.REGISTER_CLIENT} "
-                "<support|finance|development|business> <client name>"
+                f"Usage: /{which} "
+                f"<support|finance|development|business> <{noun} name>"
             )
             return
         department = _department(parts[0])
@@ -105,12 +115,17 @@ async def cmd_register_client(message: Message, command: CommandObject) -> None:
             client_name=client_name,
             department=department,
             title=message.chat.title,
+            is_supplier=is_supplier,
         )
         logger.info(
-            "Registered client group %s: %s / %s", message.chat.id, client_name, department.value
+            "Registered %s group %s: %s / %s",
+            noun, message.chat.id, client_name, department.value,
         )
 
-    await message.reply(f"Registered: {client_name} — {department.value.title()}.")
+    await message.reply(
+        f"Registered: {client_name} — {department.value.title()} ({noun}).\n"
+        f"Set their four-letter code with /{cmd.SETCODE} <CODE>."
+    )
 
 
 @router.message(Command(cmd.ADDUSER))
@@ -187,6 +202,18 @@ async def cmd_removeuser(message: Message, command: CommandObject) -> None:
         name = staff.display_name
 
     await message.reply(f"{name} deactivated. They can no longer act on work items.")
+
+
+@router.message(Command(cmd.REGISTER_SUPPLIER))
+async def cmd_register_supplier(message: Message, command: CommandObject) -> None:
+    """`/np_register_supplier <department> <name>` - run in the supplier's group.
+
+    Identical to registering a client, except the group is marked as a
+    supplier so broadcasts can target one or the other. Everything else about
+    it behaves the same, because NexterPay confirmed a supplier request is the
+    same process with different labels.
+    """
+    await _register_counterparty(message, command, is_supplier=True)
 
 
 @router.message(Command(cmd.ADDPARTY))

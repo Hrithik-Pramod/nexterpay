@@ -80,3 +80,16 @@ async def manager(session: AsyncSession) -> Staff:
         role=StaffRole.MANAGER,
         department=Department.SUPPORT,
     )
+
+
+@pytest_asyncio.fixture
+async def pexi_supplier(session: AsyncSession, support_ops: Chat) -> Chat:
+    """A supplier group, so broadcast targeting has something to tell apart."""
+    return await register_client_chat(
+        session,
+        telegram_chat_id=-1003000000001,
+        client_name="Supplier Pexi",
+        department=Department.SUPPORT,
+        title="Pexi — Support",
+        is_supplier=True,
+    )

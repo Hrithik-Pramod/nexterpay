@@ -74,6 +74,8 @@ class TelegramGateway(Protocol):
 
     async def reopen_topic(self, chat_id: int, thread_id: int) -> None: ...
 
+    async def delete_message(self, chat_id: int, message_id: int) -> None: ...
+
     async def edit_reply_markup(
         self, chat_id: int, message_id: int, reply_markup: Any | None
     ) -> None: ...
@@ -154,6 +156,11 @@ class AiogramGateway:
                 raise
             logger.info("Topic %s in %s already had that name", thread_id, chat_id)
 
+    async def delete_message(self, chat_id: int, message_id: int) -> None:
+        # Telegram refuses beyond 48 hours. The caller decides what to say
+        # about that, so the error is not swallowed here.
+        await self._bot.delete_message(chat_id=chat_id, message_id=message_id)
+
     async def reopen_topic(self, chat_id: int, thread_id: int) -> None:
         try:
             await self._bot.reopen_forum_topic(
@@ -202,6 +209,7 @@ class FakeGateway:
         self.topics: dict[int, list[int]] = {}
         self.topic_names: dict[tuple[int, int], str] = {}
         self.reopened_topics: list[tuple[int, int]] = []
+        self.deleted: list[tuple[int, int]] = []
         self.closed_topics: list[tuple[int, int]] = []
         self.edits: dict[int, list[str]] = {}
         self._next_message_id = 1000
@@ -279,6 +287,11 @@ class FakeGateway:
         self.calls.append(
             Call("rename_topic", chat_id, {"thread_id": thread_id, "name": name})
         )
+
+    async def delete_message(self, chat_id: int, message_id: int) -> None:
+        self._maybe_fail()
+        self.deleted.append((chat_id, message_id))
+        self.calls.append(Call("delete_message", chat_id, {"message_id": message_id}))
 
     async def reopen_topic(self, chat_id: int, thread_id: int) -> None:
         self._maybe_fail()
