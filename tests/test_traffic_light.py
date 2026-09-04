@@ -169,6 +169,72 @@ async def test_an_urgent_request_says_so_in_the_header(
     assert "Critical" in header
 
 
+async def test_an_urgent_request_says_so_in_the_topic_list_too(
+    session, acme_support, support_ops, operator, gw
+):
+    """The header alone is not enough, and shipping it that way was a miss.
+
+    Triage happens in the topic list. A mark that only appears once you have
+    opened a request tells you something you no longer needed to be told -
+    you are already reading the thing. Found on 4 September when a High
+    request sat in the list looking exactly like every Normal one.
+    """
+    from app.domain.enums import Priority
+
+    item = await _raised(session, gw, acme_support)
+    assert relay.PRIORITY_MARKS[Priority.HIGH] not in _title(gw, item)
+
+    await relay.change_priority(session, gw, item, Priority.HIGH, Actor.of(operator))
+    title = _title(gw, item)
+
+    assert relay.PRIORITY_MARKS[Priority.HIGH] in title
+    # Still red: raising the priority does not claim it. Red-plus-mark is the
+    # combination worth spotting - urgent, and nobody has picked it up.
+    assert title.startswith(relay.LIGHT_UNCLAIMED), "the light still comes first"
+    assert item.display_reference in title, "and the reference survives both"
+
+
+async def test_dropping_the_priority_takes_the_mark_back_off(
+    session, acme_support, support_ops, operator, gw
+):
+    """A mark that goes on and never comes off is worse than none.
+
+    Every topic would drift to urgent, and a list where everything is urgent
+    sorts no better than a list where nothing is.
+    """
+    from app.domain.enums import Priority
+
+    item = await _raised(session, gw, acme_support)
+    await relay.change_priority(session, gw, item, Priority.CRITICAL, Actor.of(operator))
+    assert relay.PRIORITY_MARKS[Priority.CRITICAL] in _title(gw, item)
+
+    await relay.change_priority(session, gw, item, Priority.LOW, Actor.of(operator))
+    title = _title(gw, item)
+    for mark in relay.PRIORITY_MARKS.values():
+        assert mark not in title, f"{mark} was left behind"
+
+
+async def test_a_marked_title_still_fits_telegrams_limit(
+    session, acme_support, support_ops, operator, gw
+):
+    """The mark is added to a string that was already being truncated at 128.
+
+    Worth its own test because the failure is not a wrong title, it is
+    Telegram rejecting the rename outright - and the rename is what carries
+    the traffic light, so the light would silently stop moving on exactly the
+    requests that matter most.
+    """
+    from app.domain.enums import Priority
+
+    item = await relay.open_request(
+        session, gw, source_chat=acme_support, subject="S" * 200,
+        body="Long.", raised_by_name="Tom Baker",
+    )
+    await relay.change_priority(session, gw, item, Priority.CRITICAL, Actor.of(operator))
+
+    assert len(_title(gw, item)) <= 128
+
+
 async def test_the_people_in_the_header_are_tappable(
     session, acme_support, support_ops, operator, gw
 ):

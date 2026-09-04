@@ -164,9 +164,22 @@ def traffic_light(item: WorkItem) -> str:
 
 
 def topic_name(item: WorkItem, client_name: str) -> str:
+    """What the topic is called in the list, which is where triage happens.
+
+    The light and the priority mark both go here, and for the same reason.
+    NexterPay asked for High to stand out; it was built into the header only,
+    where you have to open a request to see it. A priority you cannot see
+    while scanning is a priority you cannot sort by, which leaves it doing
+    nothing that the header's own status line was not already doing.
+
+    Mark after the light, not before: the light answers "is anyone on this",
+    which is the first question, and every topic has one. Only two priorities
+    in five carry a mark, so leading with it would ragged the list.
+    """
+    mark = PRIORITY_MARKS.get(item.priority)
     return (
-        f"{traffic_light(item)} {item.display_reference} · {client_name} · "
-        f"{item.subject}"
+        f"{traffic_light(item)}{mark or ''} {item.display_reference} · "
+        f"{client_name} · {item.subject}"
     )[:128]
 
 
