@@ -11,10 +11,10 @@ import logging
 
 from aiogram import F, Router
 from aiogram.dispatcher.event.bases import SkipHandler
-from aiogram.filters import Command, CommandObject
+from aiogram.filters import CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, ForceReply, Message
+from aiogram.types import CallbackQuery, Message
 
 from app.bot import commands as cmd
 from app.bot import keyboards as kb
@@ -22,6 +22,7 @@ from app.bot.attachments import extract_attachments, has_attachment
 from app.bot.deps import (
     explain,
     gateway,
+    prompt_for,
     refusal_reason,
     staff_context,
     work_item_for_thread,
@@ -30,7 +31,7 @@ from app.bot.registry import resolve_chat
 from app.db.base import session_scope
 from app.db.models import Client, Staff, WorkItem
 from app.domain import work_items as wi
-from app.domain.enums import ChatKind, Priority, WorkItemStatus
+from app.domain.enums import ChatKind, Department, Priority, WorkItemStatus
 from app.domain.history import load_events, render_history
 from app.domain.work_items import ROLE_REQUIRED_TO_REASSIGN
 from app.services import relay
@@ -50,7 +51,7 @@ async def _resolve(session, message_or_query, thread_id) -> tuple | None:
     return chat, actor, item
 
 
-@router.message(Command(cmd.REPLY))
+@router.message(cmd.any_case(cmd.REPLY))
 async def cmd_reply(message: Message, command: CommandObject) -> None:
     """The only route from an Operations Group to a client."""
     text = (command.args or "").strip()
@@ -95,7 +96,7 @@ async def cmd_reply(message: Message, command: CommandObject) -> None:
     await message.reply("Sent to the client.")
 
 
-@router.message(Command(cmd.NOTE))
+@router.message(cmd.any_case(cmd.NOTE))
 async def cmd_note(message: Message, command: CommandObject) -> None:
     text = (command.args or "").strip()
     if not text:
@@ -112,7 +113,7 @@ async def cmd_note(message: Message, command: CommandObject) -> None:
         await relay.add_internal_note(session, gateway(), item, actor, text)
 
 
-@router.message(Command(cmd.HISTORY))
+@router.message(cmd.any_case(cmd.HISTORY))
 async def cmd_history(message: Message) -> None:
     async with session_scope() as session:
         resolved = await _resolve(session, message, message.message_thread_id)
@@ -128,7 +129,7 @@ async def cmd_history(message: Message) -> None:
     await message.reply(f"{reference} — full history\n\n{body}"[:4000])
 
 
-@router.message(Command(cmd.ASSIGN))
+@router.message(cmd.any_case(cmd.ASSIGN))
 async def cmd_assign(message: Message, command: CommandObject) -> None:
     """`/np_assign` in reply to a staff member, or with a telegram id."""
     async with session_scope() as session:
@@ -163,7 +164,7 @@ async def cmd_assign(message: Message, command: CommandObject) -> None:
             await message.reply(explain(exc))
 
 
-@router.message(Command(cmd.LINK))
+@router.message(cmd.any_case(cmd.LINK))
 async def cmd_link(message: Message, command: CommandObject) -> None:
     """`/np_link ACME-1042`, from inside the topic of the other ticket.
 
@@ -174,7 +175,7 @@ async def cmd_link(message: Message, command: CommandObject) -> None:
     await _link_by_reference(message, command, remove=False)
 
 
-@router.message(Command(cmd.UNLINK))
+@router.message(cmd.any_case(cmd.UNLINK))
 async def cmd_unlink(message: Message, command: CommandObject) -> None:
     """`/np_unlink ACME-1042`. The link goes; the events recording it stay."""
     await _link_by_reference(message, command, remove=True)
@@ -237,6 +238,7 @@ class StaffCompose(StatesGroup):
 
     awaiting_reply = State()
     awaiting_note = State()
+    awaiting_internal = State()
 
 
 async def _client_name(session, item: WorkItem) -> str:
@@ -283,12 +285,19 @@ async def capture_reply_draft(message: Message, state: FSMContext) -> None:
             return
         client_name = await _client_name(session, item)
         reference = item.display_reference
+        # Offered only where somebody has actually been named. A "tag" button
+        # on a group with no contact would either do nothing or need
+        # explaining, and both are worse than not showing it.
+        from app.bot.registry import leads_for
+
+        source, _ = await relay.chats_for(session, item)
+        leads = await leads_for(session, source)
 
     await state.update_data(draft=text)
     await message.reply(
         f"This will be sent to {client_name} for {reference}:\n\n{text}\n\n"
         f"Nothing has been sent yet.",
-        reply_markup=kb.confirm_reply(work_item_id),
+        reply_markup=kb.confirm_reply(work_item_id, leads[0] if leads else None),
     )
 
 
@@ -322,6 +331,42 @@ async def capture_note_text(message: Message, state: FSMContext) -> None:
             session, gateway(), item, actor, text,
             telegram_message_id=message.message_id,
         )
+
+
+@router.message(StaffCompose.awaiting_internal)
+async def capture_internal_request(message: Message, state: FSMContext) -> None:
+    """What to ask another department, previewed before it opens anything.
+
+    Nothing here can reach a counterparty, but it still puts a request on
+    somebody else's desk - and a half-typed thought landing as a ticket in
+    Finance is its own kind of mess.
+    """
+    data = await state.get_data()
+    if await _wrong_topic(message, state, data.get("topic_id")):
+        return
+
+    text = (message.text or message.caption or "").strip()
+    if not text:
+        await message.reply("Type what to ask, or ignore this to abandon it.")
+        return
+
+    department = Department(data["department"])
+    work_item_id = data.get("work_item_id")
+    async with session_scope() as session:
+        item = await session.get(WorkItem, work_item_id)
+        if item is None:
+            await state.clear()
+            await message.reply("That request no longer exists.")
+            return
+        reference = item.display_reference
+
+    await state.update_data(draft=text)
+    await message.reply(
+        f"This will open a new request with {department.label}, linked to "
+        f"{reference}:\n\n{text}\n\nNothing has been sent to the client, and "
+        f"nothing will be.",
+        reply_markup=kb.confirm_internal(work_item_id, department),
+    )
 
 
 @router.callback_query(F.data.startswith("wi:"))
@@ -379,11 +424,13 @@ async def _apply(
             work_item_id=item.id, topic_id=query.message.message_thread_id
         )
         name = await _client_name(session, item)
-        await query.message.answer(
+        text, markup, mode = prompt_for(
+            query.from_user,
             f"Reply to {name} for {item.display_reference} - type it below. "
             f"You will see it before it is sent.",
-            reply_markup=ForceReply(selective=True),
+            placeholder=f"Your reply to {name}",
         )
+        await query.message.answer(text, reply_markup=markup, parse_mode=mode)
         return "Type your reply"
 
     if action == "note":
@@ -391,11 +438,13 @@ async def _apply(
         await state.update_data(
             work_item_id=item.id, topic_id=query.message.message_thread_id
         )
-        await query.message.answer(
+        text, markup, mode = prompt_for(
+            query.from_user,
             f"Internal note for {item.display_reference} - type it below. "
             f"This stays in this group.",
-            reply_markup=ForceReply(selective=True),
+            placeholder="Internal note",
         )
+        await query.message.answer(text, reply_markup=markup, parse_mode=mode)
         return "Type your note"
 
     if action == "sendreply":
@@ -407,7 +456,11 @@ async def _apply(
             # is not a mistake worth being relaxed about.
             await state.clear()
             return "That draft has already been sent or expired"
-        await relay.send_client_reply(session, gw, item, actor, draft)
+        # "tag" is the second send button, offered only where the group has a
+        # named contact. It addresses them by name so they are notified rather
+        # than relying on somebody noticing.
+        tag = value == "tag"
+        await relay.send_client_reply(session, gw, item, actor, draft, tag_lead=tag)
         await state.clear()
         await _seal_preview(query, f"Sent to the client:\n\n{draft}")
         return f"Sent to the client for {item.display_reference}"
@@ -471,6 +524,54 @@ async def _apply(
             f"Link to {other.display_reference} removed" if removed else "They were not linked"
         )
 
+    if action == "askdept":
+        others = [d for d in Department if d is not item.department]
+        await query.message.edit_reply_markup(
+            reply_markup=kb.department_choices(item.id, others)
+        )
+        return "Which department should look at this?"
+
+    if action == "setdept":
+        department = Department(value)
+        await state.set_state(StaffCompose.awaiting_internal)
+        await state.update_data(
+            work_item_id=item.id,
+            topic_id=query.message.message_thread_id,
+            department=department.value,
+        )
+        text, markup, mode = prompt_for(
+            query.from_user,
+            f"What should {department.label} look at, on {item.display_reference}? "
+            f"Type it below. Nothing reaches the client.",
+            placeholder=f"What to ask {department.label}",
+        )
+        await query.message.answer(text, reply_markup=markup, parse_mode=mode)
+        return f"Type what to ask {department.label}"
+
+    if action == "sendinternal":
+        data = await state.get_data()
+        draft = (data.get("draft") or "").strip()
+        if not draft or data.get("work_item_id") != item.id:
+            await state.clear()
+            return "That draft has already been sent or expired"
+        department = Department(value)
+        subject = (draft.splitlines()[0] if draft else "")[:120] or "Internal request"
+        opened = await relay.open_internal(
+            session, gw, origin=item, department=department,
+            subject=subject, body=draft, actor=actor,
+            keyboard=kb.work_item_actions(0, claimed=False),
+        )
+        await state.clear()
+        await _seal_preview(
+            query, f"Asked {department.label}. Opened {opened.display_reference}."
+        )
+        return f"Opened {opened.display_reference} with {department.label}"
+
+    if action == "cancelinternal":
+        await state.clear()
+        await _seal_preview(query, "Cancelled. No request was opened.")
+        return "Cancelled"
+
     if action == "setsupplier":
         supplier = await session.get(Client, int(value)) if value else None
         if supplier is None:
@@ -505,8 +606,15 @@ async def _apply(
         await _refresh_keyboard(query, item.id, claimed=item.owner_staff_id is not None)
         return Priority(value).label
 
-    if action == "back":
-        await _refresh_keyboard(query, item.id, claimed=item.owner_staff_id is not None)
+    if action in ("more", "less", "back"):
+        # "back" returns from a chooser - Status, Priority, an assignee list -
+        # and those are all reached from the expanded set, so it opens back
+        # into it rather than collapsing underneath the person.
+        await _refresh_keyboard(
+            query, item.id,
+            claimed=item.owner_staff_id is not None,
+            expanded=action in ("more", "back"),
+        )
         return ""
 
     if action == "history":
@@ -616,10 +724,14 @@ async def _seal_preview(query: CallbackQuery, text: str) -> None:
         logger.debug("Could not seal preview", exc_info=True)
 
 
-async def _refresh_keyboard(query: CallbackQuery, work_item_id: int, *, claimed: bool) -> None:
+async def _refresh_keyboard(
+    query: CallbackQuery, work_item_id: int, *, claimed: bool, expanded: bool = False
+) -> None:
     try:
         await query.message.edit_reply_markup(
-            reply_markup=kb.work_item_actions(work_item_id, claimed=claimed)
+            reply_markup=kb.work_item_actions(
+                work_item_id, claimed=claimed, expanded=expanded
+            )
         )
     except Exception:  # message unchanged, or too old to edit
         logger.debug("Could not refresh keyboard", exc_info=True)

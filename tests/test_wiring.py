@@ -15,6 +15,30 @@ from app.bot import keyboards as kb
 from app.bot.deps import work_item_for_thread
 from app.domain.enums import Priority, WorkItemStatus
 
+_DISPATCHER = None
+
+
+def dispatcher():
+    """The one dispatcher, built once and shared by every test here.
+
+    aiogram routers are singletons and a Router refuses to attach to a second
+    Dispatcher, so `build_dispatcher()` can only ever be called once in a
+    process. Two tests both calling it is not a test problem - it is the same
+    constraint that means exactly one bot instance may run, showing up early.
+    """
+    global _DISPATCHER
+    if _DISPATCHER is None:
+        from aiogram.fsm.storage.memory import MemoryStorage
+
+        import app.bot.main as bot_main
+
+        original, bot_main.build_storage = bot_main.build_storage, MemoryStorage
+        try:
+            _DISPATCHER = bot_main.build_dispatcher()
+        finally:
+            bot_main.build_storage = original
+    return _DISPATCHER
+
 
 def test_callback_payloads_round_trip():
     for action in ["claim", "status", "priority", "close", "history", "back"]:
@@ -65,9 +89,7 @@ def test_claim_becomes_reassign_once_owned():
 def test_routers_are_ordered_so_the_catch_all_is_last():
     """The client router ends in a catch-all for group messages. If it were
     registered before the staff router, staff commands would fall into it."""
-    from app.bot.main import build_dispatcher
-
-    names = [r.name for r in build_dispatcher().sub_routers]
+    names = [r.name for r in dispatcher().sub_routers]
     assert names == ["admin", "broadcast", "outbound", "staff", "client", "trace"]
     # "trace" logs anything no one else wanted, so it must stay behind the
     # client catch-all or it would log every ordinary message as unhandled.
@@ -291,7 +313,33 @@ def test_the_front_door_is_just_np() -> None:
     from app.bot import commands
 
     assert commands.FRONT_DOOR == "np"
-    assert commands.RAISE == "np_raise", "underscore form was agreed with the client"
+    assert commands.RAISE == "npraise"
+
+
+def test_no_command_contains_an_underscore() -> None:
+    """NexterPay asked for them out on 3 September, having used np_raise for a week.
+
+    Worth a test rather than a careful rename, because the next command added
+    will be written by someone copying the shape of an existing one, and
+    `_c("register_ops")` still reads perfectly naturally.
+    """
+    from app.bot import commands
+
+    offenders = [n for n in commands.ALL if "_" in n]
+    assert not offenders, f"these commands still carry an underscore: {offenders}"
+
+
+def test_commands_are_answered_whatever_the_capitalisation() -> None:
+    """People type /NPRAISE.
+
+    Telegram does not normalise the case of a command and aiogram's filter is
+    case-sensitive by default, so the wrong capitalisation is not a refusal -
+    it is silence. Nothing reaches a handler, nothing is logged that anyone
+    would think to look for, and the person concludes the bot is broken.
+    """
+    from app.bot import commands
+
+    assert commands.any_case(commands.RAISE).ignore_case is True
 
 
 async def test_a_staff_command_in_a_client_group_says_so(session, acme_support):
@@ -351,12 +399,12 @@ def test_no_message_shown_to_a_person_names_an_unprefixed_command() -> None:
 
     from app.bot import commands
 
-    # The bare form of each prefixed command. /start is excluded because it
-    # is deliberately unprefixed and correct wherever it appears.
-    # The bare form of each prefixed command, minus "start": np_start strips
-    # to it, but /start is deliberately unprefixed and correct anywhere.
+    # The bare form of each prefixed command, minus "start": npstart strips to
+    # it, but /start is deliberately unprefixed and correct anywhere. The empty
+    # string is dropped because FRONT_DOOR is the prefix itself.
     names = sorted(
-        {n[3:] for n in commands.ALL if n.startswith("np_")} - {commands.START}
+        {n[len(commands.PREFIX):] for n in commands.ALL
+         if n.startswith(commands.PREFIX)} - {commands.START, ""}
     )
     # scripts/ as well as app/. Restricting this to app/ is why preflight.py
     # was still printing "/adduser" a release after the rename - nothing a
@@ -372,10 +420,189 @@ def test_no_message_shown_to_a_person_names_an_unprefixed_command() -> None:
             if stripped.startswith("#") or ('"' not in line and "'" not in line):
                 continue
             for name in names:
-                if re.search(rf'(?<!np_)/{name}(?![\w_])', line):
+                if re.search(rf"(?<!{commands.PREFIX})/{name}(?![\w_])", line):
                     offenders.append(f"{path}:{number}  {stripped[:80]}")
 
     assert not offenders, (
         "these messages name a command that no longer exists:\n  "
         + "\n  ".join(offenders)
+    )
+
+
+def test_no_prompt_forces_a_reply_from_nobody() -> None:
+    """ForceReply(selective=True) without a real mention opens for nobody.
+
+    This is the bug NexterPay reported as "broadcast did not work", and it had
+    already been found and fixed once - in the client Raise Request flow, in
+    August - and left in place in three other handlers. Telegram's `selective`
+    means "force a reply from the users mentioned in this message". A name
+    written as plain text is not a mention. So the prompt appears, no composer
+    opens, the person waits, and the feature looks broken with nothing in the
+    logs.
+
+    Every prompt now goes through deps.prompt_for, which builds a tg://user
+    link - a real text_mention entity - or falls back to selective=False. This
+    test exists because the wrong version is the one that reads naturally.
+    """
+    import re
+
+    offenders = []
+    for path in pathlib.Path("app/bot").rglob("*.py"):
+        if path.name == "deps.py":
+            continue  # where prompt_for lives, and explains itself
+        source = path.read_text()
+        for number, line in enumerate(source.splitlines(), 1):
+            if re.search(r"ForceReply\([^)]*selective\s*=\s*True", line):
+                offenders.append(f"{path}:{number}  {line.strip()}")
+
+    assert not offenders, (
+        "these force a reply from nobody - use deps.prompt_for instead:\n  "
+        + "\n  ".join(offenders)
+    )
+
+
+def test_every_command_the_bot_claims_has_a_handler() -> None:
+    """`commands.ALL` is what the documents and /nphelp are generated from.
+
+    A name in that list with no handler is a command the bot tells people to
+    use and then ignores - and the failure is silence, which nobody reports as
+    a bug because it looks like they typed it wrong.
+    """
+    from app.bot import commands
+
+    dp = dispatcher()
+
+    def walk(router):
+        yield router
+        for sub in router.sub_routers:
+            yield from walk(sub)
+
+    wired = set()
+    for router in walk(dp):
+        for handler in router.message.handlers:
+            for f in handler.filters or []:
+                values = getattr(getattr(f, "callback", None), "commands", None)
+                for value in values or []:
+                    wired.add(getattr(value, "pattern", value))
+
+    missing = [c for c in commands.ALL if c not in wired]
+    assert not missing, f"declared but nothing answers them: {missing}"
+
+    undeclared = sorted(wired - set(commands.ALL))
+    assert not undeclared, (
+        f"handled but not in commands.ALL, so absent from the docs "
+        f"and /nphelp: {undeclared}"
+    )
+
+
+def test_no_keyboard_builds_a_button_nobody_answers() -> None:
+    """A dead button is the worst shape of bug this platform can produce.
+
+    It looks live, it taps, and nothing happens - with nothing in the log,
+    because no handler ran at all. This walks every keyboard in every shape
+    and checks each payload against a handler prefix.
+    """
+    from app.bot import keyboards as keyboards
+    from app.domain.enums import Department, StaffRole
+
+    class _Lead:
+        display_name, telegram_user_id = "Lead", 1
+
+    class _Person:
+        id, display_name, memberships = 3, "Sarah Hill", []
+
+        def role_in(self, department):
+            return StaffRole.OPERATOR
+
+    class _Item:
+        id, display_reference, subject = 7, "ACME-1000", "x"
+
+    class _Counterparty:
+        id, code, name = 1, "ACME", "Acme"
+
+    every = [
+        keyboards.work_item_actions(7, claimed=False),
+        keyboards.work_item_actions(7, claimed=True),
+        keyboards.work_item_actions(7, claimed=False, expanded=True),
+        keyboards.confirm_reply(7),
+        keyboards.confirm_reply(7, _Lead()),
+        keyboards.closed_actions(7),
+        keyboards.supplier_choices(7, [_Counterparty()]),
+        keyboards.link_choices(7, [_Item()], [_Item()]),
+        keyboards.department_choices(7, list(Department)),
+        keyboards.confirm_internal(7, Department.FINANCE),
+        keyboards.assignee_choices(7, [_Person()], Department.SUPPORT),
+        keyboards.status_choices(7),
+        keyboards.priority_choices(7),
+        keyboards.acknowledgement_actions(),
+        keyboards.raise_request_prompt("support"),
+        keyboards.raise_request_prompt("business"),
+        keyboards.setup_menu(in_operations=True),
+        keyboards.setup_menu(in_operations=False),
+        keyboards.department_menu("regdept"),
+        keyboards.role_menu(Department.SUPPORT),
+    ]
+
+    # Every prefix some callback_query handler claims.
+    claimed = ("wi:", "ad:", "bc:", "ob:", "tk:", "raise:")
+    orphans = [
+        button.callback_data
+        for markup in every
+        for row in markup.inline_keyboard
+        for button in row
+        if button.callback_data and not button.callback_data.startswith(claimed)
+    ]
+    assert not orphans, f"these buttons reach no handler: {sorted(set(orphans))}"
+
+
+def test_every_work_item_action_offered_is_one_that_is_handled() -> None:
+    """The prefix being claimed is not enough - `wi:` reaches one handler that
+    then branches on the action, and an unknown action falls through it
+    silently returning "Done"."""
+    import inspect
+    import re
+
+    from app.bot import keyboards as keyboards
+    from app.bot.handlers import staff as staff_handlers
+    from app.domain.enums import Department, StaffRole
+
+    class _Person:
+        id, display_name, memberships = 3, "Sarah Hill", []
+
+        def role_in(self, department):
+            return StaffRole.OPERATOR
+
+    class _Item:
+        id, display_reference, subject = 7, "ACME-1000", "x"
+
+    class _Counterparty:
+        id, code, name = 1, "ACME", "Acme"
+
+    offered = set()
+    for markup in [
+        keyboards.work_item_actions(7, claimed=False),
+        keyboards.work_item_actions(7, claimed=True),
+        keyboards.work_item_actions(7, claimed=False, expanded=True),
+        keyboards.confirm_reply(7),
+        keyboards.closed_actions(7),
+        keyboards.supplier_choices(7, [_Counterparty()]),
+        keyboards.link_choices(7, [_Item()], [_Item()]),
+        keyboards.department_choices(7, list(Department)),
+        keyboards.confirm_internal(7, Department.FINANCE),
+        keyboards.assignee_choices(7, [_Person()], Department.SUPPORT),
+        keyboards.status_choices(7),
+        keyboards.priority_choices(7),
+    ]:
+        for row in markup.inline_keyboard:
+            for button in row:
+                if button.callback_data.startswith("wi:"):
+                    offered.add(button.callback_data.split(":")[1])
+
+    source = inspect.getsource(staff_handlers._apply)
+    handled = set(re.findall(r'action == "(\w+)"', source))
+    for group in re.findall(r'action in \(([^)]*)\)', source):
+        handled |= {v.strip().strip('"') for v in group.split(",") if v.strip()}
+
+    assert not offered - handled, (
+        f"offered on a keyboard but not handled: {sorted(offered - handled)}"
     )

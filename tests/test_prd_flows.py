@@ -394,13 +394,15 @@ async def test_prd_13_permission_tiers(session, acme_support, support_ops, gw):
     await relay.add_internal_note(session, gw, item, Actor.of(op), "note")
     await relay.change_status(session, gw, item, WorkItemStatus.IN_PROGRESS, Actor.of(op))
 
-    # Operator: reassign, escalate, priority — all refused.
+    # Priority moved down to Operator on 3 September at NexterPay's request.
+    await relay.change_priority(session, gw, item, Priority.CRITICAL, Actor.of(op))
+    assert item.priority is Priority.CRITICAL
+
+    # Operator: reassign and escalate still refused.
     with pytest.raises(NotAuthorised):
         await relay.assign(session, gw, item, senior, Actor.of(op))
     with pytest.raises(NotAuthorised):
         await relay.change_status(session, gw, item, WorkItemStatus.ESCALATED, Actor.of(op))
-    with pytest.raises(NotAuthorised):
-        await relay.change_priority(session, gw, item, Priority.CRITICAL, Actor.of(op))
 
     # Senior: all three permitted.
     await relay.assign(session, gw, item, op, Actor.of(senior))
@@ -423,10 +425,16 @@ async def test_prd_7_3_header_shows_current_owner(
     assert header_id is not None
 
     await relay.claim(session, gw, item, Actor.of(operator))
-    assert "Owner: Sarah Hill" in gw.current_text(header_id)
+    # The owner is a real mention now - a name you can tap is a person
+    # you can reach, which is what the header is for.
+    header = gw.current_text(header_id)
+    assert "<b>Owner</b>" in header and "Sarah Hill" in header
+    assert f'tg://user?id={operator.telegram_user_id}' in header
 
     await relay.assign(session, gw, item, senior, Actor.of(senior))
-    assert "Owner: James Okoro" in gw.current_text(header_id)
+    header = gw.current_text(header_id)
+    assert "James Okoro" in header
+    assert f'tg://user?id={senior.telegram_user_id}' in header
 
 
 async def test_prd_7_3_header_tracks_status_and_priority(
@@ -442,8 +450,10 @@ async def test_prd_7_3_header_tracks_status_and_priority(
     await relay.change_priority(session, gw, item, Priority.CRITICAL, Actor.of(senior))
 
     header = gw.current_text(header_id)
-    assert "Status: Escalated" in header
-    assert "Priority: Critical" in header
+    assert "<b>Status</b>  Escalated" in header
+    # Critical now carries a mark, because Telegram has no font colour.
+    assert "<b>Priority</b>" in header and "Critical" in header
+    assert relay.PRIORITY_MARKS[Priority.CRITICAL] in header
 
 
 async def test_prd_7_3_header_reflects_closure(
@@ -458,7 +468,7 @@ async def test_prd_7_3_header_reflects_closure(
     await relay.claim(session, gw, item, Actor.of(operator))
     await relay.close(session, gw, item, Actor.of(operator))
 
-    assert "Status: Closed" in gw.current_text(header_id)
+    assert "<b>Status</b>  Closed" in gw.current_text(header_id)
 
 
 async def test_header_edits_never_reach_the_client(

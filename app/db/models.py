@@ -388,6 +388,42 @@ class WorkItem(Base, TimestampMixin):
         return f"<WorkItem {self.display_reference} {self.status.value}>"
 
 
+class GroupLead(Base, TimestampMixin):
+    """A named contact inside a client or supplier group.
+
+    Telegram will not tell a bot who is in a group - there is no such call, by
+    design. So rather than discovering people, NexterPay name them, the same
+    way staff are registered: reply to one of their messages with a command and
+    the bot learns who they are.
+
+    That does two jobs with one mechanism. It gives each counterparty group a
+    lead, and it makes "send this to a particular person rather than to the
+    room" possible, which was asked for separately.
+
+    Kept per chat rather than per client, because a client with a Support group
+    and a Finance group may well have a different person in each - and usually
+    does.
+    """
+
+    __tablename__ = "group_leads"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    chat_id: Mapped[int] = mapped_column(ForeignKey("chats.id"), nullable=False)
+    telegram_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    display_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    chat: Mapped[Chat] = relationship()
+
+    __table_args__ = (
+        UniqueConstraint("chat_id", "telegram_user_id", name="uq_group_lead"),
+        Index("ix_group_leads_chat", "chat_id"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<GroupLead {self.display_name!r} chat={self.chat_id}>"
+
+
 class WorkItemLink(Base, TimestampMixin):
     """Two tickets that concern the same underlying problem.
 

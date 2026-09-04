@@ -57,3 +57,32 @@ def test_the_throttled_wrapper_forwards_rather_than_reimplements() -> None:
             assert f"self._inner.{name}" in body, (
                 f"ThrottledGateway.{name} does not forward to the inner gateway"
             )
+
+
+@pytest.mark.parametrize("implementation", IMPLEMENTATIONS, ids=lambda c: c.__name__)
+def test_the_signatures_match_and_not_only_the_names(implementation) -> None:
+    """Presence is not the whole contract.
+
+    The test above catches a missing method. It does not catch one that takes
+    different arguments - and that is the more likely mistake, because adding
+    a parameter to the Protocol and to two of the three implementations is
+    exactly what happens when you are halfway through a change.
+
+    Found this way: `parse_mode` was added to `edit_message_text` so the topic
+    header could be bold, and ThrottledGateway's `reply_markup` had drifted to
+    having no annotation at all. Harmless in that instance, and the next one
+    would not be.
+
+    ThrottledGateway forwards with **kwargs by design, so a signature carrying
+    those is accepted.
+    """
+    for name in sorted(_protocol_methods()):
+        expected = inspect.signature(getattr(TelegramGateway, name))
+        actual = inspect.signature(getattr(implementation, name))
+        if "**kwargs" in str(actual):
+            continue
+        assert str(actual) == str(expected), (
+            f"{implementation.__name__}.{name} does not match the Protocol.\n"
+            f"  protocol: {expected}\n"
+            f"  actual:   {actual}"
+        )

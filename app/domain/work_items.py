@@ -12,6 +12,7 @@ it can be tested without a bot, a token or a network.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,7 +46,12 @@ from app.domain.errors import (
 # Section 13 of the PRD. Operators may work items; the more disruptive actions
 # require seniority.
 ROLE_REQUIRED_TO_REASSIGN = StaffRole.SENIOR_OPERATOR
-ROLE_REQUIRED_TO_CHANGE_PRIORITY = StaffRole.SENIOR_OPERATOR
+# Opened to everyone on 3 September at NexterPay's request. It was Senior
+# Operator, on the reasoning that priority is a claim on other people's time.
+# In practice the person who knows a request is urgent is the one holding it,
+# and making them find a senior just to say so was costing more than the
+# occasional over-promotion. Every change is still recorded against a name.
+ROLE_REQUIRED_TO_CHANGE_PRIORITY = StaffRole.OPERATOR
 ROLE_REQUIRED_TO_ESCALATE = StaffRole.SENIOR_OPERATOR
 ROLE_REQUIRED_TO_REOPEN = StaffRole.MANAGER
 
@@ -179,23 +185,30 @@ async def create_work_item(
     raised_by_name: str,
     raised_by_telegram_user_id: int | None = None,
     priority: Priority = Priority.MEDIUM,
+    department: Department | None = None,
 ) -> WorkItem:
     """Create a work item from a client request.
 
-    Routing is by source group alone (PRD 8.2) - no manual triage.
+    Routing is by source group alone (PRD 8.2) - no manual triage. The one
+    exception is `department`, used when NexterPay ask another desk to look at
+    something on a client's behalf: the client and the reference stay the
+    same, and only the Operations Group it lands in changes. Nothing about
+    that reaches the client, which is why the caller is `open_internal` and
+    not anything that writes outward.
     """
     if source_chat.kind is not ChatKind.CLIENT:
         raise ValueError("Work items originate from client groups only")
     if source_chat.client_id is None:
         raise ValueError("Client group is not linked to a client")
 
-    ops_chat = await operations_chat_for(session, source_chat.department)
+    department = department or source_chat.department
+    ops_chat = await operations_chat_for(session, department)
     client = await session.get(Client, source_chat.client_id)
 
     work_item = WorkItem(
         reference=await _next_reference(session),
         client_id=source_chat.client_id,
-        department=source_chat.department,
+        department=department,
         source_chat_id=source_chat.id,
         operations_chat_id=ops_chat.id,
         raised_by_name=raised_by_name,
@@ -525,14 +538,38 @@ async def unlink_tickets(
     return True
 
 
-async def open_items_for_chat(session: AsyncSession, chat: Chat) -> list[WorkItem]:
-    """Open work items raised from a given client group, newest first."""
+# How far back a client's own list reaches. NexterPay chose four weeks: long
+# enough to cover "what happened to the thing from a fortnight ago", short
+# enough that a group running for a year does not answer with a wall.
+CLIENT_HISTORY = timedelta(weeks=4)
+
+
+async def open_items_for_chat(
+    session: AsyncSession, chat: Chat, *, include_recent_closed: bool = False
+) -> list[WorkItem]:
+    """Work items raised from a client group, most recently touched first.
+
+    Open ones always. Closed ones only when asked for, and only if they were
+    closed inside CLIENT_HISTORY - a client group that has been running a year
+    would otherwise return everything it has ever raised, which is not a list
+    anybody reads.
+
+    The window is measured from when the request was closed rather than when
+    it was raised. A long-running request closed yesterday is recent news; one
+    raised yesterday and closed the same day drops out on the same schedule as
+    everything else.
+    """
+    if include_recent_closed:
+        since = utcnow() - CLIENT_HISTORY
+        condition = (WorkItem.status != WorkItemStatus.CLOSED) | (
+            WorkItem.closed_at.is_not(None) & (WorkItem.closed_at >= since)
+        )
+    else:
+        condition = WorkItem.status != WorkItemStatus.CLOSED
+
     result = await session.execute(
         select(WorkItem)
-        .where(
-            WorkItem.source_chat_id == chat.id,
-            WorkItem.status.not_in([WorkItemStatus.CLOSED]),
-        )
+        .where(WorkItem.source_chat_id == chat.id, condition)
         .order_by(WorkItem.updated_at.desc())
     )
     return list(result.scalars().all())

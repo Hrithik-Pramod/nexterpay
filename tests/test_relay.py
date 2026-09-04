@@ -377,6 +377,10 @@ async def test_unowned_item_is_relayed_without_a_mention(
     session, acme_support, support_ops, gw
 ):
     item = await _open(session, gw, acme_support)
+    # Only what the client's message produced. The header above it now
+    # mentions whoever raised the request, which NexterPay asked for and is
+    # nothing to do with pinging an owner who does not exist.
+    before = len(gw.messages_to(OPS_CHAT))
 
     await relay.relay_client_message(
         session, gw, item,
@@ -385,9 +389,9 @@ async def test_unowned_item_is_relayed_without_a_mention(
         telegram_message_id=778,
     )
 
-    topic = gw.all_text_to(OPS_CHAT)
-    assert "still waiting" in topic
-    assert "tg://user" not in topic
+    relayed = "\n".join(gw.messages_to(OPS_CHAT)[before:])
+    assert "still waiting" in relayed
+    assert "tg://user" not in relayed, "an unowned request pinged somebody"
 
 
 async def test_client_text_with_markup_characters_survives(

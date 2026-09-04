@@ -6,19 +6,18 @@ then everything else is ordinary Telegram conversation.
 
 from __future__ import annotations
 
-import html
 import logging
 
 from aiogram import F, Router
-from aiogram.filters import Command, CommandObject
+from aiogram.filters import CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, ForceReply, Message
+from aiogram.types import CallbackQuery, Message
 
 from app.bot import commands as cmd
 from app.bot import keyboards as kb
 from app.bot.attachments import extract_attachments
-from app.bot.deps import client_context, gateway
+from app.bot.deps import client_context, gateway, prompt_for
 from app.bot.routing import IncomingMessage, build_strategy
 from app.config import get_settings
 from app.db.base import session_scope
@@ -34,7 +33,7 @@ class RaiseRequest(StatesGroup):
     awaiting_details = State()
 
 
-@router.message(Command(cmd.FRONT_DOOR, cmd.RAISE, cmd.REQUEST, cmd.ENQUIRY))
+@router.message(cmd.any_case(cmd.FRONT_DOOR, cmd.RAISE, cmd.REQUEST, cmd.ENQUIRY))
 async def offer_raise_button(message: Message, command: CommandObject) -> None:
     """`/np_raise <description>` opens a request outright; `/np` asks.
 
@@ -99,21 +98,13 @@ async def start_request(query: CallbackQuery, state: FSMContext) -> None:
     # the same recommendation: "using the force reply option for the bot's
     # messages should be more than enough."
     #
-    # `selective` only targets people actually mentioned in the text, and a
-    # plain first name is not a mention - it is just letters. The tg://user
-    # link below is a real text_mention entity, which is. Writing the name
-    # without the link silently reverts this to forcing a reply from nobody.
-    if query.from_user:
-        who = html.escape(query.from_user.full_name)
-        text = (
-            f'<a href="tg://user?id={query.from_user.id}">{who}</a>, '
-            f"{ask[0].lower()}{ask[1:]}"
-        )
-        markup = ForceReply(selective=True, input_field_placeholder="Describe your request")
-    else:
-        text, markup = ask, ForceReply(selective=False)
-
-    await query.message.answer(text, parse_mode="HTML", reply_markup=markup)
+    # The mention is built by deps.prompt_for, which explains why it has to be
+    # a tg://user link rather than a plain name. This was the only place that
+    # got it right; three other handlers got it wrong, so it now lives in one.
+    text, markup, mode = prompt_for(
+        query.from_user, ask, placeholder="Describe your request"
+    )
+    await query.message.answer(text, reply_markup=markup, parse_mode=mode)
     await query.answer()
 
 
@@ -179,14 +170,14 @@ async def _open_from(message: Message, body: str, *, context: str | None = None)
     )
 
 
-@router.message(Command(cmd.TICKETS))
+@router.message(cmd.any_case(cmd.TICKETS))
 async def cmd_tickets(message: Message) -> None:
     """`/np_tickets` - the client's own open requests."""
     async with session_scope() as session:
         chat = await client_context(session, message.chat.id)
         if chat is None:
             return
-        items = await relay.open_requests_for(session, chat)
+        items = await relay.open_requests_for(session, chat, recent_closed=True)
         lines = [
             f"{i.client_reference} · {i.subject}\n    {i.status.client_label}"
             for i in items
@@ -195,12 +186,15 @@ async def cmd_tickets(message: Message) -> None:
 
     if not items:
         await message.answer(
-            "You have no open requests at the moment. "
+            "You have nothing open, and nothing resolved in the last four weeks. "
             f"Send /{cmd.FRONT_DOOR} to raise one."
         )
         return
     await message.answer(
-        "Your open requests:\n\n" + "\n\n".join(lines) + "\n\nTap one to add to it.",
+        "Your requests:\n\n"
+        + "\n\n".join(lines)
+        + "\n\nOpen ones, plus anything resolved in the last four weeks. "
+        "Tap one to add to it.",
         reply_markup=markup,
     )
 
@@ -212,7 +206,7 @@ async def show_requests(query: CallbackQuery) -> None:
         if chat is None:
             await query.answer()
             return
-        items = await relay.open_requests_for(session, chat)
+        items = await relay.open_requests_for(session, chat, recent_closed=True)
         lines = [
             f"{i.client_reference} · {i.subject}\n    {i.status.client_label}"
             for i in items
@@ -220,10 +214,13 @@ async def show_requests(query: CallbackQuery) -> None:
         markup = kb.open_requests(items) if items else None
 
     if not items:
-        await query.answer("You have no open requests.", show_alert=True)
+        await query.answer("You have no recent requests.", show_alert=True)
         return
     await query.message.answer(
-        "Your open requests:\n\n" + "\n\n".join(lines) + "\n\nTap one to add to it.",
+        "Your requests:\n\n"
+        + "\n\n".join(lines)
+        + "\n\nOpen ones, plus anything resolved in the last four weeks. "
+        "Tap one to add to it.",
         reply_markup=markup,
     )
     await query.answer()

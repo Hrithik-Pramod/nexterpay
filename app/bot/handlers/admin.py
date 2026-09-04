@@ -12,25 +12,32 @@ from __future__ import annotations
 
 import logging
 
-from aiogram import Router
-from aiogram.filters import Command, CommandObject
-from aiogram.types import Message
+from aiogram import F, Router
+from aiogram.filters import CommandObject
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import CallbackQuery, Message
 from sqlalchemy import func, select
 
 from app.bot import commands as cmd
+from app.bot import keyboards as kb
+from app.bot.deps import prompt_for
 from app.bot.registry import (
     deactivate_staff,
+    leads_for,
     register_client_chat,
     register_operations_chat,
+    remove_group_lead,
     remove_staff_from_department,
     resolve_chat,
     resolve_staff,
+    set_group_lead,
     upsert_staff,
 )
 from app.config import get_settings
 from app.db.base import session_scope
 from app.db.models import Client, Staff, StaffDepartment, WorkItem
-from app.domain.enums import Department, StaffRole, WorkItemStatus
+from app.domain.enums import ChatKind, Department, StaffRole, WorkItemStatus
 
 logger = logging.getLogger(__name__)
 router = Router(name="admin")
@@ -63,7 +70,7 @@ def _department(value: str) -> Department | None:
         return None
 
 
-@router.message(Command(cmd.REGISTER_OPS))
+@router.message(cmd.any_case(cmd.REGISTER_OPS))
 async def cmd_register_ops(message: Message, command: CommandObject) -> None:
     """`/np_register_ops <department>` - run inside the Operations Group itself."""
     async with session_scope() as session:
@@ -72,7 +79,10 @@ async def cmd_register_ops(message: Message, command: CommandObject) -> None:
         department = _department(command.args or "")
         if department is None:
             await message.reply(
-                f"Usage: /{cmd.REGISTER_OPS} <{Department.usage()}>"
+                f"Usage: /{cmd.REGISTER_OPS} <department>\n\n"
+                f"Departments: {Department.usage()}.\n"
+                f"Send this inside the Operations Group itself, with Topics "
+                f"switched on."
             )
             return
         await register_operations_chat(
@@ -89,7 +99,7 @@ async def cmd_register_ops(message: Message, command: CommandObject) -> None:
     )
 
 
-@router.message(Command(cmd.REGISTER_CLIENT))
+@router.message(cmd.any_case(cmd.REGISTER_CLIENT))
 async def cmd_register_client(message: Message, command: CommandObject) -> None:
     """`/np_register_client <department> <client name>` - run in the client group."""
     await _register_counterparty(message, command, is_supplier=False)
@@ -108,8 +118,12 @@ async def _register_counterparty(
             return
         if len(parts) < 2 or _department(parts[0]) is None:
             await message.reply(
-                f"Usage: /{which} "
-                f"<{Department.usage()}> <{noun} name>"
+                f"Usage: /{which} <department> <{noun} name>\n\n"
+                f"Departments: {Department.usage()}.\n\n"
+                f"Send this inside the {noun}'s own group. If they already "
+                f"have a group with us on another desk, use exactly the same "
+                f"name - that is what keeps them on one code.\n\n"
+                f"Or send /{cmd.SETUP} and pick from buttons instead."
             )
             return
         department = _department(parts[0])
@@ -148,7 +162,7 @@ async def _register_counterparty(
     )
 
 
-@router.message(Command(cmd.ADDUSER))
+@router.message(cmd.any_case(cmd.ADDUSER))
 async def cmd_adduser(message: Message, command: CommandObject) -> None:
     """`/np_adduser <role> <department>` - as a reply to the person being added."""
     async with session_scope() as session:
@@ -158,25 +172,40 @@ async def cmd_adduser(message: Message, command: CommandObject) -> None:
         target = message.reply_to_message.from_user if message.reply_to_message else None
         if target is None:
             await message.reply(
-                f"Reply to the person you want to add, then send /{cmd.ADDUSER}."
+                f"That has to be a reply. Telegram will not tell a bot who is "
+                f"in a group, so pointing at something they wrote is the only "
+                f"way it can learn who they are.\n\n"
+                f"Reply to a message from them with:\n"
+                f"/{cmd.ADDUSER} <role> <department>\n\n"
+                f"Roles: {', '.join(r.value for r in StaffRole)}.\n"
+                f"Departments: {Department.usage()}.\n\n"
+                f"Or send /{cmd.SETUP} and pick from buttons instead."
             )
             return
 
         parts = (command.args or "").split()
         if len(parts) < 2:
             await message.reply(
-                f"Usage (as a reply): /{cmd.ADDUSER} "
-                "<operator|senior_operator|manager|administrator> <department>"
+                f"Usage, as a reply: /{cmd.ADDUSER} <role> <department>\n\n"
+                f"Roles: {', '.join(r.value for r in StaffRole)}.\n"
+                f"Departments: {Department.usage()}.\n\n"
+                f"Adding somebody to a second department does not move them "
+                f"off the first - they keep both, with a role in each."
             )
             return
         try:
             role = StaffRole(parts[0].lower())
         except ValueError:
-            await message.reply("Unknown role.")
+            await message.reply(
+                f"{parts[0]!r} is not a role. One of: "
+                f"{', '.join(r.value for r in StaffRole)}."
+            )
             return
         department = _department(parts[1])
         if department is None:
-            await message.reply("Unknown department.")
+            await message.reply(
+                f"{parts[1]!r} is not a department. One of: {Department.usage()}."
+            )
             return
 
         staff = await upsert_staff(
@@ -202,7 +231,7 @@ async def cmd_adduser(message: Message, command: CommandObject) -> None:
     )
 
 
-@router.message(Command(cmd.REMOVEUSER))
+@router.message(cmd.any_case(cmd.REMOVEUSER))
 async def cmd_removeuser(message: Message, command: CommandObject) -> None:
     """`/np_removeuser [department]` - as a reply, or with a telegram id.
 
@@ -272,7 +301,7 @@ async def cmd_removeuser(message: Message, command: CommandObject) -> None:
     await message.reply(reply)
 
 
-@router.message(Command(cmd.REGISTER_SUPPLIER))
+@router.message(cmd.any_case(cmd.REGISTER_SUPPLIER))
 async def cmd_register_supplier(message: Message, command: CommandObject) -> None:
     """`/np_register_supplier <department> <name>` - run in the supplier's group.
 
@@ -284,7 +313,7 @@ async def cmd_register_supplier(message: Message, command: CommandObject) -> Non
     await _register_counterparty(message, command, is_supplier=True)
 
 
-@router.message(Command(cmd.ADDPARTY))
+@router.message(cmd.any_case(cmd.ADDPARTY))
 async def cmd_addparty(message: Message, command: CommandObject) -> None:
     """`/np_addparty <CODE> <name>` - register a counterparty with no group.
 
@@ -340,7 +369,7 @@ async def cmd_addparty(message: Message, command: CommandObject) -> None:
     await message.reply(outcome)
 
 
-@router.message(Command(cmd.SETCODE))
+@router.message(cmd.any_case(cmd.SETCODE))
 async def cmd_setcode(message: Message, command: CommandObject) -> None:
     """`/np_setcode <CODE>` - assign a counterparty's four-letter code.
 
@@ -396,7 +425,7 @@ async def cmd_setcode(message: Message, command: CommandObject) -> None:
         await message.reply(f"{counterparty.name} is now {code}.")
 
 
-@router.message(Command(cmd.WORKLOAD))
+@router.message(cmd.any_case(cmd.WORKLOAD))
 async def cmd_workload(message: Message) -> None:
     """Open items by owner for this department.
 
@@ -442,3 +471,246 @@ async def cmd_workload(message: Message) -> None:
             f"{item.status.label}  — {owner}{direction}\n    {item.subject[:60]}"
         )
     await message.reply("\n".join(lines)[:4000])
+
+
+@router.message(cmd.any_case(cmd.SETLEAD))
+async def cmd_setlead(message: Message) -> None:
+    """`/npsetlead` - as a reply, inside the counterparty's own group.
+
+    Telegram will not tell a bot who is in a group, so the only way to learn
+    somebody's identity is for them to speak and for us to point at it. Same
+    mechanism as registering staff, for the same reason.
+    """
+    async with session_scope() as session:
+        if not await _is_admin(session, message.from_user.id if message.from_user else None):
+            return
+
+        chat = await resolve_chat(session, message.chat.id)
+        if chat is None or chat.kind is not ChatKind.CLIENT:
+            await message.reply(
+                "Send this inside the client or supplier group, as a reply to a "
+                "message from the person you want to name."
+            )
+            return
+
+        target = message.reply_to_message.from_user if message.reply_to_message else None
+        if target is None:
+            await message.reply(
+                f"That has to be a reply. Telegram will not tell a bot who is "
+                f"in a group, so pointing at something they wrote is the only "
+                f"way it can learn who they are.\n\n"
+                f"Reply to a message from them with /{cmd.SETLEAD}."
+            )
+            return
+
+        await set_group_lead(
+            session, chat,
+            telegram_user_id=target.id, display_name=target.full_name,
+        )
+        logger.info("Named %s as a lead for chat %s", target.id, message.chat.id)
+        names = [lead.display_name for lead in await leads_for(session, chat)]
+
+    await message.reply(
+        f"{target.full_name} is now a named contact for this group.\n"
+        f"Contacts: {', '.join(names)}."
+    )
+
+
+@router.message(cmd.any_case(cmd.LEADS))
+async def cmd_leads(message: Message) -> None:
+    """`/npleads` - who is named for this group."""
+    async with session_scope() as session:
+        chat = await resolve_chat(session, message.chat.id)
+        if chat is None:
+            return
+        names = [lead.display_name for lead in await leads_for(session, chat)]
+
+    if not names:
+        await message.reply(
+            f"Nobody is named for this group yet. An administrator can add "
+            f"someone by replying to one of their messages with /{cmd.SETLEAD}."
+        )
+        return
+    await message.reply("Named contacts here: " + ", ".join(names) + ".")
+
+
+@router.message(cmd.any_case(cmd.REMOVELEAD))
+async def cmd_removelead(message: Message) -> None:
+    """`/npremovelead` - as a reply. Deactivated, not deleted."""
+    async with session_scope() as session:
+        if not await _is_admin(session, message.from_user.id if message.from_user else None):
+            return
+
+        chat = await resolve_chat(session, message.chat.id)
+        target = message.reply_to_message.from_user if message.reply_to_message else None
+        if chat is None or target is None:
+            await message.reply(
+                f"Reply to a message from the person, then send /{cmd.REMOVELEAD}."
+            )
+            return
+
+        removed = await remove_group_lead(session, chat, target.id)
+        remaining = [lead.display_name for lead in await leads_for(session, chat)]
+
+    if removed is None:
+        await message.reply(f"{target.full_name} was not a named contact here.")
+        return
+    await message.reply(
+        f"{target.full_name} removed.\n"
+        + (f"Contacts: {', '.join(remaining)}." if remaining
+           else "Nobody is named for this group now.")
+    )
+
+
+# --------------------------------------------------------------------------
+# Administration by button
+#
+# `/npsetup` covers the two jobs NexterPay named: registering a group, and
+# adding a person. Both are done with somebody standing there waiting, and
+# both are typed from memory - "senior_operator" and the department spelling
+# between them account for most of the failed attempts so far.
+#
+# Everything else stays a command. Buttons for all of it was a much larger
+# piece than it sounds, and the rest are run once, calmly, by someone with
+# the reference open.
+# --------------------------------------------------------------------------
+
+class Setup(StatesGroup):
+    awaiting_name = State()
+
+
+@router.message(cmd.any_case(cmd.SETUP))
+async def cmd_setup(message: Message, state: FSMContext) -> None:
+    async with session_scope() as session:
+        if not await _is_admin(session, message.from_user.id if message.from_user else None):
+            return
+        chat = await resolve_chat(session, message.chat.id)
+        in_operations = chat is not None and chat.kind is ChatKind.OPERATIONS
+
+    await state.clear()
+    await message.reply(
+        "What would you like to set up here?"
+        if chat is not None
+        else "This group is not registered yet. What is it?",
+        reply_markup=kb.setup_menu(in_operations=in_operations),
+    )
+
+
+@router.callback_query(F.data.startswith(f"{kb.ADMIN_PREFIX}:"))
+async def on_setup(query: CallbackQuery, state: FSMContext) -> None:
+    try:
+        action, value = kb.parse_admin_cb(query.data or "")
+    except ValueError:
+        await query.answer()
+        return
+
+    async with session_scope() as session:
+        if not await _is_admin(session, query.from_user.id if query.from_user else None):
+            await query.answer("Administrators only.", show_alert=True)
+            return
+
+    if action == "cancel":
+        await state.clear()
+        await query.message.edit_text("Cancelled. Nothing was changed.")
+        await query.answer()
+        return
+
+    if action in ("regclient", "regsupplier"):
+        await state.update_data(is_supplier=action == "regsupplier")
+        await query.message.edit_text(
+            "Which department is this group for?",
+            reply_markup=kb.department_menu("regdept"),
+        )
+        await query.answer()
+        return
+
+    if action == "regdept":
+        await state.update_data(department=value)
+        await state.set_state(Setup.awaiting_name)
+        text, markup, mode = prompt_for(
+            query.from_user,
+            "What is this counterparty called? Use the name exactly as it is "
+            "already registered, if they have another group with us - that is "
+            "what keeps them on one code.",
+            placeholder="Counterparty name",
+        )
+        await query.message.answer(text, reply_markup=markup, parse_mode=mode)
+        await query.answer()
+        return
+
+    if action == "adduser":
+        # No attempt to read a person off this message. The reply is on the
+        # /npsetup message, not on them - which is why this flow ends by
+        # handing back a command to send as a reply rather than doing it here.
+        await query.message.edit_text(
+            "Which department are they joining?",
+            reply_markup=kb.department_menu("userdept"),
+        )
+        await query.answer()
+        return
+
+    if action == "userdept":
+        from app.domain.enums import Department as Dept
+
+        await query.message.edit_text(
+            f"What can they do in {Dept(value).label}?",
+            reply_markup=kb.role_menu(Dept(value)),
+        )
+        await query.answer()
+        return
+
+    if action == "setrole":
+        department_value, role_value = value.split("|")
+        await query.message.edit_text(
+            f"Reply to a message from the person with:\n\n"
+            f"/{cmd.ADDUSER} {role_value} {department_value}\n\n"
+            f"The bot has no way to learn who somebody is except by being "
+            f"pointed at something they wrote - Telegram will not list the "
+            f"members of a group."
+        )
+        await query.answer()
+        return
+
+    await query.answer()
+
+
+@router.message(Setup.awaiting_name)
+async def capture_setup_name(message: Message, state: FSMContext) -> None:
+    name = (message.text or "").strip()
+    if not name:
+        await message.reply("Type the name, or ignore this to abandon it.")
+        return
+
+    data = await state.get_data()
+    department = _department(data.get("department", ""))
+    if department is None:
+        await state.clear()
+        await message.reply("That setup expired. Start again with /npsetup.")
+        return
+
+    await state.clear()
+    async with session_scope() as session:
+        if not await _is_admin(session, message.from_user.id if message.from_user else None):
+            return
+        chat = await register_client_chat(
+            session,
+            telegram_chat_id=message.chat.id,
+            client_name=name,
+            department=department,
+            title=message.chat.title,
+            is_supplier=bool(data.get("is_supplier")),
+        )
+        existing = await session.get(Client, chat.client_id)
+        code = existing.code if existing else None
+        noun = "supplier" if data.get("is_supplier") else "client"
+
+    if code:
+        await message.reply(
+            f"Registered: {name} — {department.label} ({noun}).\n"
+            f"They already have the code {code}. Nothing else to do."
+        )
+        return
+    await message.reply(
+        f"Registered: {name} — {department.label} ({noun}).\n"
+        f"Set their four-letter code with /{cmd.SETCODE} <CODE>."
+    )

@@ -12,19 +12,23 @@ from __future__ import annotations
 import logging
 
 from aiogram import F, Router
-from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     CallbackQuery,
-    ForceReply,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
 )
 
 from app.bot import commands as cmd
-from app.bot.deps import explain, gateway, refusal_reason, staff_context
+from app.bot.deps import (
+    explain,
+    gateway,
+    prompt_for,
+    refusal_reason,
+    staff_context,
+)
 from app.db.base import session_scope
 from app.db.models import Broadcast
 from app.services import broadcast as bc
@@ -88,7 +92,7 @@ def _confirm() -> InlineKeyboardMarkup:
     )
 
 
-@router.message(Command(cmd.BROADCAST))
+@router.message(cmd.any_case(cmd.BROADCAST))
 async def start(message: Message, state: FSMContext) -> None:
     async with session_scope() as session:
         ctx = await staff_context(
@@ -113,11 +117,13 @@ async def start(message: Message, state: FSMContext) -> None:
 
     await state.set_state(BroadcastCompose.awaiting_message)
     await state.update_data(selected=[])
-    await message.reply(
+    text, markup, mode = prompt_for(
+        message.from_user,
         "Type the message you want to broadcast. You will choose who receives "
         "it, and see it in full, before anything is sent.",
-        reply_markup=ForceReply(selective=True),
+        placeholder="The message to broadcast",
     )
+    await message.reply(text, reply_markup=markup, parse_mode=mode)
 
 
 @router.message(BroadcastCompose.awaiting_message)

@@ -246,7 +246,13 @@ async def test_whoami_is_readable_by_a_person_checking_their_own_record(session)
         session, telegram_user_id=7101, display_name="Sarah Hill",
         role=StaffRole.SENIOR_OPERATOR, department=Department.SUPPORT,
     )
-    assert whoami_text(one) == "Sarah Hill\nSupport — senior operator"
+    reply = whoami_text(one)
+    assert reply.startswith("Sarah Hill\nSupport — senior operator")
+    # Somebody runs this because something was refused. The role name alone
+    # does not tell them whether that was their seniority, their department,
+    # or a fault - so it says what the role actually permits.
+    assert "reassign and escalate" in reply
+    assert "held per department" in reply
 
     # Ordered in Python, not in SQL, and this assertion is why.
     #
@@ -256,9 +262,15 @@ async def test_whoami_is_readable_by_a_person_checking_their_own_record(session)
     # one - a test agreeing with itself rather than with production. Sorting
     # by label makes both databases give the same answer.
     two = await _spanning(session)
-    assert whoami_text(two) == (
-        "Dana Ruiz\nCompliance and Risk — operator\nSupport — manager"
-    )
+    listed = [
+        line for line in whoami_text(two).splitlines()
+        if line and not line.startswith(" ")
+    ]
+    assert listed[:3] == [
+        "Dana Ruiz",
+        "Compliance and Risk — operator",
+        "Support — manager",
+    ]
     assert [m.department for m in two.desks] == sorted(
         two.departments, key=lambda d: d.label
     )

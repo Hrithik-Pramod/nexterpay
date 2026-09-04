@@ -119,3 +119,102 @@ async def test_the_anchor_never_carries_the_supplier_code(
     await relay.post_anchor(session, gw, item)
     assert "SPEX" not in gw.all_text_to(CLIENT_CHAT)
     assert "ACME-" in gw.all_text_to(CLIENT_CHAT)
+
+
+# --------------------------------------------------------------------------
+# Four weeks of history
+# --------------------------------------------------------------------------
+
+async def test_recently_closed_requests_appear_but_old_ones_do_not(
+    session, acme_support, support_ops, manager, gw
+):
+    """NexterPay chose four weeks.
+
+    Long enough to answer "what happened to the thing from a fortnight ago",
+    short enough that a group running for a year does not reply with a wall.
+    """
+    from datetime import timedelta
+
+    from app.db.base import utcnow
+    from app.domain import work_items as wi
+
+    live = await relay.open_request(
+        session, gw, source_chat=acme_support, subject="Still going",
+        body="Open.", raised_by_name="Tom Baker",
+    )
+    recent = await relay.open_request(
+        session, gw, source_chat=acme_support, subject="Finished last week",
+        body="Closed recently.", raised_by_name="Tom Baker",
+    )
+    ancient = await relay.open_request(
+        session, gw, source_chat=acme_support, subject="Finished in the spring",
+        body="Closed long ago.", raised_by_name="Tom Baker",
+    )
+
+    await relay.close(session, gw, recent, Actor.of(manager))
+    await relay.close(session, gw, ancient, Actor.of(manager))
+    # Push one of them outside the window.
+    ancient.closed_at = utcnow() - wi.CLIENT_HISTORY - timedelta(days=1)
+    await session.flush()
+
+    shown = {i.id for i in await relay.open_requests_for(
+        session, acme_support, recent_closed=True
+    )}
+    assert live.id in shown
+    assert recent.id in shown
+    assert ancient.id not in shown, "a request closed months ago is not recent news"
+
+    # And the default is unchanged, so nothing else that calls this shifted.
+    only_open = {i.id for i in await relay.open_requests_for(session, acme_support)}
+    assert only_open == {live.id}
+
+
+async def test_the_window_is_measured_from_when_it_closed(
+    session, acme_support, support_ops, manager, gw
+):
+    """A request that ran for months and closed yesterday is recent news.
+
+    Measuring from when it was raised would drop exactly the long-running
+    ones a client is most likely to be asking about.
+    """
+    from datetime import timedelta
+
+    from app.db.base import utcnow
+    from app.domain import work_items as wi
+
+    old_but_recent = await relay.open_request(
+        session, gw, source_chat=acme_support, subject="Long runner",
+        body="Raised in the spring.", raised_by_name="Tom Baker",
+    )
+    old_but_recent.created_at = utcnow() - wi.CLIENT_HISTORY - timedelta(days=90)
+    await session.flush()
+    await relay.close(session, gw, old_but_recent, Actor.of(manager))
+
+    shown = {i.id for i in await relay.open_requests_for(
+        session, acme_support, recent_closed=True
+    )}
+    assert old_but_recent.id in shown
+
+
+async def test_the_front_door_offers_looking_as_well_as_raising() -> None:
+    """Gavin's point, and a fair one.
+
+    Somebody sending /np is as likely to be chasing something they already
+    raised as starting something new. Offering only "Raise Request" makes
+    checking require knowing a second command exists - and quietly encourages
+    a duplicate, which is then something NexterPay has to close by hand.
+    """
+    from app.bot import keyboards as kb
+
+    for department in ("support", "business"):
+        labels = [
+            b.text
+            for row in kb.raise_request_prompt(department).inline_keyboard
+            for b in row
+        ]
+        assert any("request" in t.lower() or "enquiry" in t.lower() for t in labels)
+        assert "My requests" in labels, f"{department} cannot look without raising"
+
+    # Business still gets its own wording for the raising half.
+    business = kb.raise_request_prompt("business").inline_keyboard[0][0]
+    assert business.text == "Commercial Enquiry"

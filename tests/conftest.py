@@ -93,3 +93,26 @@ async def pexi_supplier(session: AsyncSession, support_ops: Chat) -> Chat:
         title="Pexi — Support",
         is_supplier=True,
     )
+
+
+@pytest_asyncio.fixture
+async def acme_compliance(session: AsyncSession) -> Chat:
+    """The same client, a second desk.
+
+    One counterparty commonly has a group per department. Sharing the client
+    record is what makes "everything for Acme" answerable; having separate
+    chats is what lets each desk have its own named contact.
+    """
+    await register_operations_chat(
+        session,
+        telegram_chat_id=-1001000000009,
+        department=Department.COMPLIANCE,
+        title="Compliance and Risk Operations",
+    )
+    return await register_client_chat(
+        session,
+        telegram_chat_id=-1002000000009,
+        client_name="Acme Payments",
+        department=Department.COMPLIANCE,
+        title="Acme — Compliance",
+    )

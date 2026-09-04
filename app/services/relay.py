@@ -38,6 +38,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.base import utcnow
 from app.db.models import Attachment, Chat, Client, Event, Message, Staff, WorkItem
 from app.domain import work_items as wi
 from app.domain.enums import (
@@ -114,8 +115,74 @@ async def announce(
     )
 
 
+# The traffic light, on the front of every topic title.
+#
+# NexterPay asked for red / amber / green in the topic list. Telegram fixes a
+# topic's colour when it is created and `editForumTopic` will not change it -
+# only the name and the icon can move. So the light goes on the name, where it
+# also has the advantage of sitting next to the reference rather than being a
+# dot on its own.
+#
+# The list truncates from the right, so a leading character is the one thing
+# that is never cut off.
+LIGHT_UNCLAIMED = "🔴"
+LIGHT_WORKING = "🟠"
+LIGHT_DONE = "🟢"
+
+
+# Urgent priority, marked rather than coloured.
+#
+# NexterPay asked for High priority in red font. Telegram has no font colour:
+# a message can be bold, italic, underlined, struck through, hidden behind a
+# spoiler, monospaced or quoted, and that is the whole list. So the emphasis
+# has to be a character.
+#
+# Deliberately not a red circle. Red already means "nobody has picked this up"
+# in the topic list, and the same colour meaning two things is worse than no
+# colour at all. An exclamation reads as urgent without borrowing anything.
+PRIORITY_MARKS = {Priority.CRITICAL: "‼️", Priority.HIGH: "❗"}
+
+
+def priority_text(item: WorkItem) -> str:
+    """The priority, with a mark on the two that need one."""
+    mark = PRIORITY_MARKS.get(item.priority)
+    return f"{mark} {item.priority.label}" if mark else item.priority.label
+
+
+def traffic_light(item: WorkItem) -> str:
+    """Red until someone takes it, amber while it moves, green once closed.
+
+    Completed is deliberately amber. NexterPay were asked directly whether
+    work-finished-but-not-archived should count as green and said no: green
+    means closed, and nothing else.
+    """
+    if item.status is WorkItemStatus.CLOSED:
+        return LIGHT_DONE
+    if item.status is WorkItemStatus.OPEN and item.owner_staff_id is None:
+        return LIGHT_UNCLAIMED
+    return LIGHT_WORKING
+
+
 def topic_name(item: WorkItem, client_name: str) -> str:
-    return f"{item.display_reference} · {client_name} · {item.subject}"[:128]
+    return (
+        f"{traffic_light(item)} {item.display_reference} · {client_name} · "
+        f"{item.subject}"
+    )[:128]
+
+
+def _mention(name: str, telegram_user_id: int | None) -> str:
+    """A tappable name, where we know who they are.
+
+    NexterPay asked for the people in the header to be mentions rather than
+    text, and they were right: a name you can tap is a person you can reach,
+    and the header is where somebody looks when they need the owner rather
+    than the request. Falls back to the plain name when we have no id, which
+    is better than a dead link.
+    """
+    escaped = html.escape(name)
+    if telegram_user_id:
+        return f'<a href="tg://user?id={telegram_user_id}">{escaped}</a>'
+    return escaped
 
 
 def header_text(
@@ -123,6 +190,7 @@ def header_text(
     client_name: str,
     owner_name: str | None = None,
     linked_references: list[str] | None = None,
+    owner_telegram_user_id: int | None = None,
 ) -> str:
     """The live summary at the top of the topic.
 
@@ -137,31 +205,75 @@ def header_text(
     Someone opening a topic cold needs to know whether they are chasing this
     counterparty or answering them, before they read a word of the thread.
     """
+    e = html.escape
     direction = "we raised this" if item.raised_by_us else "they raised this"
+
+    # What the counterparty actually said, leading, in their own words.
+    #
+    # NexterPay's point, and a fair one: a block of fields in a single weight
+    # reads as a form, and the one thing you need - what they asked for - is
+    # the easiest part to skim past. So it comes first and in quotes, the
+    # labels are bold, and the values are not.
+    original = " ".join((item.original_message or "").split())
+    if len(original) > 300:
+        original = original[:299].rstrip() + "…"
+
+    raised = item.created_at.strftime("%d %b %Y") if item.created_at else "unknown date"
+
     lines = [
-        f"{item.display_reference} — {item.subject}",
-        f"Client: {client_name}",
-        f"Raised by: {item.raised_by_name} ({direction})",
-        f"Department: {item.department.label}",
-        f"Status: {item.status.label}   Priority: {item.priority.label}",
-        f"Owner: {owner_name or 'unassigned'}",
+        f"<b>{e(item.display_reference)}</b> — {e(item.subject)}",
+    ]
+    if original:
+        lines.append(f"<i>“{e(original)}”</i>")
+    lines += [
+        "",
+        f"<b>Raised</b>  {raised} by "
+        f"{_mention(item.raised_by_name, item.raised_by_telegram_user_id)} "
+        f"({direction})",
+        f"<b>Client</b>  {e(client_name)}",
+        f"<b>Department</b>  {e(item.department.label)}",
+        f"<b>Status</b>  {e(item.status.label)}    "
+        f"<b>Priority</b>  {e(priority_text(item))}",
+        f"<b>Owner</b>  "
+        f"{_mention(owner_name, owner_telegram_user_id) if owner_name else 'unassigned'}",
     ]
     # Only when there is something to say. Most tickets are linked to nothing,
     # and a permanent "Linked: none" would be a line of noise on every header
     # to save a moment's thought on a few.
     if linked_references:
-        lines.append(f"Linked: {', '.join(linked_references)}")
+        lines.append(f"<b>Linked</b>  {e(', '.join(linked_references))}")
     return "\n".join(lines)
 
 
 async def refresh_header(
     session: AsyncSession, gateway: TelegramGateway, item: WorkItem
 ) -> None:
-    """Rewrite the topic header to match the work item's current state."""
-    if item.header_message_id is None:
-        return
+    """Rewrite the topic header, and the traffic light, to match the item.
+
+    Both together, in one place, because they answer the same question from
+    two distances - the light for someone scanning the list, the header for
+    someone who has opened it. Kept apart they would drift, and a title saying
+    amber above a header saying Closed is worse than neither.
+    """
     _, ops = await chats_for(session, item)
     client = await session.get(Client, item.client_id)
+
+    # Before the header, and before the early return below: a request with no
+    # header message still has a title, and the light still has to be right.
+    if item.topic_id is not None:
+        try:
+            await gateway.rename_topic(
+                ops.telegram_chat_id,
+                item.topic_id,
+                topic_name(item, client.name if client else "Unknown client"),
+            )
+        except Exception:
+            logger.debug(
+                "Could not retitle topic for %s", item.display_reference, exc_info=True
+            )
+
+    if item.header_message_id is None:
+        return
     owner = await session.get(Staff, item.owner_staff_id) if item.owner_staff_id else None
 
     linked = [other.display_reference for other in await wi.linked_to(session, item)]
@@ -175,7 +287,9 @@ async def refresh_header(
                 client.name if client else "Unknown client",
                 owner.display_name if owner else None,
                 linked_references=linked,
+                owner_telegram_user_id=owner.telegram_user_id if owner else None,
             ),
+            parse_mode="HTML",
         )
     except Exception:
         # An unchanged message, or one too old to edit. The announcements in
@@ -267,6 +381,7 @@ async def open_request(
         header_text(item, client_name),
         thread_id=thread_id,
         reply_markup=keyboard,
+        parse_mode="HTML",
     )
     item.header_message_id = header.message_id
     await _record_message(
@@ -465,11 +580,18 @@ async def send_client_reply(
     text: str,
     *,
     attachment: IncomingAttachment | None = None,
+    tag_lead: bool = False,
 ) -> None:
     """The only path from NexterPay to a client.
 
     The reply carries the reference and becomes the new anchor, so replying to
     it resolves back to this work item.
+
+    `tag_lead` addresses the group's nominated contact by name, so they are
+    notified rather than relying on somebody noticing. Off by default: whether
+    a particular message needs one person's attention is a decision per
+    message, and tagging the same person on every reply teaches them to ignore
+    it.
     """
     actor.require_any()
     source, ops = await chats_for(session, item)
@@ -477,7 +599,28 @@ async def send_client_reply(
     # carry the supplier code. See the note on the property.
     outbound = f"{item.client_reference} — {text}"
 
-    sent = await gateway.send_message(source.telegram_chat_id, outbound)
+    parse_mode = None
+    if tag_lead:
+        from app.bot.registry import leads_for
+
+        leads = await leads_for(session, source)
+        if leads:
+            # Everything interpolated is escaped: the reference is ours, but
+            # `text` is whatever a member of staff typed, and a stray "<" would
+            # otherwise be swallowed as markup or rejected by Telegram.
+            named = ", ".join(
+                f'<a href="tg://user?id={lead.telegram_user_id}">'
+                f"{html.escape(lead.display_name)}</a>"
+                for lead in leads
+            )
+            outbound = (
+                f"{html.escape(item.client_reference)} — {named} — {html.escape(text)}"
+            )
+            parse_mode = "HTML"
+
+    sent = await gateway.send_message(
+        source.telegram_chat_id, outbound, parse_mode=parse_mode
+    )
     await _record_message(
         session, item,
         direction=MessageDirection.OUTBOUND,
@@ -675,6 +818,90 @@ def outbound_opening_text(item: WorkItem, body: str) -> str:
     )
 
 
+async def open_internal(
+    session: AsyncSession,
+    gateway: TelegramGateway,
+    *,
+    origin: WorkItem,
+    department: Department,
+    subject: str,
+    body: str,
+    actor: Actor,
+    keyboard=None,
+) -> WorkItem:
+    """Ask another department to look at something, on the same client.
+
+    NexterPay's answer to moving a request between desks, and a better one
+    than the question. Dragging a live request across means carrying its
+    topic, its history and the client's view of it into another Operations
+    Group and hoping all three arrive. Opening a fresh request instead reuses
+    everything that already works, and linking the two means the client still
+    sees one thread while two desks work on it.
+
+    Nothing here reaches the counterparty. The client raised one thing; that
+    NexterPay asked Finance about it is an internal fact, and the new request
+    lives entirely inside the Operations Group of the department being asked.
+    `test_only_these_functions_may_write_to_a_client_chat` holds the list of
+    functions permitted to write outward, and this is deliberately not on it.
+    """
+    actor.require_any()
+
+    source, _ = await chats_for(session, origin)
+    item = await wi.create_work_item(
+        session,
+        source_chat=source,
+        subject=subject,
+        original_message=body,
+        raised_by_name=actor.name,
+        raised_by_telegram_user_id=actor.telegram_user_id,
+        department=department,
+    )
+    item.raised_by_us = True
+    item.supplier_id = origin.supplier_id
+    item.supplier_code = origin.supplier_code
+    await session.flush()
+
+    client = await session.get(Client, item.client_id)
+    client_name = client.name if client else "Unknown client"
+    _, ops = await chats_for(session, item)
+
+    thread_id = await gateway.create_topic(
+        ops.telegram_chat_id, topic_name(item, client_name)
+    )
+    await wi.attach_topic(session, item, thread_id)
+
+    header = await gateway.send_message(
+        ops.telegram_chat_id,
+        header_text(item, client_name),
+        thread_id=thread_id,
+        reply_markup=keyboard,
+        parse_mode="HTML",
+    )
+    item.header_message_id = header.message_id
+    await _record_message(
+        session, item,
+        direction=MessageDirection.INTERNAL,
+        chat_id=ops.telegram_chat_id,
+        message_id=header.message_id,
+        sender_name="NexterPay Operations",
+        text=header_text(item, client_name),
+    )
+
+    await gateway.send_message(
+        ops.telegram_chat_id,
+        f"↳ {html.escape(actor.name)} asked {department.label} about "
+        f"{html.escape(origin.display_reference)}:\n{html.escape(body)}",
+        thread_id=thread_id,
+        parse_mode="HTML",
+    )
+
+    # Linked immediately rather than left to somebody to remember. The whole
+    # point of raising rather than transferring is that both desks can see the
+    # other half, and a link nobody makes is not a link.
+    await link(session, gateway, origin, item, actor)
+    return item
+
+
 async def open_outbound(
     session: AsyncSession,
     gateway: TelegramGateway,
@@ -719,6 +946,7 @@ async def open_outbound(
         header_text(item, client_name),
         thread_id=thread_id,
         reply_markup=keyboard,
+        parse_mode="HTML",
     )
     item.header_message_id = header.message_id
     await _record_message(
@@ -749,21 +977,34 @@ async def open_outbound(
     return item
 
 
-async def open_requests_for(session: AsyncSession, source_chat: Chat) -> list[WorkItem]:
-    """Every open request raised from this client group, oldest first.
+async def open_requests_for(
+    session: AsyncSession, source_chat: Chat, *, recent_closed: bool = False
+) -> list[WorkItem]:
+    """Requests raised from this client group, oldest first.
 
     The whole group rather than the person asking: they can already read each
     other's messages in there, so hiding a colleague's request would be
     theatre rather than privacy.
+
+    `recent_closed` adds anything resolved in the last four weeks. NexterPay
+    chose that window: long enough to answer "what happened to the thing from
+    a fortnight ago", short enough that a group running for a year does not
+    reply with a wall of text nobody reads.
     """
     from sqlalchemy import select
 
+    live = WorkItem.status.not_in([WorkItemStatus.CLOSED, WorkItemStatus.COMPLETED])
+    if recent_closed:
+        since = utcnow() - wi.CLIENT_HISTORY
+        condition = live | (
+            WorkItem.closed_at.is_not(None) & (WorkItem.closed_at >= since)
+        )
+    else:
+        condition = live
+
     result = await session.execute(
         select(WorkItem)
-        .where(
-            WorkItem.source_chat_id == source_chat.id,
-            WorkItem.status.not_in([WorkItemStatus.CLOSED, WorkItemStatus.COMPLETED]),
-        )
+        .where(WorkItem.source_chat_id == source_chat.id, condition)
         .order_by(WorkItem.reference)
     )
     return list(result.scalars().all())
@@ -837,14 +1078,10 @@ async def file_under(
         to_reference=item.display_reference,
     )
 
-    client = await session.get(Client, item.client_id)
-    _, ops = await chats_for(session, item)
-    if item.topic_id is not None:
-        await gateway.rename_topic(
-            ops.telegram_chat_id,
-            item.topic_id,
-            topic_name(item, client.name if client else "Unknown client"),
-        )
+    # The retitle used to happen here as well. It now lives in refresh_header,
+    # which runs a line below and rebuilds the title from the item - so the new
+    # reference and the traffic light are applied in one call rather than two
+    # that could disagree.
     await announce(session, gateway, item, await _latest_event(session, item))
     await refresh_header(session, gateway, item)
 

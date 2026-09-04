@@ -6,6 +6,7 @@ translate a domain error into a reply. Anything more belongs in `app/services`.
 
 from __future__ import annotations
 
+import html
 import logging
 from dataclasses import dataclass
 
@@ -164,3 +165,33 @@ def explain(exc: Exception) -> str:
         return str(exc)
     logger.exception("Unexpected error in handler")
     return "Something went wrong. The error has been logged."
+
+
+def prompt_for(user, text: str, placeholder: str | None = None) -> tuple[str, object, str]:
+    """A prompt that actually opens the reply box for the person who asked.
+
+    Returns (text, reply_markup, parse_mode) ready to pass to `answer`.
+
+    This exists because the obvious way to write it is wrong, and was wrong in
+    four places. `ForceReply(selective=True)` does not mean "force a reply from
+    whoever triggered this" - it means "force a reply from the users mentioned
+    in this message", and a plain name in the text is not a mention, it is just
+    letters. Written that way the composer opens for nobody: the prompt appears,
+    the person waits, nothing happens, and they report the feature as broken.
+
+    A `tg://user` link is a real text_mention entity, which is what `selective`
+    looks for. So the name has to be a link, or `selective` has to be False.
+
+    It was fixed in the client Raise Request flow in August and left wrong in
+    broadcasting, outbound raising, and the staff reply and note prompts -
+    which is how NexterPay came to report that broadcasting "did not work" in
+    two different groups.
+    """
+    from aiogram.types import ForceReply
+
+    if user is None:
+        return text, ForceReply(selective=False), None
+
+    who = html.escape(user.full_name)
+    body = f'<a href="tg://user?id={user.id}">{who}</a>, {text[0].lower()}{text[1:]}'
+    return body, ForceReply(selective=True, input_field_placeholder=placeholder), "HTML"

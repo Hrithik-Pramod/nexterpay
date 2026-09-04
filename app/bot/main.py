@@ -19,25 +19,42 @@ import socket
 from urllib.parse import urlparse
 
 from aiogram import Bot, Dispatcher, Router
-from aiogram.filters import Command
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message
 
 from app.bot import commands as cmd
 from app.bot import deps
 from app.bot.handlers import admin, broadcast, client, outbound, staff
+from app.bot.help import build as build_help
 from app.bot.registry import resolve_chat, resolve_staff
 from app.bot.routing import build_strategy
 from app.config import get_settings
 from app.db.base import init_engine, session_scope
+from app.domain.enums import StaffRole
 from app.services.gateway import AiogramGateway
 from app.services.throttle import ThrottledGateway
 
 logger = logging.getLogger(__name__)
 
 
+# What each role adds to the one below it. Written as what a person gains,
+# not as a permission name, because this is read by someone who has just been
+# refused something and wants to know why.
+_ROLE_GRANTS = {
+    StaffRole.OPERATOR:
+        "claim, reply, note, set status and priority, file under a supplier, "
+        "link requests, close",
+    StaffRole.SENIOR_OPERATOR: "everything an Operator can, plus reassign and escalate",
+    StaffRole.MANAGER:
+        "everything a Senior Operator can, plus reopen a closed request and broadcast",
+    StaffRole.ADMINISTRATOR:
+        "everything, plus registering groups and managing staff. Not limited to "
+        "one department",
+}
+
+
 def whoami_text(person) -> str:
-    """What `/np_whoami` replies.
+    """What `/npwhoami` replies.
 
     Pulled out of the handler and given a test because of what the last line
     means. After the migration that split a person's single department into a
@@ -45,14 +62,24 @@ def whoami_text(person) -> str:
     - and "registered, but not on any department" is the sentence that says it
     did not. A message that only appears when something has gone wrong is
     exactly the one that is never exercised until the day it matters.
+
+    It also spells out what each role permits. Somebody runs this because
+    something was refused and they want to know whether that was their role,
+    their department, or a fault - and a role name on its own answers none of
+    those.
     """
     desks = [
-        f"{m.department.label} — {m.role.value.replace('_', ' ')}"
+        f"{m.department.label} — {m.role.value.replace('_', ' ')}\n"
+        f"    {_ROLE_GRANTS[m.role]}"
         for m in person.desks
     ]
     if not desks:
         return f"{person.display_name} — registered, but not on any department."
-    return f"{person.display_name}\n" + "\n".join(desks)
+    return (
+        f"{person.display_name}\n"
+        + "\n".join(desks)
+        + "\n\nSeniority is held per department, so it does not carry across."
+    )
 
 
 def build_storage():
@@ -105,7 +132,7 @@ def build_dispatcher() -> Dispatcher:
     dp = Dispatcher(storage=build_storage())
 
 
-    @dp.message(Command(cmd.START, cmd.START_ALIAS))
+    @dp.message(cmd.any_case(cmd.START, cmd.START_ALIAS))
     async def cmd_start(message: Message) -> None:
         async with session_scope() as session:
             chat = await resolve_chat(session, message.chat.id)
@@ -120,7 +147,28 @@ def build_dispatcher() -> Dispatcher:
             f"Group: {chat.kind.value} / {chat.department.value}"
         )
 
-    @dp.message(Command(cmd.WHOAMI))
+    @dp.message(cmd.any_case(cmd.HELP))
+    async def cmd_help(message: Message) -> None:
+        """What you can do, from where you are standing.
+
+        Registered on the dispatcher rather than in a router, so it answers
+        in a client group, an Operations Group and an unregistered one alike -
+        the three places somebody is most likely to be lost.
+        """
+        async with session_scope() as session:
+            chat = await resolve_chat(session, message.chat.id)
+            role, is_administrator = None, False
+            if message.from_user is not None:
+                person = await resolve_staff(session, message.from_user.id)
+                if person is not None:
+                    is_administrator = person.is_administrator
+                    if chat is not None:
+                        role = person.role_in(chat.department)
+            text = build_help(chat, role, is_administrator=is_administrator)
+
+        await message.reply(text)
+
+    @dp.message(cmd.any_case(cmd.WHOAMI))
     async def cmd_whoami(message: Message) -> None:
         if message.from_user is None:
             return

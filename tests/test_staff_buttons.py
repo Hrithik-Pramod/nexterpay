@@ -69,6 +69,10 @@ def fake_query(thread_id: int | None = 55):
         message=SimpleNamespace(
             message_thread_id=thread_id, answer=answer, edit_text=edit_text
         ),
+        # A real CallbackQuery always carries from_user. Leaving it off made
+        # the fake more forgiving than the thing it stands in for, which is
+        # how a prompt that opens the reply box for nobody went unnoticed.
+        from_user=SimpleNamespace(id=5001, full_name="Sarah Hill"),
         sent=sent,
     )
 

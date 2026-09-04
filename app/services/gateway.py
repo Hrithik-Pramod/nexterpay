@@ -15,6 +15,15 @@ from typing import Any, Protocol, runtime_checkable
 
 from aiogram.exceptions import TelegramBadRequest
 
+# Telegram assigns a topic colour at random when none is given, so the dots
+# beside each topic in the list mean nothing at all. Fixing them to one
+# colour leaves the traffic light in the title as the only thing in that
+# list carrying information. The colour must come from Telegram's own
+# palette; this is its light blue.
+NEUTRAL_TOPIC_COLOUR = 0x6FB9F0
+
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -63,7 +72,8 @@ class TelegramGateway(Protocol):
         ...
 
     async def edit_message_text(
-        self, chat_id: int, message_id: int, text: str, *, reply_markup: Any | None = None
+        self, chat_id: int, message_id: int, text: str, *,
+        reply_markup: Any | None = None, parse_mode: str | None = None,
     ) -> None: ...
 
     async def create_topic(self, chat_id: int, name: str) -> int: ...
@@ -135,14 +145,18 @@ class AiogramGateway:
         return SentMessage(chat_id=chat_id, message_id=msg.message_id)
 
     async def edit_message_text(
-        self, chat_id: int, message_id: int, text: str, *, reply_markup: Any | None = None
+        self, chat_id: int, message_id: int, text: str, *,
+        reply_markup: Any | None = None, parse_mode: str | None = None,
     ) -> None:
         await self._bot.edit_message_text(
-            chat_id=chat_id, message_id=message_id, text=text, reply_markup=reply_markup
+            chat_id=chat_id, message_id=message_id, text=text,
+            reply_markup=reply_markup, parse_mode=parse_mode,
         )
 
     async def create_topic(self, chat_id: int, name: str) -> int:
-        topic = await self._bot.create_forum_topic(chat_id=chat_id, name=name[:128])
+        topic = await self._bot.create_forum_topic(
+            chat_id=chat_id, name=name[:128], icon_color=NEUTRAL_TOPIC_COLOUR
+        )
         return topic.message_thread_id
 
     async def rename_topic(self, chat_id: int, thread_id: int, name: str) -> None:
@@ -266,7 +280,8 @@ class FakeGateway:
         return SentMessage(chat_id=chat_id, message_id=self._id())
 
     async def edit_message_text(
-        self, chat_id: int, message_id: int, text: str, *, reply_markup: Any | None = None
+        self, chat_id: int, message_id: int, text: str, *,
+        reply_markup: Any | None = None, parse_mode: str | None = None,
     ) -> None:
         self._maybe_fail()
         self.edits.setdefault(message_id, []).append(text)
@@ -278,6 +293,12 @@ class FakeGateway:
         self._maybe_fail()
         self._next_topic_id += 1
         self.topics.setdefault(chat_id, []).append(self._next_topic_id)
+        # Recorded in topic_names as well as in calls. Creating a topic names
+        # it, exactly as renaming does, and a fake that only remembers the
+        # second one is less faithful than the thing it stands in for - so a
+        # test asking "what is this topic called" got nothing back for any
+        # topic that had never been renamed.
+        self.topic_names[(chat_id, self._next_topic_id)] = name
         self.calls.append(Call("create_topic", chat_id, {"name": name}))
         return self._next_topic_id
 

@@ -80,11 +80,29 @@ async def test_senior_can_reassign(session, acme_support, support_ops, operator,
     assert item.owner_staff_id == operator.id
 
 
-async def test_operator_cannot_change_priority(session, acme_support, support_ops, operator):
+async def test_an_operator_can_change_priority(session, acme_support, support_ops, operator):
+    """Opened up on 3 September at NexterPay's request.
+
+    It was Senior Operator on the reasoning that priority is a claim on other
+    people's time. In practice the person who knows a request is urgent is the
+    one holding it, and sending them to find a senior just to say so cost more
+    than the occasional over-promotion. The change is still recorded against a
+    name, which is what makes it safe to open.
+    """
+    item = await _raise_request(session, acme_support)
+
+    await wi.change_priority(session, item, Priority.CRITICAL, Actor.of(operator))
+    assert item.priority is Priority.CRITICAL
+
+
+async def test_someone_who_is_not_staff_still_cannot_change_priority(
+    session, acme_support, support_ops
+):
+    """Opening it to every role is not opening it to everyone."""
     item = await _raise_request(session, acme_support)
 
     with pytest.raises(NotAuthorised):
-        await wi.change_priority(session, item, Priority.CRITICAL, Actor.of(operator))
+        await wi.change_priority(session, item, Priority.CRITICAL, Actor(name="Someone"))
 
 
 async def test_operator_cannot_escalate(session, acme_support, support_ops, operator):

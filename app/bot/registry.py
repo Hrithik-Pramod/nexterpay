@@ -10,7 +10,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Chat, Client, Staff, StaffDepartment
+from app.db.models import Chat, Client, GroupLead, Staff, StaffDepartment
 from app.domain.enums import ChatKind, Department, StaffRole
 
 
@@ -185,3 +185,59 @@ async def deactivate_staff(session: AsyncSession, telegram_user_id: int) -> Staf
     staff.deactivated_at = utcnow()
     await session.flush()
     return staff
+
+
+async def set_group_lead(
+    session: AsyncSession, chat: Chat, *, telegram_user_id: int, display_name: str
+) -> GroupLead:
+    """Name a contact inside a client or supplier group.
+
+    Idempotent, and revives someone previously removed rather than colliding
+    with the unique constraint - people come back.
+    """
+    result = await session.execute(
+        select(GroupLead).where(
+            GroupLead.chat_id == chat.id,
+            GroupLead.telegram_user_id == telegram_user_id,
+        )
+    )
+    lead = result.scalar_one_or_none()
+    if lead is None:
+        lead = GroupLead(
+            chat_id=chat.id,
+            telegram_user_id=telegram_user_id,
+            display_name=display_name,
+        )
+        session.add(lead)
+    else:
+        lead.display_name = display_name
+        lead.is_active = True
+    await session.flush()
+    return lead
+
+
+async def leads_for(session: AsyncSession, chat: Chat) -> list[GroupLead]:
+    result = await session.execute(
+        select(GroupLead)
+        .where(GroupLead.chat_id == chat.id, GroupLead.is_active.is_(True))
+        .order_by(GroupLead.display_name)
+    )
+    return list(result.scalars().all())
+
+
+async def remove_group_lead(
+    session: AsyncSession, chat: Chat, telegram_user_id: int
+) -> GroupLead | None:
+    """Deactivated rather than deleted, so a past mention still resolves."""
+    result = await session.execute(
+        select(GroupLead).where(
+            GroupLead.chat_id == chat.id,
+            GroupLead.telegram_user_id == telegram_user_id,
+        )
+    )
+    lead = result.scalar_one_or_none()
+    if lead is None:
+        return None
+    lead.is_active = False
+    await session.flush()
+    return lead

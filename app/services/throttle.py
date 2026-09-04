@@ -19,6 +19,7 @@ import asyncio
 import logging
 import time
 from collections import defaultdict, deque
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -172,7 +173,9 @@ class ThrottledGateway:
             chat_id, self._inner.reopen_topic, chat_id, thread_id
         )
 
-    async def edit_reply_markup(self, chat_id: int, message_id: int, reply_markup) -> None:
+    async def edit_reply_markup(
+        self, chat_id: int, message_id: int, reply_markup: Any | None
+    ) -> None:
         return await self._guarded(
             chat_id, self._inner.edit_reply_markup, chat_id, message_id, reply_markup
         )

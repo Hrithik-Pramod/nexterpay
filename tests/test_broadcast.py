@@ -338,3 +338,123 @@ async def test_the_client_is_not_told_about_the_context(
     new = gw.messages_to(CLIENT_CHAT)[before:]
     assert len(new) == 1
     assert "Raised in reply to the broadcast" not in new[0]
+
+
+# --------------------------------------------------------------------------
+# The handler, not just the service.
+#
+# Every test above this line calls app.services.broadcast directly. That is
+# why NexterPay could report "broadcast did not work" while all of them
+# passed: the fault was in the handler, one layer up, in the step that opens
+# the composer. A feature is not covered until something exercises the path a
+# person actually takes.
+# --------------------------------------------------------------------------
+
+async def test_a_manager_is_offered_a_composer_that_opens(
+    session, support_ops, acme_support, manager, gw, monkeypatch
+):
+    """The bug behind "it did nothing".
+
+    ForceReply(selective=True) forces a reply from the users *mentioned* in
+    the message. The prompt named nobody, so it opened for nobody: the text
+    appeared, no composer, and the person concluded the feature was broken.
+    Nothing was logged because nothing failed.
+    """
+    import contextlib
+    from types import SimpleNamespace
+
+    from aiogram.fsm.context import FSMContext
+    from aiogram.fsm.storage.base import StorageKey
+    from aiogram.fsm.storage.memory import MemoryStorage
+
+    from app.bot import deps
+    from app.bot.handlers import broadcast as handlers
+
+    deps.set_gateway(gw)
+
+    @contextlib.asynccontextmanager
+    async def fake_scope():
+        yield session
+
+    monkeypatch.setattr(handlers, "session_scope", fake_scope)
+
+    sent: list[tuple[str, dict]] = []
+
+    async def reply(text, **kwargs):
+        sent.append((text, kwargs))
+
+    message = SimpleNamespace(
+        chat=SimpleNamespace(id=support_ops.telegram_chat_id),
+        from_user=SimpleNamespace(
+            id=manager.telegram_user_id, full_name=manager.display_name
+        ),
+        reply=reply,
+    )
+    state = FSMContext(
+        storage=MemoryStorage(),
+        key=StorageKey(bot_id=1, chat_id=support_ops.telegram_chat_id, user_id=1),
+    )
+
+    await handlers.start(message, state)
+
+    assert sent, "the manager got no reply at all"
+    text, kwargs = sent[-1]
+    markup = kwargs.get("reply_markup")
+
+    assert markup is not None and markup.force_reply, "no composer was offered"
+    if markup.selective:
+        # Selective is only honoured for users mentioned in the text, and a
+        # tg://user link is the only thing that counts as a mention.
+        assert f'tg://user?id={manager.telegram_user_id}' in text, (
+            "selective is on but nobody is mentioned - this opens for nobody"
+        )
+        assert kwargs.get("parse_mode") == "HTML", "the mention will render as text"
+
+    assert await state.get_state() == "BroadcastCompose:awaiting_message"
+
+
+async def test_an_operator_is_told_why_rather_than_ignored(
+    session, support_ops, operator, gw, monkeypatch
+):
+    """Broadcasting is Manager and above. Being refused is correct - being
+    refused silently is not, and is indistinguishable from a fault."""
+    import contextlib
+    from types import SimpleNamespace
+
+    from aiogram.fsm.context import FSMContext
+    from aiogram.fsm.storage.base import StorageKey
+    from aiogram.fsm.storage.memory import MemoryStorage
+
+    from app.bot import deps
+    from app.bot.handlers import broadcast as handlers
+
+    deps.set_gateway(gw)
+
+    @contextlib.asynccontextmanager
+    async def fake_scope():
+        yield session
+
+    monkeypatch.setattr(handlers, "session_scope", fake_scope)
+
+    sent: list[str] = []
+
+    async def reply(text, **kwargs):
+        sent.append(text)
+
+    message = SimpleNamespace(
+        chat=SimpleNamespace(id=support_ops.telegram_chat_id),
+        from_user=SimpleNamespace(
+            id=operator.telegram_user_id, full_name=operator.display_name
+        ),
+        reply=reply,
+    )
+    state = FSMContext(
+        storage=MemoryStorage(),
+        key=StorageKey(bot_id=1, chat_id=support_ops.telegram_chat_id, user_id=2),
+    )
+
+    await handlers.start(message, state)
+
+    assert sent, "an operator was refused with no explanation"
+    assert "manager" in sent[-1].lower()
+    assert await state.get_state() is None, "state was set for someone who was refused"

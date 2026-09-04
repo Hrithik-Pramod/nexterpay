@@ -35,60 +35,102 @@ def parse_cb(data: str) -> tuple[str, int, str | None]:
     return parts[1], int(parts[2]), parts[3] if len(parts) > 3 else None
 
 
-def work_item_actions(work_item_id: int, *, claimed: bool) -> InlineKeyboardMarkup:
+def work_item_actions(
+    work_item_id: int, *, claimed: bool, expanded: bool = False
+) -> InlineKeyboardMarkup:
+    """Three buttons and a More, rather than nine.
+
+    NexterPay's observation, and it holds up: of nine actions, three carry
+    almost all the traffic. Nine buttons on every request is nine things to
+    read past to reach the one being reached for, every single time. The other
+    six have not gone anywhere - they are one tap behind More, which is the
+    right price for something used occasionally.
+
+    Claim becomes Reassign once somebody owns it, so the first button is
+    always the one about ownership.
+    """
     first = (
         InlineKeyboardButton(text="Reassign", callback_data=cb("reassign", work_item_id))
         if claimed
         else InlineKeyboardButton(text="Claim", callback_data=cb("claim", work_item_id))
     )
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                first,
-                InlineKeyboardButton(text="Status", callback_data=cb("status", work_item_id)),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="✉ Reply to client", callback_data=cb("reply", work_item_id)
-                ),
-                InlineKeyboardButton(text="Note", callback_data=cb("note", work_item_id)),
-            ],
-            [
-                InlineKeyboardButton(text="Priority", callback_data=cb("priority", work_item_id)),
-                InlineKeyboardButton(text="History", callback_data=cb("history", work_item_id)),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="File under supplier", callback_data=cb("file", work_item_id)
-                ),
-                InlineKeyboardButton(
-                    text="Link ticket", callback_data=cb("link", work_item_id)
-                ),
-            ],
-            [InlineKeyboardButton(text="Close", callback_data=cb("close", work_item_id))],
+
+    rows = [
+        [
+            first,
+            InlineKeyboardButton(
+                text="✉ Reply to client", callback_data=cb("reply", work_item_id)
+            ),
+            InlineKeyboardButton(text="Close", callback_data=cb("close", work_item_id)),
         ]
-    )
+    ]
+
+    if not expanded:
+        rows.append(
+            [InlineKeyboardButton(text="More ⌄", callback_data=cb("more", work_item_id))]
+        )
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    rows += [
+        [
+            InlineKeyboardButton(text="Status", callback_data=cb("status", work_item_id)),
+            InlineKeyboardButton(text="Priority", callback_data=cb("priority", work_item_id)),
+        ],
+        [
+            InlineKeyboardButton(text="Note", callback_data=cb("note", work_item_id)),
+            InlineKeyboardButton(text="History", callback_data=cb("history", work_item_id)),
+        ],
+        [
+            InlineKeyboardButton(
+                text="File under supplier", callback_data=cb("file", work_item_id)
+            ),
+            InlineKeyboardButton(
+                text="Link ticket", callback_data=cb("link", work_item_id)
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text="Ask another department", callback_data=cb("askdept", work_item_id)
+            )
+        ],
+        [InlineKeyboardButton(text="Less ⌃", callback_data=cb("less", work_item_id))],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def confirm_reply(work_item_id: int) -> InlineKeyboardMarkup:
+def confirm_reply(work_item_id: int, lead=None) -> InlineKeyboardMarkup:
     """Last stop before a message leaves for a client group.
 
     The envelope and the client's name are on the button on purpose. Staff tap
     dozens of these a day and stop reading; the one thing that must never
     become muscle memory is sending internal wording to a customer.
+
+    Where the group has a nominated lead, a second send button addresses them
+    by name. Two buttons rather than one setting, because whether this
+    particular message needs a specific person's attention is a decision per
+    message, not a preference.
     """
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+    rows = [
+        [
+            InlineKeyboardButton(
+                text="✉ Send to client", callback_data=cb("sendreply", work_item_id)
+            ),
+            InlineKeyboardButton(
+                text="Cancel", callback_data=cb("cancelreply", work_item_id)
+            ),
+        ]
+    ]
+    if lead is not None:
+        rows.insert(
+            0,
             [
                 InlineKeyboardButton(
-                    text="✉ Send to client", callback_data=cb("sendreply", work_item_id)
-                ),
-                InlineKeyboardButton(
-                    text="Cancel", callback_data=cb("cancelreply", work_item_id)
-                ),
-            ]
-        ]
-    )
+                    text=f"✉ Send and tag {lead.display_name}"[:60],
+                    callback_data=cb("sendreply", work_item_id, "tag"),
+                )
+            ],
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def closed_actions(work_item_id: int) -> InlineKeyboardMarkup:
@@ -160,6 +202,38 @@ def link_choices(work_item_id: int, candidates, linked) -> InlineKeyboardMarkup:
     ]
     rows.append([InlineKeyboardButton(text="← Back", callback_data=cb("back", work_item_id))])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def department_choices(work_item_id: int, departments) -> InlineKeyboardMarkup:
+    """Which desk to ask. The one you are standing in is not offered."""
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=d.label, callback_data=cb("setdept", work_item_id, d.value)
+            )
+        ]
+        for d in departments
+    ]
+    rows.append([InlineKeyboardButton(text="← Back", callback_data=cb("back", work_item_id))])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def confirm_internal(work_item_id: int, department) -> InlineKeyboardMarkup:
+    """Nothing reaches a counterparty here, but it still opens a request on
+    somebody else's desk - so it is confirmed like everything else."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"Ask {department.label}"[:60],
+                    callback_data=cb("sendinternal", work_item_id, department.value),
+                ),
+                InlineKeyboardButton(
+                    text="Cancel", callback_data=cb("cancelinternal", work_item_id)
+                ),
+            ]
+        ]
+    )
 
 
 def assignee_choices(work_item_id: int, people, department=None) -> InlineKeyboardMarkup:
@@ -240,12 +314,112 @@ def acknowledgement_actions() -> InlineKeyboardMarkup:
 
 
 def raise_request_prompt(department: str) -> InlineKeyboardMarkup:
-    """The single button a client sees in their group.
+    """What a client sees at the front door.
+
+    Two buttons rather than one. NexterPay's point: somebody sending /np is
+    as likely to be chasing something they already raised as starting
+    something new, and offering only "Raise Request" makes checking require
+    knowing a second command exists. It also quietly encourages a duplicate,
+    which is the thing they then have to close by hand.
 
     Business groups get 'Commercial Enquiry' per PRD 15.4; everyone else gets
     'Raise Request'.
     """
     label = "Commercial Enquiry" if department == "business" else "Raise Request"
     return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text=label, callback_data="raise:new")]]
+        inline_keyboard=[
+            [InlineKeyboardButton(text=label, callback_data="raise:new")],
+            [InlineKeyboardButton(text="My requests", callback_data="tk:list")],
+        ]
     )
+
+
+# --------------------------------------------------------------------------
+# Administration by button
+#
+# Only two of the administrator commands are here. NexterPay were asked which
+# were worth it and named these: registering a group and adding staff are the
+# ones done under time pressure with somebody standing there waiting, and they
+# are the two where getting the arguments wrong is most annoying. The rest are
+# run once, calmly, and stay as commands.
+# --------------------------------------------------------------------------
+
+ADMIN_PREFIX = "ad"
+
+
+def admin_cb(action: str, value: str | None = None) -> str:
+    return f"{ADMIN_PREFIX}:{action}" + (f":{value}" if value else "")
+
+
+def parse_admin_cb(data: str) -> tuple[str, str | None]:
+    parts = data.split(":")
+    if len(parts) < 2 or parts[0] != ADMIN_PREFIX:
+        raise ValueError(f"Unrecognised admin callback: {data!r}")
+    return parts[1], parts[2] if len(parts) > 2 else None
+
+
+def setup_menu(*, in_operations: bool) -> InlineKeyboardMarkup:
+    """What can be set up from here, given which kind of group this is.
+
+    Offering "register this as an Operations Group" inside a client group is
+    how a client group gets turned into an internal one by a mis-tap, so the
+    menu is built from where you are standing.
+    """
+    if in_operations:
+        rows = [[InlineKeyboardButton(text="Add a person", callback_data=admin_cb("adduser"))]]
+    else:
+        rows = [
+            [
+                InlineKeyboardButton(
+                    text="Register as a client group", callback_data=admin_cb("regclient")
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Register as a supplier group",
+                    callback_data=admin_cb("regsupplier"),
+                )
+            ],
+        ]
+    rows.append([InlineKeyboardButton(text="Cancel", callback_data=admin_cb("cancel"))])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def department_menu(action: str) -> InlineKeyboardMarkup:
+    """Every department, as buttons, so nobody has to remember the spelling."""
+    from app.domain.enums import Department
+
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=d.label, callback_data=admin_cb(action, d.value)
+            )
+        ]
+        for d in Department
+    ]
+    rows.append([InlineKeyboardButton(text="Cancel", callback_data=admin_cb("cancel"))])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def role_menu(department) -> InlineKeyboardMarkup:
+    """Roles, with what each one means, because "senior_operator" typed from
+    memory is the single most common way adding somebody goes wrong."""
+    from app.domain.enums import StaffRole
+
+    labels = {
+        StaffRole.OPERATOR: "Operator — work requests",
+        StaffRole.SENIOR_OPERATOR: "Senior Operator — also reassign, escalate",
+        StaffRole.MANAGER: "Manager — also reopen, broadcast",
+        StaffRole.ADMINISTRATOR: "Administrator — everything, all departments",
+    }
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=labels[role],
+                callback_data=admin_cb("setrole", f"{department.value}|{role.value}"),
+            )
+        ]
+        for role in StaffRole
+    ]
+    rows.append([InlineKeyboardButton(text="Cancel", callback_data=admin_cb("cancel"))])
+    return InlineKeyboardMarkup(inline_keyboard=rows)

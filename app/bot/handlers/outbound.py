@@ -13,12 +13,10 @@ from __future__ import annotations
 import logging
 
 from aiogram import F, Router
-from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     CallbackQuery,
-    ForceReply,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
@@ -26,7 +24,13 @@ from aiogram.types import (
 
 from app.bot import commands as cmd
 from app.bot import keyboards as kb
-from app.bot.deps import explain, gateway, refusal_reason, staff_context
+from app.bot.deps import (
+    explain,
+    gateway,
+    prompt_for,
+    refusal_reason,
+    staff_context,
+)
 from app.db.base import session_scope
 from app.db.models import Chat
 from app.domain.enums import ChatKind
@@ -66,33 +70,55 @@ def _confirm() -> InlineKeyboardMarkup:
     )
 
 
-async def _counterparties(session, department):
+async def _counterparties(session, department, *, suppliers: bool | None = None):
     """Groups this department can raise into.
 
     Scoped to the department deliberately. Support staff have no business
     opening a request in a Finance client's group, and an unscoped list is
     how that happens by accident on a busy afternoon.
+
+    `suppliers` narrows it further to one side of the trade. None returns
+    both, which nothing uses any more but the tests still exercise.
     """
     from sqlalchemy import select
 
-    result = await session.execute(
-        select(Chat)
-        .where(
-            Chat.is_active.is_(True),
-            Chat.kind == ChatKind.CLIENT,
-            Chat.department == department,
-        )
-        .order_by(Chat.title)
+    query = select(Chat).where(
+        Chat.is_active.is_(True),
+        Chat.kind == ChatKind.CLIENT,
+        Chat.department == department,
     )
+    if suppliers is not None:
+        query = query.where(Chat.is_supplier.is_(suppliers))
+
+    result = await session.execute(query.order_by(Chat.title))
     chats = list(result.scalars().all())
     for chat in chats:
         await session.refresh(chat, ["client"])
     return chats
 
 
-@router.message(Command(cmd.NEW))
-async def start(message: Message, state: FSMContext) -> None:
-    """`/np_new` - open a request with a client or supplier."""
+@router.message(cmd.any_case(cmd.NEW_CLIENT))
+async def start_with_client(message: Message, state: FSMContext) -> None:
+    """`/npnewcl` - open a request with a client."""
+    await _start(message, state, suppliers=False, noun="client")
+
+
+@router.message(cmd.any_case(cmd.NEW_SUPPLIER))
+async def start_with_supplier(message: Message, state: FSMContext) -> None:
+    """`/npnewsu` - open a request with a supplier."""
+    await _start(message, state, suppliers=True, noun="supplier")
+
+
+async def _start(
+    message: Message, state: FSMContext, *, suppliers: bool, noun: str
+) -> None:
+    """One flow, two doors.
+
+    This was a single command with a mixed picker until NexterPay pointed out
+    that the picker was where you found out which kind of counterparty you
+    were about to open a conversation with. Putting it in the command means
+    the decision is made before the list appears, not from it.
+    """
     async with session_scope() as session:
         ctx = await staff_context(
             session, message.chat.id, message.from_user.id if message.from_user else None
@@ -106,18 +132,21 @@ async def start(message: Message, state: FSMContext) -> None:
             )
             return
         chat, _ = ctx
-        options = await _counterparties(session, chat.department)
+        options = await _counterparties(session, chat.department, suppliers=suppliers)
         markup = _counterparty_keyboard(options) if options else None
 
     if not options:
+        other = cmd.NEW_CLIENT if suppliers else cmd.NEW_SUPPLIER
         await message.reply(
-            f"No client or supplier groups are registered for "
-            f"{chat.department.label} yet."
+            f"No {noun} groups are registered for {chat.department.label} yet. "
+            f"If you meant the other side of the trade, use /{other}."
         )
         return
 
     await state.clear()
-    await message.reply("Who is this request with?", reply_markup=markup)
+    await message.reply(
+        f"Which {noun} is this request with?", reply_markup=markup
+    )
 
 
 @router.callback_query(F.data.startswith("ob:to:"))
@@ -148,11 +177,13 @@ async def choose_counterparty(query: CallbackQuery, state: FSMContext) -> None:
 
     await state.set_state(OutboundCompose.awaiting_message)
     await state.update_data(to_chat_id=telegram_chat_id, to_title=title)
-    await query.message.answer(
+    text, markup, mode = prompt_for(
+        query.from_user,
         f"Raising a request with {title}. Type it below - you will see it "
         f"before anything is sent.",
-        reply_markup=ForceReply(selective=True),
+        placeholder="The request",
     )
+    await query.message.answer(text, reply_markup=markup, parse_mode=mode)
     await query.answer()
 
 

@@ -87,16 +87,41 @@ async def test_a_full_request_lifecycle_works_in_compliance(session, gw, manager
     assert "Compliance and Risk" in gw.all_text_to(COMPLIANCE_OPS)
 
 
-def test_nothing_is_trimmed_from_the_buttons() -> None:
-    """NexterPay chose to keep the full set for now.
+def _labels(markup) -> list[str]:
+    return [b.text for row in markup.inline_keyboard for b in row]
 
-    If that changes, this is where it changes - deliberately, rather than by
-    someone quietly dropping a button.
+
+def test_the_three_common_actions_are_the_ones_on_screen() -> None:
+    """NexterPay's observation: of nine actions, three carry the traffic.
+
+    Nine buttons on every request is nine things to read past to reach the one
+    being reached for. Claim, Reply and Close are the three.
     """
-    labels = [
-        b.text for row in work_item_actions(1, claimed=False).inline_keyboard for b in row
-    ]
+    labels = _labels(work_item_actions(1, claimed=False))
+
+    assert labels[0] == "Claim"
+    assert any("Reply to client" in text for text in labels)
+    assert "Close" in labels
+    assert any("More" in text for text in labels)
+    assert len(labels) == 4, f"the collapsed set should be three and a More: {labels}"
+
+
+def test_nothing_was_dropped_when_the_buttons_were_trimmed() -> None:
+    """Trimmed means moved behind More, not removed.
+
+    This test existed before the trim to catch a button being quietly lost,
+    and the trim is exactly the change that would look like that from the
+    outside. So it now asserts the whole set is still reachable.
+    """
+    collapsed = set(_labels(work_item_actions(1, claimed=False)))
+    expanded = set(_labels(work_item_actions(1, claimed=False, expanded=True)))
+    reachable = collapsed | expanded
+
     for expected in ("Claim", "Status", "Note", "Priority", "History", "Close"):
-        assert any(expected in label for label in labels), f"{expected} missing"
-    assert any("Reply to client" in label for label in labels)
-    assert any("File under supplier" in label for label in labels)
+        assert any(expected in text for text in reachable), f"{expected} missing"
+    assert any("Reply to client" in text for text in reachable)
+    assert any("File under supplier" in text for text in reachable)
+    assert any("Link ticket" in text for text in reachable)
+
+    # And the way back, or someone expands it once and never collapses it.
+    assert any("Less" in text for text in expanded)
