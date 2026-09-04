@@ -30,6 +30,9 @@ STALE_HOURS="${STALE_HOURS:-30}"    # --check fails if the newest is older than 
 cd "$PROJECT_DIR"
 
 # shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/lib-dump.sh"
+
+# shellcheck disable=SC1091
 [[ -f .env ]] && set -a && . ./.env && set +a
 DB_USER="${POSTGRES_USER:-nexterpay}"
 DB_NAME="${POSTGRES_DB:-nexterpay_ops}"
@@ -38,7 +41,16 @@ say()  { printf "\033[1;34m==>\033[0m %s\n" "$*"; }
 warn() { printf "\033[1;33m!!\033[0m %s\n" "$*" >&2; }
 die()  { printf "\033[1;31mBACKUP FAILED:\033[0m %s\n" "$*" >&2; exit 1; }
 
-newest() { ls -1t "${BACKUP_DIR}"/nexterpay-*.sql.gz 2>/dev/null | head -1; }
+# Written without `| head -1` on purpose. `head` closing the pipe under a
+# still-writing `ls` is the same SIGPIPE-plus-pipefail trap that broke the
+# dump check - harmless at seven backups, which is exactly what was said
+# about the other one. Reading the list into an array reads all of it.
+newest() {
+  local files=()
+  mapfile -t files < <(ls -1t "${BACKUP_DIR}"/nexterpay-*.sql.gz 2>/dev/null || true)
+  (( ${#files[@]} )) || return 1
+  printf '%s\n' "${files[0]}"
+}
 
 # --------------------------------------------------------------------------
 # --check: is there a recent, readable backup? For cron alerting and for
@@ -86,7 +98,7 @@ fi
 size=$(stat -c %s "$temp" 2>/dev/null || echo 0)
 (( size >= MIN_BYTES )) || die "dump is only ${size} bytes - refusing to keep it"
 gzip -t "$temp" 2>/dev/null || die "dump did not gzip cleanly"
-zcat "$temp" | grep -q "CREATE TABLE public.work_items" \
+looks_like_a_nexterpay_dump "$temp" \
   || die "dump does not contain the work_items table - wrong database?"
 
 mv "$temp" "$final"

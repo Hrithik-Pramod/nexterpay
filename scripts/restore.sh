@@ -20,6 +20,9 @@ BACKUP_DIR="${BACKUP_DIR:-${HOME}/backups}"
 cd "$PROJECT_DIR"
 
 # shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/lib-dump.sh"
+
+# shellcheck disable=SC1091
 [[ -f .env ]] && set -a && . ./.env && set +a
 DB_USER="${POSTGRES_USER:-nexterpay}"
 DB_NAME="${POSTGRES_DB:-nexterpay_ops}"
@@ -38,7 +41,7 @@ fi
 
 [[ -f "$FILE" ]] || die "no such file: $FILE"
 gzip -t "$FILE" 2>/dev/null || die "$FILE is not a readable gzip file"
-zcat "$FILE" | grep -q "CREATE TABLE public.work_items" \
+looks_like_a_nexterpay_dump "$FILE" \
   || die "$FILE does not look like a NexterPay dump"
 
 say "About to restore ${DB_NAME} from:"
