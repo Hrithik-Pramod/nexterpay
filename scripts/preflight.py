@@ -239,6 +239,19 @@ async def check_staff_anonymity(bot: Bot, chat: Chat) -> None:
             f"{chat.department.label} Operations: "
             f"{len(people)} human admin(s), none anonymous"
         )
+    else:
+        # Says so out loud rather than printing nothing.
+        #
+        # A check that is silent when it finds nothing wrong reads exactly
+        # like a check that did not run, and preflight is read by someone
+        # deciding whether it is safe to go ahead. On 4 September two groups
+        # printed this line and two printed nothing, and the honest answer to
+        # "why the difference?" took a look at the source to establish.
+        ok(
+            f"{chat.department.label} Operations: no human administrators "
+            "besides the owner - nothing to be anonymous. Staff only need to "
+            "be members here."
+        )
 
 
 async def check_registry() -> tuple[list[Chat], list[Chat]]:
