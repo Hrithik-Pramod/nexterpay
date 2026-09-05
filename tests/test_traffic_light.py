@@ -235,6 +235,46 @@ async def test_a_marked_title_still_fits_telegrams_limit(
     assert len(_title(gw, item)) <= 128
 
 
+async def test_a_closed_request_drops_its_priority_mark(
+    session, acme_support, support_ops, manager, gw
+):
+    """Green and urgent are contradictory instructions.
+
+    NexterPay saw a closed request still carrying its mark in the archived
+    list after the 4 September backfill. Urgency is a claim about what to do
+    next, and on a closed request there is nothing next - so a list of
+    finished work full of exclamation marks only teaches people to read past
+    them, including on the open ones where they mean something.
+    """
+    from app.domain.enums import Priority
+
+    item = await _raised(session, gw, acme_support)
+    await relay.change_priority(session, gw, item, Priority.CRITICAL, Actor.of(manager))
+    assert relay.PRIORITY_MARKS[Priority.CRITICAL] in _title(gw, item)
+
+    await relay.close(session, gw, item, Actor.of(manager))
+    title = _title(gw, item)
+
+    assert title.startswith(relay.LIGHT_DONE)
+    for mark in relay.PRIORITY_MARKS.values():
+        assert mark not in title, f"a closed request is still shouting: {title}"
+
+
+async def test_reopening_brings_the_mark_back(
+    session, acme_support, support_ops, manager, gw
+):
+    """Suppressing it on close must not lose it. A reopened Critical request
+    is Critical again, and would otherwise sit in the list looking routine."""
+    from app.domain.enums import Priority
+
+    item = await _raised(session, gw, acme_support)
+    await relay.change_priority(session, gw, item, Priority.CRITICAL, Actor.of(manager))
+    await relay.close(session, gw, item, Actor.of(manager))
+    await relay.reopen(session, gw, item, Actor.of(manager))
+
+    assert relay.PRIORITY_MARKS[Priority.CRITICAL] in _title(gw, item)
+
+
 async def test_the_people_in_the_header_are_tappable(
     session, acme_support, support_ops, operator, gw
 ):

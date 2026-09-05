@@ -18,22 +18,47 @@ from app.bot import keyboards as kb
 from app.domain.enums import Department, StaffRole
 
 
-def test_the_menu_is_built_from_where_you_are_standing() -> None:
-    """Offering "register this as an Operations Group" inside a client group
-    is how a client group gets turned into an internal one by a mis-tap."""
-    in_client = [
-        b.text for row in kb.setup_menu(in_operations=False).inline_keyboard for b in row
-    ]
-    in_ops = [
-        b.text for row in kb.setup_menu(in_operations=True).inline_keyboard for b in row
-    ]
+def _labels(**kwargs) -> list[str]:
+    return [b.text for row in kb.setup_menu(**kwargs).inline_keyboard for b in row]
 
-    assert any("client group" in t for t in in_client)
-    assert any("supplier group" in t for t in in_client)
-    assert not any("Add a person" in t for t in in_client)
+
+def test_an_unregistered_group_is_asked_what_it_is() -> None:
+    """All three answers, including our own.
+
+    This is the gap NexterPay reported on 4 September - "this only offers
+    option of person not group". Registering an Operations Group was on no
+    menu in any group, so the single command the buttons exist to replace was
+    the one you still had to type from memory.
+    """
+    offered = _labels(in_operations=False, registered=False)
+
+    assert any("Operations Group" in t for t in offered), \
+        "an Operations Group still cannot be registered by button"
+    assert any("client" in t for t in offered)
+    assert any("supplier" in t for t in offered)
+
+
+def test_a_registered_group_is_not_offered_registration_again() -> None:
+    """Not because it would fail. Because it would succeed - and re-pointing
+    a live client group at another department by mis-tap is worse than having
+    to type the command deliberately."""
+    for kwargs in ({"in_operations": True}, {"in_operations": False}):
+        offered = _labels(registered=True, **kwargs)
+        assert not any("Register" in t or "group" in t.lower() for t in offered), \
+            f"registration is still offered with {kwargs}"
+
+
+def test_the_menu_is_built_from_where_you_are_standing() -> None:
+    in_ops = _labels(in_operations=True, registered=True)
+    in_counterparty = _labels(in_operations=False, registered=True)
 
     assert any("Add a person" in t for t in in_ops)
-    assert not any("client group" in t for t in in_ops)
+
+    # Naming a contact is the thing actually done inside a counterparty group,
+    # and it was reachable only as a command somebody had to already know.
+    assert any("contact" in t for t in in_counterparty)
+    assert not any("Add a person" in t for t in in_counterparty), \
+        "staff are never added from a room the counterparty is sitting in"
 
 
 def test_every_department_is_offered_so_nobody_types_one() -> None:

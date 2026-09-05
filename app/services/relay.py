@@ -176,7 +176,11 @@ def topic_name(item: WorkItem, client_name: str) -> str:
     which is the first question, and every topic has one. Only two priorities
     in five carry a mark, so leading with it would ragged the list.
     """
-    mark = PRIORITY_MARKS.get(item.priority)
+    # No mark once it is closed. Green says finished and the mark says drop
+    # everything, and a list of archived work carrying urgency flags trains
+    # people to read past both. Urgency is a claim about what to do next, and
+    # there is nothing next.
+    mark = None if item.status is WorkItemStatus.CLOSED else PRIORITY_MARKS.get(item.priority)
     return (
         f"{traffic_light(item)}{mark or ''} {item.display_reference} · "
         f"{client_name} · {item.subject}"
@@ -530,20 +534,34 @@ async def relay_client_message(
         )
 
     if text:
+        # The counterparty's own words go in a blockquote.
+        #
+        # NexterPay asked for this message "in a different colour". Telegram
+        # gives a bot no colour at all - the entire set of styles available is
+        # bold, italic, underline, strikethrough, spoiler, code, pre,
+        # blockquote, links and mentions, and not one of them changes the
+        # colour of text. A blockquote is the strongest thing on that list:
+        # Telegram draws it as an indented block with a vertical bar down the
+        # side, which is what actually separates it from the run of
+        # bot chatter around it.
+        #
+        # It is also the honest markup. This is somebody else's words quoted
+        # into our group, which is exactly what a blockquote means, so it will
+        # keep making sense to a reader who never heard the request behind it.
+        quoted = f"<blockquote>{html.escape(text)}</blockquote>"
         if owner is not None:
             body = (
-                f"{mention_for(owner)} — {html.escape(sender_name)} has replied "
-                f"on {item.display_reference}:\n{html.escape(text)}"
-            )
-            await gateway.send_message(
-                ops.telegram_chat_id, body, thread_id=item.topic_id, parse_mode="HTML"
+                f"{mention_for(owner)} — <b>{html.escape(sender_name)} has "
+                f"replied</b> on {item.display_reference}\n{quoted}"
             )
         else:
-            await gateway.send_message(
-                ops.telegram_chat_id,
-                f"{sender_name} (client):\n{text}",
-                thread_id=item.topic_id,
+            body = (
+                f"<b>{html.escape(sender_name)} has replied</b> on "
+                f"{item.display_reference}\n{quoted}"
             )
+        await gateway.send_message(
+            ops.telegram_chat_id, body, thread_id=item.topic_id, parse_mode="HTML"
+        )
     elif owner is not None and attachments:
         # An attachment with no words still needs the owner to know.
         await gateway.send_message(

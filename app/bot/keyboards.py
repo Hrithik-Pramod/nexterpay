@@ -358,29 +358,48 @@ def parse_admin_cb(data: str) -> tuple[str, str | None]:
     return parts[1], parts[2] if len(parts) > 2 else None
 
 
-def setup_menu(*, in_operations: bool) -> InlineKeyboardMarkup:
-    """What can be set up from here, given which kind of group this is.
+def setup_menu(*, in_operations: bool, registered: bool) -> InlineKeyboardMarkup:
+    """What can be set up from here, given what this group already is.
 
-    Offering "register this as an Operations Group" inside a client group is
-    how a client group gets turned into an internal one by a mis-tap, so the
-    menu is built from where you are standing.
+    Three states, not two, and getting that wrong is what NexterPay reported
+    on 4 September: "this only offers option of person not group". They were
+    right, and the gap was wider than it looked - registering an Operations
+    Group was not on the menu anywhere, in any group, so the one command the
+    buttons exist to replace was the one command you still had to type.
+
+    An *unregistered* group is asked what it is, and all three answers are
+    offered. Registering an Operations Group is a different question from
+    registering a client group and the wrong answer is expensive, so it is
+    worded as what the group is rather than as an action.
+
+    A *registered* group is not offered registration again. Not because it
+    would fail - it would succeed, and re-pointing a live client group at
+    another department by mis-tap is a worse outcome than having to type the
+    command deliberately.
     """
-    if in_operations:
-        rows = [[InlineKeyboardButton(text="Add a person", callback_data=admin_cb("adduser"))]]
-    else:
-        rows = [
-            [
-                InlineKeyboardButton(
-                    text="Register as a client group", callback_data=admin_cb("regclient")
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="Register as a supplier group",
-                    callback_data=admin_cb("regsupplier"),
-                )
-            ],
+    rows: list[list[InlineKeyboardButton]] = []
+
+    if not registered:
+        rows += [
+            [InlineKeyboardButton(
+                text="Our own Operations Group", callback_data=admin_cb("regops"))],
+            [InlineKeyboardButton(
+                text="A client's group", callback_data=admin_cb("regclient"))],
+            [InlineKeyboardButton(
+                text="A supplier's group", callback_data=admin_cb("regsupplier"))],
         ]
+    elif in_operations:
+        rows.append(
+            [InlineKeyboardButton(text="Add a person", callback_data=admin_cb("adduser"))]
+        )
+    else:
+        # A registered counterparty group. Naming a contact is the thing
+        # actually done in here, and it was reachable only as a command.
+        rows.append(
+            [InlineKeyboardButton(
+                text="Name a contact here", callback_data=admin_cb("howlead"))]
+        )
+
     rows.append([InlineKeyboardButton(text="Cancel", callback_data=admin_cb("cancel"))])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

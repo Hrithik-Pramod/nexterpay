@@ -63,6 +63,49 @@ async def _is_admin(session, user_id: int | None) -> bool:
     return staff is not None and staff.is_administrator
 
 
+async def _admin_or_refuse(session, message: Message) -> bool:
+    """True if they may run this. Otherwise says so, and returns False.
+
+    Every administrator command in this file used to `return` here without a
+    word. The reasoning at the time was that a non-administrator should not
+    learn what they cannot do - which is worth almost nothing, since /nphelp
+    names the administrator commands to everybody anyway, and costs a great
+    deal.
+
+    What it cost: on 4 September NexterPay reported /npsetlead as "not
+    working". It was working exactly as designed. Gavin is an Operator, the
+    command needs an administrator, and the bot answered him with silence.
+    There is no way to tell that apart from a crash, a deploy that failed, a
+    typo in the command name, or Telegram not delivering the message - and
+    every one of those has a completely different fix. A refusal that does not
+    speak turns a permissions question into a bug report.
+    """
+    user = message.from_user
+    if await _is_admin(session, user.id if user else None):
+        return True
+
+    person = await resolve_staff(session, user.id) if user else None
+    if person is None:
+        await message.reply(
+            "That one is for administrators, and you are not registered as "
+            "NexterPay staff at all.\n\n"
+            "An administrator can add you by replying to one of your messages "
+            f"with /{cmd.ADDUSER} operator <department>."
+        )
+    else:
+        desks = ", ".join(
+            f"{m.department.label} ({m.role.value.replace('_', ' ')})"
+            for m in person.desks
+        )
+        await message.reply(
+            "That one is for administrators.\n\n"
+            f"You are {desks or 'not on any department'}. "
+            f"Send /{cmd.HELP} for what you can do here, or ask an "
+            f"administrator to run it."
+        )
+    return False
+
+
 def _department(value: str) -> Department | None:
     try:
         return Department(value.strip().lower())
@@ -74,7 +117,7 @@ def _department(value: str) -> Department | None:
 async def cmd_register_ops(message: Message, command: CommandObject) -> None:
     """`/np_register_ops <department>` - run inside the Operations Group itself."""
     async with session_scope() as session:
-        if not await _is_admin(session, message.from_user.id if message.from_user else None):
+        if not await _admin_or_refuse(session, message):
             return
         department = _department(command.args or "")
         if department is None:
@@ -114,7 +157,7 @@ async def _register_counterparty(
     parts = (command.args or "").split(maxsplit=1)
 
     async with session_scope() as session:
-        if not await _is_admin(session, message.from_user.id if message.from_user else None):
+        if not await _admin_or_refuse(session, message):
             return
         if len(parts) < 2 or _department(parts[0]) is None:
             await message.reply(
@@ -166,7 +209,7 @@ async def _register_counterparty(
 async def cmd_adduser(message: Message, command: CommandObject) -> None:
     """`/np_adduser <role> <department>` - as a reply to the person being added."""
     async with session_scope() as session:
-        if not await _is_admin(session, message.from_user.id if message.from_user else None):
+        if not await _admin_or_refuse(session, message):
             return
 
         target = message.reply_to_message.from_user if message.reply_to_message else None
@@ -243,7 +286,7 @@ async def cmd_removeuser(message: Message, command: CommandObject) -> None:
     Offboarding matters more than onboarding here.
     """
     async with session_scope() as session:
-        if not await _is_admin(session, message.from_user.id if message.from_user else None):
+        if not await _admin_or_refuse(session, message):
             return
 
         args = (command.args or "").split()
@@ -329,7 +372,7 @@ async def cmd_addparty(message: Message, command: CommandObject) -> None:
     parts = (command.args or "").split(maxsplit=1)
 
     async with session_scope() as session:
-        if not await _is_admin(session, message.from_user.id if message.from_user else None):
+        if not await _admin_or_refuse(session, message):
             return
 
         if len(parts) < 2:
@@ -380,7 +423,7 @@ async def cmd_setcode(message: Message, command: CommandObject) -> None:
     code = (command.args or "").strip().upper()
 
     async with session_scope() as session:
-        if not await _is_admin(session, message.from_user.id if message.from_user else None):
+        if not await _admin_or_refuse(session, message):
             return
 
         if not (len(code) == 4 and code.isascii() and code.isalpha()):
@@ -482,7 +525,7 @@ async def cmd_setlead(message: Message) -> None:
     mechanism as registering staff, for the same reason.
     """
     async with session_scope() as session:
-        if not await _is_admin(session, message.from_user.id if message.from_user else None):
+        if not await _admin_or_refuse(session, message):
             return
 
         chat = await resolve_chat(session, message.chat.id)
@@ -538,7 +581,7 @@ async def cmd_leads(message: Message) -> None:
 async def cmd_removelead(message: Message) -> None:
     """`/npremovelead` - as a reply. Deactivated, not deleted."""
     async with session_scope() as session:
-        if not await _is_admin(session, message.from_user.id if message.from_user else None):
+        if not await _admin_or_refuse(session, message):
             return
 
         chat = await resolve_chat(session, message.chat.id)
@@ -582,7 +625,7 @@ class Setup(StatesGroup):
 @router.message(cmd.any_case(cmd.SETUP))
 async def cmd_setup(message: Message, state: FSMContext) -> None:
     async with session_scope() as session:
-        if not await _is_admin(session, message.from_user.id if message.from_user else None):
+        if not await _admin_or_refuse(session, message):
             return
         chat = await resolve_chat(session, message.chat.id)
         in_operations = chat is not None and chat.kind is ChatKind.OPERATIONS
@@ -592,7 +635,9 @@ async def cmd_setup(message: Message, state: FSMContext) -> None:
         "What would you like to set up here?"
         if chat is not None
         else "This group is not registered yet. What is it?",
-        reply_markup=kb.setup_menu(in_operations=in_operations),
+        reply_markup=kb.setup_menu(
+            in_operations=in_operations, registered=chat is not None
+        ),
     )
 
 
@@ -612,6 +657,57 @@ async def on_setup(query: CallbackQuery, state: FSMContext) -> None:
     if action == "cancel":
         await state.clear()
         await query.message.edit_text("Cancelled. Nothing was changed.")
+        await query.answer()
+        return
+
+    if action == "regops":
+        await query.message.edit_text(
+            "Which desk is this Operations Group for?",
+            reply_markup=kb.department_menu("opsdept"),
+        )
+        await query.answer()
+        return
+
+    if action == "opsdept":
+        # Registered here and now. Unlike a counterparty group there is no
+        # name to ask for - an Operations Group is ours, and the department
+        # is the whole of what distinguishes one from another.
+        department = _department(value)
+        if department is None:
+            await query.answer("That department no longer exists.", show_alert=True)
+            return
+        async with session_scope() as session:
+            await register_operations_chat(
+                session,
+                telegram_chat_id=query.message.chat.id,
+                department=department,
+                title=query.message.chat.title,
+            )
+        logger.info(
+            "Registered ops group %s as %s by button",
+            query.message.chat.id, department.value,
+        )
+        await query.message.edit_text(
+            f"Registered this group as {department.label} Operations.\n\n"
+            f"Two things to check before using it: Topics must be switched on "
+            f"in the group settings, and the bot needs to be an administrator "
+            f"here with Manage Topics. Without both, requests have nowhere to "
+            f"land."
+        )
+        await query.answer()
+        return
+
+    if action == "howlead":
+        await query.message.edit_text(
+            f"Naming a contact has to be done as a reply, so reply to a "
+            f"message from the person with:\n\n"
+            f"/{cmd.SETLEAD}\n\n"
+            f"Telegram will not tell a bot who is in a group, so pointing at "
+            f"something they wrote is the only way it can learn who they are. "
+            f"Once named, replying to this group offers to tag them, so the "
+            f"message reaches a person rather than a room.\n\n"
+            f"/{cmd.LEADS} shows who is named here."
+        )
         await query.answer()
         return
 
@@ -690,7 +786,7 @@ async def capture_setup_name(message: Message, state: FSMContext) -> None:
 
     await state.clear()
     async with session_scope() as session:
-        if not await _is_admin(session, message.from_user.id if message.from_user else None):
+        if not await _admin_or_refuse(session, message):
             return
         chat = await register_client_chat(
             session,

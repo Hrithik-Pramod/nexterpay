@@ -30,7 +30,7 @@ from app.bot.registry import resolve_chat, resolve_staff
 from app.bot.routing import build_strategy
 from app.config import get_settings
 from app.db.base import init_engine, session_scope
-from app.domain.enums import StaffRole
+from app.domain.enums import ChatKind, StaffRole
 from app.services.gateway import AiogramGateway
 from app.services.throttle import ThrottledGateway
 
@@ -80,6 +80,30 @@ def whoami_text(person) -> str:
         + "\n".join(desks)
         + "\n\nSeniority is held per department, so it does not carry across."
     )
+
+
+def whoami_response(chat, person) -> str:
+    """What `/npwhoami` replies, given where it was sent and by whom.
+
+    Separated from the handler so it can be tested by calling it. The first
+    attempt at this guard was tested by reading the handler's source for the
+    right words, and that test passed against a version with the condition
+    disabled - the words were all still there. A test that inspects code
+    rather than running it will accept anything that looks right.
+
+    `chat is None` - an unregistered group - is treated as unsafe. We have no
+    idea who is in it.
+    """
+    if chat is None or chat.kind is not ChatKind.OPERATIONS:
+        return (
+            "Not in here - this group may have people from outside NexterPay "
+            "in it, and the answer names departments and seniority.\n\n"
+            f"Send /{cmd.WHOAMI} in an Operations Group, or /{cmd.HELP} here "
+            f"for what you can do in this group."
+        )
+    if person is None:
+        return "You are not registered as NexterPay staff."
+    return whoami_text(person)
 
 
 def build_storage():
@@ -170,14 +194,26 @@ def build_dispatcher() -> Dispatcher:
 
     @dp.message(cmd.any_case(cmd.WHOAMI))
     async def cmd_whoami(message: Message) -> None:
+        """Your desks and your seniority - but not in front of a counterparty.
+
+        This answered anywhere, including inside a client or supplier group,
+        and NexterPay found it: on 4 September a member of staff ran it in the
+        Pexi supplier group and the bot published his departments and his role
+        on each into a room the supplier is sitting in.
+
+        Nothing here is a secret, exactly. It is still internal structure -
+        who covers which desk, and who outranks whom - and a supplier reading
+        it learns something about how NexterPay is organised that nobody chose
+        to tell them. The command is for the person, not the room, so outside
+        an Operations Group it says where to go instead.
+        """
         if message.from_user is None:
             return
         async with session_scope() as session:
+            chat = await resolve_chat(session, message.chat.id)
             person = await resolve_staff(session, message.from_user.id)
-        if person is None:
-            await message.reply("You are not registered as NexterPay staff.")
-            return
-        await message.reply(whoami_text(person))
+
+        await message.reply(whoami_response(chat, person))
 
     # Order matters. Admin commands first, then staff (Operations Groups),
     # then client. The client router ends in a catch-all, so it goes last.

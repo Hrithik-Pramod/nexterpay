@@ -537,8 +537,9 @@ def test_no_keyboard_builds_a_button_nobody_answers() -> None:
         keyboards.acknowledgement_actions(),
         keyboards.raise_request_prompt("support"),
         keyboards.raise_request_prompt("business"),
-        keyboards.setup_menu(in_operations=True),
-        keyboards.setup_menu(in_operations=False),
+        keyboards.setup_menu(in_operations=True, registered=True),
+        keyboards.setup_menu(in_operations=False, registered=True),
+        keyboards.setup_menu(in_operations=False, registered=False),
         keyboards.department_menu("regdept"),
         keyboards.role_menu(Department.SUPPORT),
     ]
