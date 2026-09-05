@@ -27,6 +27,7 @@ from app.bot import deps
 from app.bot.handlers import admin, broadcast, client, outbound, staff
 from app.bot.help import build as build_help
 from app.bot.registry import resolve_chat, resolve_staff
+from app.bot.roles import reference as role_reference
 from app.bot.routing import build_strategy
 from app.config import get_settings
 from app.db.base import init_engine, session_scope
@@ -196,6 +197,32 @@ def build_dispatcher() -> Dispatcher:
                     if chat is not None:
                         role = person.role_in(chat.department)
             text = build_help(chat, role, is_administrator=is_administrator)
+
+        await message.reply(text)
+
+    @dp.message(cmd.any_case(cmd.ROLE))
+    async def cmd_role(message: Message) -> None:
+        """The permission ladder, for reference in the group.
+
+        Operations Groups only, on the same reasoning as /npwhoami: it is a
+        description of how NexterPay is organised internally, and a
+        counterparty has no business reading it in their own room.
+        """
+        async with session_scope() as session:
+            chat = await resolve_chat(session, message.chat.id)
+            if chat is None or chat.kind is not ChatKind.OPERATIONS:
+                await message.reply(
+                    "Not in here - that one describes how NexterPay is "
+                    "organised.\n\n"
+                    f"Send /{cmd.ROLE} in an Operations Group, or /{cmd.HELP} "
+                    f"here for what you can do in this group."
+                )
+                return
+            person = (
+                await resolve_staff(session, message.from_user.id)
+                if message.from_user else None
+            )
+            text = role_reference(person, chat.department)
 
         await message.reply(text)
 

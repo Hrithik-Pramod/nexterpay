@@ -100,6 +100,12 @@ SETUP = _c("setup")
 # has open is worth less than a command anybody can send.
 HELP = _c("help")
 
+# The whole permission ladder, for reference. NexterPay asked for it in the
+# group rather than in a document, which is right: a document about who can do
+# what is out of date the first time a threshold moves, and nobody re-reads it
+# anyway. This one is generated from the checks themselves.
+ROLE = _c("role")
+
 # Raising outbound, split by who it goes to. One command with a picker was
 # workable, but the picker is where you discovered which kind of counterparty
 # you were about to open a conversation with. Now the intent is in the command.
@@ -119,7 +125,7 @@ ALL = [
     REPLY, NOTE, HISTORY, ASSIGN, LINK, UNLINK,
     REGISTER_OPS, REGISTER_CLIENT, REGISTER_SUPPLIER, ADDUSER, REMOVEUSER,
     WORKLOAD, SETCODE, ADDPARTY, BROADCAST,
-    SETLEAD, LEADS, REMOVELEAD, SETUP, HELP,
+    SETLEAD, LEADS, REMOVELEAD, SETUP, HELP, ROLE,
     NEW_CLIENT, NEW_SUPPLIER,
     START, START_ALIAS, WHOAMI,
 ]
