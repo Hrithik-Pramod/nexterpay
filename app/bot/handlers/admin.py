@@ -85,6 +85,34 @@ async def _admin_or_refuse(session, message: Message) -> bool:
         return True
 
     person = await resolve_staff(session, user.id) if user else None
+
+    # Whose room is this?
+    #
+    # Everything above says a refusal must speak, and in an Operations Group
+    # that holds - it is NexterPay's own room and the person is on the team.
+    # In a client or supplier group it does not, and NexterPay said so on
+    # 5 September: a counterparty typing an administrator command should get
+    # nothing back at all.
+    #
+    # They are right, and the two rules do not conflict. The reason silence is
+    # bad is that a colleague cannot tell it apart from a fault. A client is
+    # not troubleshooting our bot - they are being told, in their own group,
+    # that NexterPay has a concept of named contacts, that it is set by
+    # replying, and that administrators exist. That is internal mechanism
+    # explained to an outsider, which is the same fault as /npwhoami
+    # answering in the Pexi group.
+    #
+    # An unregistered group counts as outside. We have no idea who is in it.
+    chat = await resolve_chat(session, message.chat.id)
+    internal = chat is not None and chat.kind is ChatKind.OPERATIONS
+    if not internal and person is None:
+        logger.info(
+            "Ignoring an administrator command from a non-staff user in "
+            "chat %s (kind=%s)",
+            message.chat.id, chat.kind.value if chat else "unregistered",
+        )
+        return False
+
     if person is None:
         await message.reply(
             "That one is for administrators, and you are not registered as "
@@ -561,8 +589,17 @@ async def cmd_setlead(message: Message) -> None:
 
 @router.message(cmd.any_case(cmd.LEADS))
 async def cmd_leads(message: Message) -> None:
-    """`/npleads` - who is named for this group."""
+    """`/npleads` - who is named for this group.
+
+    Had no permission check whatsoever. A client could run it in their own
+    group and be told either who NexterPay have named as their contacts, or -
+    if nobody had been named yet - that an administrator can add one by
+    replying to a message. Found by NexterPay on 5 September while asking a
+    different question about `/npsetlead`.
+    """
     async with session_scope() as session:
+        if not await _admin_or_refuse(session, message):
+            return
         chat = await resolve_chat(session, message.chat.id)
         if chat is None:
             return

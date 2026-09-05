@@ -156,3 +156,67 @@ async def test_staff_wording_is_escaped_in_a_tagged_reply(
     sent = gw.messages_to(CLIENT_CHAT)[-1]
     assert "amount &lt; 500 &amp; rising" in sent
     assert "&lt;b&gt;not bold&lt;/b&gt;" in sent
+
+
+# --------------------------------------------------------------------------
+# Not in front of the counterparty
+#
+# NexterPay, 5 September: a client typing an administrator command in their
+# own group should get nothing back. They were right, and /npleads was worse
+# than the case they found - it had no permission check at all, so a client
+# could ask who NexterPay had named as their contacts and be told.
+#
+# This does not contradict "a refusal must speak". That rule exists because a
+# colleague cannot tell silence apart from a fault. A client is not
+# troubleshooting our bot; they are being handed our internal mechanism.
+# --------------------------------------------------------------------------
+
+
+def _admin_source():
+    import inspect
+
+    from app.bot.handlers import admin
+
+    return inspect.getsource(admin._admin_or_refuse)
+
+
+def test_the_refusal_asks_whose_room_it_is() -> None:
+    source = _admin_source()
+    assert "ChatKind.OPERATIONS" in source, (
+        "_admin_or_refuse does not distinguish our own group from a "
+        "counterparty's"
+    )
+    assert "return False" in source
+
+
+def test_an_unregistered_group_counts_as_outside() -> None:
+    """We have no idea who is in it, so it gets the quiet treatment."""
+    source = _admin_source()
+    assert "internal = chat is not None and chat.kind is ChatKind.OPERATIONS" in source, (
+        "an unregistered group must not be treated as internal by default"
+    )
+
+
+def test_leads_is_no_longer_open_to_anyone() -> None:
+    """The specific hole. It had no check of any kind."""
+    import inspect
+
+    from app.bot.handlers import admin
+
+    source = inspect.getsource(admin.cmd_leads)
+    assert "_admin_or_refuse" in source, "/npleads still answers whoever asks"
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["cmd_setlead", "cmd_leads", "cmd_removelead"],
+)
+def test_every_lead_command_is_guarded(name: str) -> None:
+    """All three, because they are the ones that live in a counterparty group
+    and are therefore the ones a client can reach."""
+    import inspect
+
+    from app.bot.handlers import admin
+
+    source = inspect.getsource(getattr(admin, name))
+    assert "_admin_or_refuse" in source, f"{name} is unguarded"
