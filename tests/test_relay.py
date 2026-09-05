@@ -470,3 +470,68 @@ def test_only_these_functions_may_write_to_a_client_chat() -> None:
         f"  added:   {sorted(writers - allowed)}\n"
         f"  removed: {sorted(allowed - writers)}"
     )
+
+
+# --------------------------------------------------------------------------
+# Buttons never live on a header
+#
+# Found live on 5 September. open_internal attached a keyboard to the header
+# and then called link(), which calls refresh_header(), which calls
+# edit_message_text without a reply_markup - and Telegram reads that as "this
+# message has no keyboard now". Attached and removed inside one function, with
+# every test passing.
+#
+# The header is a live document: it is rewritten on every claim, status
+# change, priority change and link. Anything durable put on it is on borrowed
+# time. Buttons belong on their own message, which nothing edits.
+# --------------------------------------------------------------------------
+
+
+def test_no_header_is_ever_sent_with_buttons() -> None:
+    """Read from the source, because the parameter is the danger.
+
+    Every send of `header_text` must go out without a reply_markup. It is the
+    call sites that matter, not any one flow - a new one added next month
+    would be written by copying an existing one.
+    """
+    import re
+
+    source = (
+        __import__("pathlib").Path(__file__).resolve().parents[1]
+        / "app" / "services" / "relay.py"
+    ).read_text(encoding="utf-8")
+
+    offenders = []
+    for match in re.finditer(r"header_text\(item, client_name\),(.{0,220})", source, re.S):
+        window = match.group(1)
+        # Stop at the end of this send_message call.
+        window = window.split(")\n")[0]
+        if "reply_markup" in window:
+            line = source[: match.start()].count("\n") + 1
+            offenders.append(line)
+
+    assert not offenders, (
+        f"a header is sent with buttons at line(s) {offenders}. They will be "
+        f"stripped by the first refresh_header. Send an 'Actions:' message "
+        f"instead - see open_request."
+    )
+
+
+def test_refresh_header_does_not_carry_a_keyboard() -> None:
+    """The other half of the same fact, stated where it is caused.
+
+    If refresh_header ever started passing a reply_markup it would have to
+    pass the *right* one, every time, or it would replace the buttons with
+    something wrong rather than merely removing them. Not carrying one at all
+    is what makes the separate Actions message safe.
+    """
+    import inspect
+
+    from app.services import relay
+
+    source = inspect.getsource(relay.refresh_header)
+    assert "edit_message_text" in source
+    assert "reply_markup" not in source, (
+        "refresh_header now sets a reply_markup; every header's buttons are "
+        "whatever it last passed"
+    )

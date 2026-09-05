@@ -241,6 +241,11 @@ class FakeGateway:
         self.deleted: list[tuple[int, int]] = []
         self.closed_topics: list[tuple[int, int]] = []
         self.edits: dict[int, list[str]] = {}
+        # What buttons each message currently carries. Kept as state rather
+        # than only as a call log, because the question a test needs to ask is
+        # "what is on this message now" - and the answer changes when
+        # something else edits it.
+        self.markups: dict[int, list[tuple[str, str | None]]] = {}
         self._next_message_id = 1000
         self._next_topic_id = 500
         self.fail_next: Exception | None = None
@@ -265,6 +270,8 @@ class FakeGateway:
         parse_mode: str | None = None,
     ) -> SentMessage:
         self._maybe_fail()
+        message_id = self._id()
+        self.markups[message_id] = _button_data(reply_markup)
         self.calls.append(
             Call("send_message", chat_id, {
                 "text": text,
@@ -272,9 +279,10 @@ class FakeGateway:
                 "reply_to_message_id": reply_to_message_id,
                 "has_markup": reply_markup is not None,
                 "parse_mode": parse_mode,
+                "message_id": message_id,
             })
         )
-        return SentMessage(chat_id=chat_id, message_id=self._id())
+        return SentMessage(chat_id=chat_id, message_id=message_id)
 
     async def send_file(
         self,
@@ -300,6 +308,14 @@ class FakeGateway:
     ) -> None:
         self._maybe_fail()
         self.edits.setdefault(message_id, []).append(text)
+        # Editing the text of a message REPLACES its reply markup, so calling
+        # this without one takes any buttons off. That is Telegram's actual
+        # behaviour and the fake has to have it, because the bug it hides is
+        # not hypothetical: on 5 September open_internal attached a keyboard
+        # to a header and then called refresh_header three lines later, which
+        # stripped it. Every test passed. NexterPay found it in ten minutes by
+        # looking at the screen.
+        self.markups[message_id] = _button_data(reply_markup)
         self.calls.append(
             Call("edit_message_text", chat_id, {"message_id": message_id, "text": text})
         )
@@ -348,6 +364,7 @@ class FakeGateway:
         # answer was yes while every one of them pointed at work item zero and
         # did nothing. What a button *says* it will do is the only thing worth
         # asserting about a button.
+        self.markups[message_id] = _button_data(reply_markup)
         self.calls.append(
             Call("edit_reply_markup", chat_id, {
                 "message_id": message_id,
@@ -373,6 +390,24 @@ class FakeGateway:
 
     def all_text_to(self, chat_id: int) -> str:
         return "\n".join(self.messages_to(chat_id))
+
+    def buttons_on(self, message_id: int) -> list[tuple[str, str | None]]:
+        """What this message carries right now, after every edit.
+
+        The only honest way to ask the question. A test that looked at the
+        call log would find the moment the buttons were attached and conclude
+        they are there, which is exactly the mistake that shipped.
+        """
+        return self.markups.get(message_id, [])
+
+    def live_buttons_to(self, chat_id: int) -> list[tuple[str, str | None]]:
+        """Every button currently on any message in this chat."""
+        ids = [
+            c.payload["message_id"]
+            for c in self.calls
+            if c.chat_id == chat_id and c.method == "send_message"
+        ]
+        return [b for i in ids for b in self.markups.get(i, [])]
 
     def current_text(self, message_id: int) -> str | None:
         """Latest version of a message, after any edits."""

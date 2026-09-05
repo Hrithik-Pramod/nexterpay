@@ -358,14 +358,13 @@ async def test_the_buttons_point_at_the_request_they_are_on(
     """
     origin, asked = await _asked(session, gw, acme_support, operator)
 
-    markups = [
-        c for c in gw.calls
-        if c.method == "edit_reply_markup" and c.chat_id == FINANCE_OPS
-    ]
-    assert markups, "no keyboard was ever attached to the asked request"
+    # Asked of the live state, not of the call log. A test that searched the
+    # log for the moment a keyboard was attached would find it and pass -
+    # which is exactly what happened, while the buttons were being stripped
+    # again a few lines later.
+    buttons = gw.live_buttons_to(FINANCE_OPS)
+    assert buttons, "the asked request has no buttons on it"
 
-    buttons = markups[-1].payload["buttons"]
-    assert buttons, "the keyboard is empty"
     for label, data in buttons:
         assert data is not None, f"{label!r} has no callback data"
         assert data.endswith(f":{asked.id}") or f":{asked.id}:" in data, (
@@ -374,3 +373,27 @@ async def test_the_buttons_point_at_the_request_they_are_on(
     assert not any(d.endswith(":0") for _, d in buttons), (
         "a button still points at work item zero"
     )
+
+
+async def test_the_buttons_survive_the_header_being_refreshed(
+    session, acme_support, support_ops, finance_ops, operator, senior, gw
+):
+    """The bug NexterPay found, as a test.
+
+    The buttons were put on the header. `link` runs immediately afterwards and
+    calls `refresh_header`, which calls `edit_message_text` with no
+    reply_markup - and Telegram reads that as "this message has no keyboard
+    now". Attached and removed inside one function.
+
+    Refreshing happens constantly: every claim, status change, priority
+    change and link rewrites the header. So this claims the request first,
+    which is the commonest of them, and then looks again.
+    """
+    origin, asked = await _asked(session, gw, acme_support, operator)
+    assert gw.live_buttons_to(FINANCE_OPS), "gone before anything even happened"
+
+    await relay.claim(session, gw, asked, Actor.of(senior))
+
+    labels = [label for label, _ in gw.live_buttons_to(FINANCE_OPS)]
+    assert labels, "the header refresh took the buttons off"
+    assert any("Answer" in t for t in labels)

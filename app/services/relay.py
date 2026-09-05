@@ -369,7 +369,6 @@ async def open_request(
     raised_by_name: str,
     raised_by_telegram_user_id: int | None = None,
     attachments: list[IncomingAttachment] | None = None,
-    keyboard=None,
     ack_keyboard=None,
     context: str | None = None,
 ) -> WorkItem:
@@ -397,7 +396,16 @@ async def open_request(
         ops.telegram_chat_id,
         header_text(item, client_name),
         thread_id=thread_id,
-        reply_markup=keyboard,
+        # No buttons here, ever, and no parameter to add them with.
+        #
+        # The header is rewritten on every claim, status change, priority
+        # change and link, by `refresh_header` calling `edit_message_text` -
+        # which Telegram reads as "this message has no keyboard now". Buttons
+        # put here survive until the first thing that happens to the request.
+        #
+        # They go on a separate "Actions:" message that nothing edits. This
+        # parameter existed and was always None; it is gone so that the next
+        # person cannot find it and use it, which is how open_internal broke.
         parse_mode="HTML",
     )
     item.header_message_id = header.message_id
@@ -918,18 +926,6 @@ async def open_internal(
         text=header_text(item, client_name),
     )
 
-    # The keyboard is built here, not passed in ready-made, because the
-    # buttons need this request's id and the id does not exist until the row
-    # does. The caller was passing `work_item_actions(0, ...)`, so every
-    # button on every request opened this way pointed at work item zero and
-    # did nothing whatsoever - the silent failure again, on the newest
-    # feature. A callable keeps the layering (the handler still decides what
-    # the buttons are) and closes the gap.
-    if keyboard_for is not None:
-        await gateway.edit_reply_markup(
-            ops.telegram_chat_id, header.message_id, keyboard_for(item.id)
-        )
-
     await gateway.send_message(
         ops.telegram_chat_id,
         f"↳ {html.escape(actor.name)} asked {department.label} about "
@@ -942,6 +938,29 @@ async def open_internal(
     # point of raising rather than transferring is that both desks can see the
     # other half, and a link nobody makes is not a link.
     await link(session, gateway, origin, item, actor)
+
+    # The buttons go on their own message, last, exactly as `open_request`
+    # does it. Two goes at this were wrong before it landed here.
+    #
+    # First they were passed in ready-made, built before the row existed, so
+    # every one of them encoded work item 0 and did nothing.
+    #
+    # Then they were attached to the header - and stripped again three lines
+    # later by `link`, which calls `refresh_header`, which calls
+    # `edit_message_text` without a reply_markup. Telegram treats that as
+    # "this message now has no keyboard". The header is a live document that
+    # gets rewritten whenever ownership, status, priority or links change;
+    # anything durable put on it is on borrowed time.
+    #
+    # A separate message is not touched by any of that, and it is why normal
+    # requests never had the problem.
+    if keyboard_for is not None:
+        await gateway.send_message(
+            ops.telegram_chat_id,
+            "Actions:",
+            thread_id=thread_id,
+            reply_markup=keyboard_for(item.id),
+        )
     return item
 
 
@@ -1026,7 +1045,6 @@ async def open_outbound(
     subject: str,
     body: str,
     actor: Actor,
-    keyboard=None,
 ) -> WorkItem:
     """A request NexterPay raise with a client or supplier.
 
@@ -1061,7 +1079,16 @@ async def open_outbound(
         ops.telegram_chat_id,
         header_text(item, client_name),
         thread_id=thread_id,
-        reply_markup=keyboard,
+        # No buttons here, ever, and no parameter to add them with.
+        #
+        # The header is rewritten on every claim, status change, priority
+        # change and link, by `refresh_header` calling `edit_message_text` -
+        # which Telegram reads as "this message has no keyboard now". Buttons
+        # put here survive until the first thing that happens to the request.
+        #
+        # They go on a separate "Actions:" message that nothing edits. This
+        # parameter existed and was always None; it is gone so that the next
+        # person cannot find it and use it, which is how open_internal broke.
         parse_mode="HTML",
     )
     item.header_message_id = header.message_id
