@@ -219,6 +219,7 @@ def header_text(
     owner_name: str | None = None,
     linked_references: list[str] | None = None,
     owner_telegram_user_id: int | None = None,
+    leads: list | None = None,
 ) -> str:
     """The live summary at the top of the topic.
 
@@ -265,12 +266,43 @@ def header_text(
         f"<b>Owner</b>  "
         f"{_mention(owner_name, owner_telegram_user_id) if owner_name else 'unassigned'}",
     ]
+    # Who to address on the other side.
+    #
+    # NexterPay asked, on 5 September: "once leads are set, in our operations
+    # groups, how do we look up the lead name?" There was no answer - the only
+    # way to find out was to go into the counterparty's own group and run
+    # /npleads there, which is exactly the trip the header exists to save.
+    #
+    # Tappable, so it is a person you can reach rather than a name you have to
+    # go and find. Absent entirely when nobody has been named: a permanent
+    # "Contact: none" is a line of noise on every header to save a moment's
+    # thought on a few, which is the same reasoning as Linked below.
+    if leads:
+        named = ", ".join(
+            _mention(lead.display_name, lead.telegram_user_id) for lead in leads
+        )
+        lines.append(f"<b>Contact</b>  {named}")
+
     # Only when there is something to say. Most tickets are linked to nothing,
     # and a permanent "Linked: none" would be a line of noise on every header
     # to save a moment's thought on a few.
     if linked_references:
         lines.append(f"<b>Linked</b>  {e(', '.join(linked_references))}")
     return "\n".join(lines)
+
+
+async def _leads_for_item(session: AsyncSession, item: WorkItem) -> list:
+    """The named contacts in the group this request came from.
+
+    Imported here rather than at module scope because `app.bot.registry`
+    imports from the service layer, and the other direction at import time is
+    a cycle. The registry is the right home for it - it is a question about
+    who people are, not about relaying.
+    """
+    from app.bot.registry import leads_for
+
+    source, _ = await chats_for(session, item)
+    return await leads_for(session, source)
 
 
 async def refresh_header(
@@ -316,6 +348,7 @@ async def refresh_header(
                 owner.display_name if owner else None,
                 linked_references=linked,
                 owner_telegram_user_id=owner.telegram_user_id if owner else None,
+                leads=await _leads_for_item(session, item),
             ),
             parse_mode="HTML",
         )

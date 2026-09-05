@@ -220,3 +220,87 @@ def test_every_lead_command_is_guarded(name: str) -> None:
 
     source = inspect.getsource(getattr(admin, name))
     assert "_admin_or_refuse" in source, f"{name} is unguarded"
+
+
+# --------------------------------------------------------------------------
+# Finding the contact from the Operations side
+#
+# NexterPay, 5 September: "once leads are set, in our operations groups, how
+# do we look up the lead name?" There was no answer. The only way was to walk
+# into the counterparty's own group and run /npleads there - which is exactly
+# the trip the header exists to save - and running it in an Operations Group
+# looked up that room's own leads and confidently replied "nobody is named
+# for this group yet".
+# --------------------------------------------------------------------------
+
+
+async def test_the_header_names_the_contact(
+    session, acme_support, support_ops, operator, gw
+):
+    from app.bot.registry import set_group_lead
+
+    item = await relay.open_request(
+        session, gw, source_chat=acme_support, subject="Settlement",
+        body="Missing.", raised_by_name="Tom Baker",
+    )
+    await set_group_lead(
+        session, acme_support, telegram_user_id=7788, display_name="Gavs D",
+    )
+    await relay.refresh_header(session, gw, item)
+
+    header = gw.current_text(item.header_message_id)
+    assert "Contact" in header, "the header does not name the contact"
+    assert "Gavs D" in header
+    assert "tg://user?id=7788" in header, "the contact is not tappable"
+
+
+async def test_no_contact_line_when_nobody_is_named(
+    session, acme_support, support_ops, gw
+):
+    """A permanent "Contact: none" is a line of noise on every header to save
+    a moment's thought on a few - the same reasoning as Linked."""
+    item = await relay.open_request(
+        session, gw, source_chat=acme_support, subject="Settlement",
+        body="Missing.", raised_by_name="Tom Baker",
+    )
+    await relay.refresh_header(session, gw, item)
+
+    assert "Contact" not in gw.current_text(item.header_message_id)
+
+
+async def test_the_contact_follows_the_group_not_the_client(
+    session, acme_support, acme_compliance, support_ops, gw
+):
+    """A client with a Support group and a Compliance group usually has a
+    different person in each, which is why leads are per chat."""
+    from app.bot.registry import set_group_lead
+
+    support_item = await relay.open_request(
+        session, gw, source_chat=acme_support, subject="A", body="a",
+        raised_by_name="Tom",
+    )
+    await set_group_lead(
+        session, acme_support, telegram_user_id=1, display_name="Support Sam",
+    )
+    await set_group_lead(
+        session, acme_compliance, telegram_user_id=2, display_name="Compliance Chris",
+    )
+    await relay.refresh_header(session, gw, support_item)
+
+    header = gw.current_text(support_item.header_message_id)
+    assert "Support Sam" in header
+    assert "Compliance Chris" not in header, "the wrong group's contact was shown"
+
+
+def test_leads_answers_about_the_counterparty_from_a_topic() -> None:
+    """Sent inside a request, it must answer about that request's
+    counterparty rather than about the Operations Group it was typed in."""
+    import inspect
+
+    from app.bot.handlers import admin
+
+    source = inspect.getsource(admin.cmd_leads)
+    assert "work_item_for_thread" in source, (
+        "/npleads still answers about whichever chat it was sent in"
+    )
+    assert "ChatKind.OPERATIONS" in source

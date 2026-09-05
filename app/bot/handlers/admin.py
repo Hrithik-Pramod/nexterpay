@@ -603,15 +603,44 @@ async def cmd_leads(message: Message) -> None:
         chat = await resolve_chat(session, message.chat.id)
         if chat is None:
             return
-        names = [lead.display_name for lead in await leads_for(session, chat)]
+
+        # Inside an Operations topic, answer about the counterparty rather
+        # than about this room.
+        #
+        # It used to look up leads for whichever chat the command was sent
+        # in, so asking here - the obvious place to ask, standing in the
+        # request - returned the Operations Group's own leads, of which there
+        # are none, and replied "nobody is named for this group yet". A wrong
+        # answer delivered confidently, which is worse than a refusal.
+        subject_chat, about = chat, "this group"
+        if chat.kind is ChatKind.OPERATIONS and message.message_thread_id:
+            from app.bot.deps import work_item_for_thread
+            from app.services import relay
+
+            item = await work_item_for_thread(session, chat, message.message_thread_id)
+            if item is not None:
+                subject_chat, _ = await relay.chats_for(session, item)
+                about = f"{item.display_reference}"
+
+        names = [lead.display_name for lead in await leads_for(session, subject_chat)]
+        where = subject_chat.title or about
 
     if not names:
+        if chat.kind is ChatKind.OPERATIONS and about == "this group":
+            await message.reply(
+                f"Send this inside a request's topic to see who is named for "
+                f"that counterparty, or in the counterparty's own group.\n\n"
+                f"An administrator names someone by replying to one of their "
+                f"messages with /{cmd.SETLEAD}, in their group."
+            )
+            return
         await message.reply(
-            f"Nobody is named for this group yet. An administrator can add "
-            f"someone by replying to one of their messages with /{cmd.SETLEAD}."
+            f"Nobody is named for {where} yet. An administrator can add "
+            f"someone by replying to one of their messages with /{cmd.SETLEAD}, "
+            f"in their group."
         )
         return
-    await message.reply("Named contacts here: " + ", ".join(names) + ".")
+    await message.reply(f"Named contacts for {where}: " + ", ".join(names) + ".")
 
 
 @router.message(cmd.any_case(cmd.REMOVELEAD))
