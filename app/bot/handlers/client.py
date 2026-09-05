@@ -153,7 +153,6 @@ async def _open_from(message: Message, body: str, *, context: str | None = None)
             raised_by_name=message.from_user.full_name if message.from_user else "Client",
             raised_by_telegram_user_id=message.from_user.id if message.from_user else None,
             attachments=extract_attachments(message),
-            keyboard=None,  # attached after creation, once the id exists
             ack_keyboard=kb.acknowledgement_actions(),
             context=context,
         )
