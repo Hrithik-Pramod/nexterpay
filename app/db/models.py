@@ -329,6 +329,21 @@ class WorkItem(Base, TimestampMixin):
     # tell them apart for the integration work.
     raised_by_us: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
+    # The request this one was asked on behalf of, when another department was
+    # asked to look at something.
+    #
+    # A link would nearly do the job, and nearly is the problem. Links are
+    # unordered and a request may have several, so "which one do I answer back
+    # to?" has no answer from the link table alone - it would have to be
+    # guessed from the ids, which is the kind of guess that is right until
+    # somebody links a third ticket. This says it outright.
+    #
+    # Nullable, and null for almost everything: only requests opened by Ask
+    # another department carry it.
+    asked_from_id: Mapped[int | None] = mapped_column(
+        ForeignKey("work_items.id"), nullable=True
+    )
+
     subject: Mapped[str] = mapped_column(String(300), nullable=False)
     original_message: Mapped[str] = mapped_column(Text, nullable=False)
 

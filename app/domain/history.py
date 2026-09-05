@@ -96,6 +96,16 @@ def _fmt(event: Event, *, verbose: bool = False) -> str:
         return line + (_quote(subject, limit=80) if verbose and subject else "")
     if t is EventType.TICKETS_UNLINKED:
         return f"Link to {p.get('other_reference') or 'another ticket'} removed by {actor}"
+    if t is EventType.INTERNAL_ANSWER_SENT:
+        # Recorded on both requests, so it has to read correctly from either
+        # side. The payload names whichever end this copy is not.
+        if p.get("to_reference"):
+            line = f"Answered {p['to_reference']} by {actor}"
+        elif p.get("from_reference"):
+            line = f"Answer received from {p['from_reference']} ({actor})"
+        else:
+            line = f"Internal answer by {actor}"
+        return line + (_quote(p.get("text")) if verbose else "")
     if t is EventType.WORK_ITEM_CLOSED:
         return f"Closed by {actor}"
     if t is EventType.WORK_ITEM_REOPENED:

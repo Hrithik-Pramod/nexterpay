@@ -36,7 +36,8 @@ def parse_cb(data: str) -> tuple[str, int, str | None]:
 
 
 def work_item_actions(
-    work_item_id: int, *, claimed: bool, expanded: bool = False
+    work_item_id: int, *, claimed: bool, expanded: bool = False,
+    asked_from: str | None = None,
 ) -> InlineKeyboardMarkup:
     """Three buttons and a More, rather than nine.
 
@@ -48,6 +49,19 @@ def work_item_actions(
 
     Claim becomes Reassign once somebody owns it, so the first button is
     always the one about ownership.
+
+    `asked_from` names the request this one was opened on behalf of, when
+    another department was asked to look at something. Two things change.
+
+    The middle button becomes Answer, because that is what this request is
+    for - it exists to be answered, and its answer goes back to the desk that
+    asked rather than out to the counterparty.
+
+    And Reply to client is removed rather than sitting alongside. Finance
+    writing directly to Acme about ACME-1038 would quote a reference Acme has
+    never seen, about a question Acme never asked, from a desk they never
+    contacted. The desk holding the client relationship talks to the client;
+    the desk being asked talks back to them. One route out, and it is inward.
     """
     first = (
         InlineKeyboardButton(text="Reassign", callback_data=cb("reassign", work_item_id))
@@ -55,12 +69,20 @@ def work_item_actions(
         else InlineKeyboardButton(text="Claim", callback_data=cb("claim", work_item_id))
     )
 
+    middle = (
+        InlineKeyboardButton(
+            text=f"Answer {asked_from}"[:60], callback_data=cb("answer", work_item_id)
+        )
+        if asked_from
+        else InlineKeyboardButton(
+            text="✉ Reply to client", callback_data=cb("reply", work_item_id)
+        )
+    )
+
     rows = [
         [
             first,
-            InlineKeyboardButton(
-                text="✉ Reply to client", callback_data=cb("reply", work_item_id)
-            ),
+            middle,
             InlineKeyboardButton(text="Close", callback_data=cb("close", work_item_id)),
         ]
     ]
@@ -230,6 +252,29 @@ def confirm_internal(work_item_id: int, department) -> InlineKeyboardMarkup:
                 ),
                 InlineKeyboardButton(
                     text="Cancel", callback_data=cb("cancelinternal", work_item_id)
+                ),
+            ]
+        ]
+    )
+
+
+def confirm_answer(work_item_id: int, to_reference: str) -> InlineKeyboardMarkup:
+    """Previewed like every other outbound message, even though this one only
+    travels between two Operations Groups.
+
+    It is still somebody else's ticket, and the answer is the thing they have
+    been waiting on. A half-typed sentence landing there as the answer is a
+    smaller mess than one reaching a client, and it is still a mess.
+    """
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"Send to {to_reference}"[:60],
+                    callback_data=cb("sendanswer", work_item_id),
+                ),
+                InlineKeyboardButton(
+                    text="Cancel", callback_data=cb("cancelanswer", work_item_id)
                 ),
             ]
         ]

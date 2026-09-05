@@ -166,6 +166,10 @@ class EventType(str, enum.Enum):
     SUPPLIER_FILED = "supplier_filed"
     TICKETS_LINKED = "tickets_linked"
     TICKETS_UNLINKED = "tickets_unlinked"
+    # One desk answering another. Distinct from an internal note, because it
+    # is the thing the asking desk was waiting for, and from a staff reply,
+    # because it never leaves NexterPay.
+    INTERNAL_ANSWER_SENT = "internal_answer_sent"
     WORK_ITEM_CLOSED = "work_item_closed"
     WORK_ITEM_REOPENED = "work_item_reopened"
     TOPIC_CLOSED = "topic_closed"

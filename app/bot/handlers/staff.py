@@ -239,6 +239,7 @@ class StaffCompose(StatesGroup):
     awaiting_reply = State()
     awaiting_note = State()
     awaiting_internal = State()
+    awaiting_answer = State()
 
 
 async def _client_name(session, item: WorkItem) -> str:
@@ -369,6 +370,42 @@ async def capture_internal_request(message: Message, state: FSMContext) -> None:
     )
 
 
+@router.message(StaffCompose.awaiting_answer)
+async def capture_answer_draft(message: Message, state: FSMContext) -> None:
+    """The answer back to the desk that asked, previewed before it is sent.
+
+    Previewed even though it never leaves NexterPay. It is still the thing
+    another desk has been waiting on, and it lands in their topic under their
+    reference - a half-finished sentence arriving there as "the answer" is a
+    smaller mess than one reaching a client, and still a mess.
+    """
+    data = await state.get_data()
+    if await _wrong_topic(message, state, data.get("topic_id")):
+        return
+
+    text = (message.text or message.caption or "").strip()
+    if not text:
+        await message.reply("Type the answer, or ignore this to abandon it.")
+        return
+
+    work_item_id = data.get("work_item_id")
+    async with session_scope() as session:
+        item = await session.get(WorkItem, work_item_id)
+        if item is None or item.asked_from_id is None:
+            await state.clear()
+            await message.reply("That request no longer exists.")
+            return
+        origin = await session.get(WorkItem, item.asked_from_id)
+        reference = origin.display_reference if origin else "the desk that asked"
+
+    await state.update_data(draft=text)
+    await message.reply(
+        f"This goes back to {reference}, in the group that asked:\n\n{text}\n\n"
+        f"The client sees nothing of this.",
+        reply_markup=kb.confirm_answer(work_item_id, reference),
+    )
+
+
 @router.callback_query(F.data.startswith("wi:"))
 async def on_action(query: CallbackQuery, state: FSMContext) -> None:
     try:
@@ -410,9 +447,21 @@ async def _apply(
 ) -> str:
     gw = gateway()
 
+    # Looked up once, here, rather than at each of the eight places the
+    # keyboard is rebuilt. If it is missed at even one of them, that button
+    # quietly reverts to "Reply to client" - which on this request is the one
+    # button that must not exist - and the change is invisible until somebody
+    # taps it and writes to a client about a reference the client never saw.
+    origin_ref = None
+    if item.asked_from_id is not None:
+        origin = await session.get(WorkItem, item.asked_from_id)
+        origin_ref = origin.display_reference if origin else None
+
     if action == "claim":
         await relay.claim(session, gw, item, actor)
-        await _refresh_keyboard(query, item.id, claimed=True)
+        await _refresh_keyboard(
+            query, item.id, claimed=True, asked_from=origin_ref
+        )
         return f"Claimed {item.display_reference}"
 
     if action == "reply":
@@ -470,6 +519,50 @@ async def _apply(
         await _seal_preview(query, "Cancelled. Nothing was sent to the client.")
         return "Cancelled"
 
+    if action == "answer":
+        if item.asked_from_id is None:
+            # Not an error and not silence. Somebody has tapped Answer on a
+            # request that was raised directly, which is a reasonable thing to
+            # try, and the useful reply names the button they actually want.
+            return "Nothing to answer - this request was not asked by another desk"
+        origin = await session.get(WorkItem, item.asked_from_id)
+        await state.set_state(StaffCompose.awaiting_answer)
+        await state.update_data(
+            work_item_id=item.id, topic_id=query.message.message_thread_id
+        )
+        where = origin.display_reference if origin else "the desk that asked"
+        text, markup, mode = prompt_for(
+            query.from_user,
+            f"Answer {where} - type it below. It goes back to the desk that "
+            f"asked, not to the client. You will see it before it is sent.",
+            placeholder=f"Your answer for {where}",
+        )
+        await query.message.answer(text, reply_markup=markup, parse_mode=mode)
+        return f"Type your answer for {where}"
+
+    if action == "sendanswer":
+        data = await state.get_data()
+        draft = (data.get("draft") or "").strip()
+        if not draft or data.get("work_item_id") != item.id:
+            await state.clear()
+            return "That draft has already been sent or expired"
+        origin = await relay.answer_internal(session, gw, item, actor, draft)
+        await state.clear()
+        if origin is None:
+            await _seal_preview(
+                query, "Could not answer - the request that asked is gone."
+            )
+            return "Nothing to answer"
+        await _seal_preview(
+            query, f"Sent to {origin.display_reference}:\n\n{draft}"
+        )
+        return f"Answered {origin.display_reference}"
+
+    if action == "cancelanswer":
+        await state.clear()
+        await _seal_preview(query, "Cancelled. No answer was sent.")
+        return "Cancelled"
+
     if action == "reassign":
         # Check the permission before offering the list. Showing someone a menu
         # of colleagues and then refusing every one of them is a worse
@@ -511,7 +604,9 @@ async def _apply(
         if other is None:
             return "That ticket no longer exists"
         await relay.link(session, gw, item, other, actor)
-        await _refresh_keyboard(query, item.id, claimed=item.owner_staff_id is not None)
+        await _refresh_keyboard(
+            query, item.id, claimed=item.owner_staff_id is not None, asked_from=origin_ref
+        )
         return f"Linked to {other.display_reference}"
 
     if action == "unlink":
@@ -519,7 +614,9 @@ async def _apply(
         if other is None:
             return "That ticket no longer exists"
         removed = await relay.unlink(session, gw, item, other, actor)
-        await _refresh_keyboard(query, item.id, claimed=item.owner_staff_id is not None)
+        await _refresh_keyboard(
+            query, item.id, claimed=item.owner_staff_id is not None, asked_from=origin_ref
+        )
         return (
             f"Link to {other.display_reference} removed" if removed else "They were not linked"
         )
@@ -559,7 +656,13 @@ async def _apply(
         opened = await relay.open_internal(
             session, gw, origin=item, department=department,
             subject=subject, body=draft, actor=actor,
-            keyboard=kb.work_item_actions(0, claimed=False),
+            # A callable, not a ready-made keyboard. It used to pass
+            # work_item_actions(0, ...) - the id does not exist until the row
+            # does - so every button on every request opened this way pointed
+            # at work item zero and did nothing at all.
+            keyboard_for=lambda new_id: kb.work_item_actions(
+                new_id, claimed=False, asked_from=item.display_reference
+            ),
         )
         await state.clear()
         await _seal_preview(
@@ -577,7 +680,9 @@ async def _apply(
         if supplier is None:
             return "That counterparty no longer exists"
         await relay.file_under(session, gw, item, supplier, actor)
-        await _refresh_keyboard(query, item.id, claimed=item.owner_staff_id is not None)
+        await _refresh_keyboard(
+            query, item.id, claimed=item.owner_staff_id is not None, asked_from=origin_ref
+        )
         return f"Filed under {supplier.code}"
 
     if action == "setowner":
@@ -585,7 +690,9 @@ async def _apply(
         if assignee is None or not assignee.is_active:
             return "That person is no longer active staff"
         await relay.assign(session, gw, item, assignee, actor)
-        await _refresh_keyboard(query, item.id, claimed=True)
+        await _refresh_keyboard(
+            query, item.id, claimed=True, asked_from=origin_ref
+        )
         return f"Assigned to {assignee.display_name}"
 
     if action == "status":
@@ -598,12 +705,16 @@ async def _apply(
 
     if action == "setstatus":
         await relay.change_status(session, gw, item, WorkItemStatus(value), actor)
-        await _refresh_keyboard(query, item.id, claimed=item.owner_staff_id is not None)
+        await _refresh_keyboard(
+            query, item.id, claimed=item.owner_staff_id is not None, asked_from=origin_ref
+        )
         return WorkItemStatus(value).label
 
     if action == "setpriority":
         await relay.change_priority(session, gw, item, Priority(value), actor)
-        await _refresh_keyboard(query, item.id, claimed=item.owner_staff_id is not None)
+        await _refresh_keyboard(
+            query, item.id, claimed=item.owner_staff_id is not None, asked_from=origin_ref
+        )
         return Priority(value).label
 
     if action in ("more", "less", "back"):
@@ -628,7 +739,9 @@ async def _apply(
         # Manager and above, enforced in the domain. Checked there rather than
         # here so the rule holds however it is reached.
         await relay.reopen(session, gw, item, actor)
-        await _refresh_keyboard(query, item.id, claimed=item.owner_staff_id is not None)
+        await _refresh_keyboard(
+            query, item.id, claimed=item.owner_staff_id is not None, asked_from=origin_ref
+        )
         return f"Reopened {item.display_reference}"
 
     if action == "close":
@@ -725,12 +838,22 @@ async def _seal_preview(query: CallbackQuery, text: str) -> None:
 
 
 async def _refresh_keyboard(
-    query: CallbackQuery, work_item_id: int, *, claimed: bool, expanded: bool = False
+    query: CallbackQuery, work_item_id: int, *, claimed: bool, expanded: bool = False,
+    asked_from: str | None = None,
 ) -> None:
+    """Rebuild the buttons after an action.
+
+    `asked_from` has to be carried through here as well as at creation. It is
+    what keeps the Answer button on an asked-for request: without it, the
+    first tap on Claim or More would quietly rebuild the row with "Reply to
+    client" in the middle - the button that must not be on this request at
+    all - and nobody would see it change.
+    """
     try:
         await query.message.edit_reply_markup(
             reply_markup=kb.work_item_actions(
-                work_item_id, claimed=claimed, expanded=expanded
+                work_item_id, claimed=claimed, expanded=expanded,
+                asked_from=asked_from,
             )
         )
     except Exception:  # message unchanged, or too old to edit

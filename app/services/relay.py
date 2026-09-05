@@ -858,7 +858,7 @@ async def open_internal(
     subject: str,
     body: str,
     actor: Actor,
-    keyboard=None,
+    keyboard_for=None,
 ) -> WorkItem:
     """Ask another department to look at something, on the same client.
 
@@ -890,6 +890,7 @@ async def open_internal(
     item.raised_by_us = True
     item.supplier_id = origin.supplier_id
     item.supplier_code = origin.supplier_code
+    item.asked_from_id = origin.id
     await session.flush()
 
     client = await session.get(Client, item.client_id)
@@ -905,7 +906,6 @@ async def open_internal(
         ops.telegram_chat_id,
         header_text(item, client_name),
         thread_id=thread_id,
-        reply_markup=keyboard,
         parse_mode="HTML",
     )
     item.header_message_id = header.message_id
@@ -917,6 +917,18 @@ async def open_internal(
         sender_name="NexterPay Operations",
         text=header_text(item, client_name),
     )
+
+    # The keyboard is built here, not passed in ready-made, because the
+    # buttons need this request's id and the id does not exist until the row
+    # does. The caller was passing `work_item_actions(0, ...)`, so every
+    # button on every request opened this way pointed at work item zero and
+    # did nothing whatsoever - the silent failure again, on the newest
+    # feature. A callable keeps the layering (the handler still decides what
+    # the buttons are) and closes the gap.
+    if keyboard_for is not None:
+        await gateway.edit_reply_markup(
+            ops.telegram_chat_id, header.message_id, keyboard_for(item.id)
+        )
 
     await gateway.send_message(
         ops.telegram_chat_id,
@@ -931,6 +943,79 @@ async def open_internal(
     # other half, and a link nobody makes is not a link.
     await link(session, gateway, origin, item, actor)
     return item
+
+
+async def answer_internal(
+    session: AsyncSession,
+    gateway: TelegramGateway,
+    item: WorkItem,
+    actor: Actor,
+    text: str,
+) -> WorkItem | None:
+    """Send an answer back to the desk that asked.
+
+    The other half of `open_internal`, and it was missing. Asking another
+    department opened a linked request on their desk and stopped there: the
+    answer sat in their topic, and whoever asked had to know to go and read
+    it. NexterPay chose asking over transferring specifically because the
+    answer comes back, so a version that does not is not the feature they
+    agreed to.
+
+    Goes to the Operations Group of the asking desk, into the topic of the
+    request that was asked about. Never to the counterparty - the client asked
+    Support a question, and that Finance was consulted is an internal fact.
+    The desk holding the client relationship decides what, if any, of this the
+    client is told, which is why `send_client_reply` is still the only route
+    outward and it belongs to them.
+
+    Returns the origin so the caller can name it, or None if there is nothing
+    to answer - which is not an error. Somebody may reasonably tap Answer on a
+    request that was raised directly rather than asked for.
+    """
+    actor.require_any()
+    if item.asked_from_id is None:
+        return None
+
+    origin = await session.get(WorkItem, item.asked_from_id)
+    if origin is None or origin.topic_id is None:
+        logger.warning(
+            "%s was asked from %s, which has no topic to answer into",
+            item.display_reference, item.asked_from_id,
+        )
+        return None
+
+    _, origin_ops = await chats_for(session, origin)
+
+    owner = (
+        await session.get(Staff, origin.owner_staff_id)
+        if origin.owner_staff_id is not None
+        else None
+    )
+    # Mention the person waiting on it, exactly as a client reply does. An
+    # answer nobody is told about is the same problem one step further along.
+    lead = f"{mention_for(owner)} — " if owner is not None else ""
+
+    await gateway.send_message(
+        origin_ops.telegram_chat_id,
+        f"{lead}<b>{html.escape(item.department.label)} answered</b> on "
+        f"{html.escape(item.display_reference)}\n"
+        f"<blockquote>{html.escape(text)}</blockquote>",
+        thread_id=origin.topic_id,
+        parse_mode="HTML",
+    )
+
+    # Recorded on both. On the answering request because it is what that
+    # request was for, and on the origin because somebody reading its history
+    # a month later should not have to open another ticket to find the answer.
+    await wi.record_event(
+        session, item, EventType.INTERNAL_ANSWER_SENT, actor,
+        text=text[:500], to_reference=origin.display_reference,
+    )
+    await wi.record_event(
+        session, origin, EventType.INTERNAL_ANSWER_SENT, actor,
+        text=text[:500], from_reference=item.display_reference,
+    )
+    return origin
 
 
 async def open_outbound(

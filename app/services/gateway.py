@@ -211,6 +211,21 @@ class Call:
     payload: dict
 
 
+def _button_data(reply_markup: Any | None) -> list[tuple[str, str | None]]:
+    """(label, callback_data) for every button, flattened.
+
+    Used only by the fake. Written defensively because it is handed whatever
+    a caller passed, including None and ForceReply, and a test double that
+    raises while recording is worse than one that records nothing.
+    """
+    rows = getattr(reply_markup, "inline_keyboard", None)
+    if not rows:
+        return []
+    return [
+        (b.text, getattr(b, "callback_data", None)) for row in rows for b in row
+    ]
+
+
 class FakeGateway:
     """Test double. Records everything; invents plausible message ids.
 
@@ -327,8 +342,17 @@ class FakeGateway:
     async def edit_reply_markup(
         self, chat_id: int, message_id: int, reply_markup: Any | None
     ) -> None:
+        # The callback data is recorded, not just the fact of a keyboard.
+        #
+        # Without it a test can only ask "were buttons attached?", and the
+        # answer was yes while every one of them pointed at work item zero and
+        # did nothing. What a button *says* it will do is the only thing worth
+        # asserting about a button.
         self.calls.append(
-            Call("edit_reply_markup", chat_id, {"message_id": message_id})
+            Call("edit_reply_markup", chat_id, {
+                "message_id": message_id,
+                "buttons": _button_data(reply_markup),
+            })
         )
 
     # -- assertions helpers -------------------------------------------------

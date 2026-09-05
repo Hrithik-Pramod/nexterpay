@@ -169,3 +169,208 @@ async def test_the_department_it_is_already_on_is_not_offered() -> None:
     ]
     assert "Support" not in labels
     assert "Finance" in labels
+
+
+# --------------------------------------------------------------------------
+# Answering back
+#
+# The half that was missing, found in live testing on 5 September. Asking
+# another department opened a linked request on their desk and stopped there:
+# the answer sat in their topic, and whoever asked had to know to go and read
+# it. NexterPay chose asking over transferring precisely because the answer
+# comes back, so a version that does not is not the feature they agreed to.
+#
+# It had been documented as working - in a bullet list and in a test script -
+# before it existed, which is worse than the gap itself.
+# --------------------------------------------------------------------------
+
+
+async def _asked(session, gw, chat, operator, department=Department.FINANCE):
+    """Exactly as the handler calls it, keyboard and all.
+
+    The keyboard matters. It is built from the new request's id, and passing
+    a ready-made one is how every button on every asked request came to point
+    at work item zero. A helper that skipped it would leave that untested.
+    """
+    from app.bot import keyboards as kb
+
+    origin = await _origin(session, gw, chat)
+    asked = await relay.open_internal(
+        session, gw, origin=origin, department=department,
+        subject="Rate check", body="Can you confirm the 3 March rate?",
+        actor=Actor.of(operator),
+        keyboard_for=lambda new_id: kb.work_item_actions(
+            new_id, claimed=False, asked_from=origin.display_reference
+        ),
+    )
+    return origin, asked
+
+
+async def test_it_remembers_which_request_it_was_asked_from(
+    session, acme_support, support_ops, finance_ops, operator, gw
+):
+    """Recorded outright rather than inferred from the link.
+
+    Links are unordered and a request may hold several, so "which one do I
+    answer?" has no answer from the link table - it would have to be guessed
+    from the ids, which is right until somebody links a third ticket.
+    """
+    origin, asked = await _asked(session, gw, acme_support, operator)
+
+    assert asked.asked_from_id == origin.id
+    assert origin.asked_from_id is None, "the origin was not asked from anything"
+
+
+async def test_the_answer_lands_in_the_topic_that_asked(
+    session, acme_support, support_ops, finance_ops, operator, gw
+):
+    origin, asked = await _asked(session, gw, acme_support, operator)
+
+    returned = await relay.answer_internal(
+        session, gw, asked, Actor.of(operator), "The rate was 1.1642, confirmed."
+    )
+
+    assert returned is not None and returned.id == origin.id
+    support = gw.all_text_to(SUPPORT_OPS)
+    assert "The rate was 1.1642, confirmed." in support
+    assert "Finance answered" in support
+
+
+async def test_the_answer_never_reaches_the_client(
+    session, acme_support, support_ops, finance_ops, operator, gw
+):
+    """The whole point of asking rather than transferring. The client asked
+    Support one question; that Finance was consulted, and what Finance said,
+    are internal facts."""
+    _, asked = await _asked(session, gw, acme_support, operator)
+
+    await relay.answer_internal(
+        session, gw, asked, Actor.of(operator),
+        "Our cost was 1.1601 - do not quote that.",
+    )
+
+    client = gw.all_text_to(CLIENT_CHAT)
+    assert "1.1601" not in client
+    assert "answered" not in client.lower()
+
+
+async def test_an_answer_cannot_break_the_markup(
+    session, acme_support, support_ops, finance_ops, operator, gw
+):
+    """It is wrapped in a blockquote, so it is escaped first."""
+    _, asked = await _asked(session, gw, acme_support, operator)
+
+    await relay.answer_internal(
+        session, gw, asked, Actor.of(operator), "rate is <b>1.16</b> </blockquote>",
+    )
+    support = gw.all_text_to(SUPPORT_OPS)
+
+    assert "&lt;b&gt;1.16&lt;/b&gt;" in support
+    assert "&lt;/blockquote&gt;" in support
+
+
+async def test_answering_something_nobody_asked_is_refused_quietly(
+    session, acme_support, support_ops, operator, gw
+):
+    """A request raised directly has nothing to answer back to. Returns None
+    rather than raising - tapping Answer on an ordinary request is a
+    reasonable mistake, not an error."""
+    origin = await _origin(session, gw, acme_support)
+
+    assert await relay.answer_internal(
+        session, gw, origin, Actor.of(operator), "hello?"
+    ) is None
+
+
+async def test_both_sides_record_the_answer(
+    session, acme_support, support_ops, finance_ops, operator, gw
+):
+    """On the answering request because that is what it was for, and on the
+    origin because somebody reading its history a month later should not have
+    to open another ticket to find the answer."""
+    from app.domain.history import load_events, render_history
+
+    origin, asked = await _asked(session, gw, acme_support, operator)
+    await relay.answer_internal(
+        session, gw, asked, Actor.of(operator), "Confirmed at 1.1642."
+    )
+
+    origin_history = "\n".join(render_history(await load_events(session, origin)))
+    asked_history = "\n".join(render_history(await load_events(session, asked)))
+
+    assert f"Answer received from {asked.display_reference}" in origin_history
+    assert f"Answered {origin.display_reference}" in asked_history
+
+
+async def test_the_owner_of_the_asking_request_is_told(
+    session, acme_support, support_ops, finance_ops, operator, senior, gw
+):
+    """An answer nobody is told about is the same problem one step along - it
+    moves from the wrong topic to the right topic and is still not read."""
+    origin, asked = await _asked(session, gw, acme_support, operator)
+    await relay.claim(session, gw, origin, Actor.of(senior))
+
+    await relay.answer_internal(session, gw, asked, Actor.of(operator), "Confirmed.")
+    assert f'tg://user?id={senior.telegram_user_id}' in gw.all_text_to(SUPPORT_OPS)
+
+
+async def test_the_asked_request_offers_answer_and_not_reply_to_client(
+    session, acme_support, support_ops, finance_ops, operator, gw
+):
+    """Finance writing straight to Acme about ACME-1038 would quote a
+    reference Acme has never seen, about a question Acme never asked, from a
+    desk they never contacted.
+
+    Asserted on the keyboard rather than the flow, because the button existing
+    at all is the problem.
+    """
+    from app.bot import keyboards as kb
+
+    origin, asked = await _asked(session, gw, acme_support, operator)
+
+    labels = [
+        b.text
+        for row in kb.work_item_actions(
+            asked.id, claimed=False, asked_from=origin.display_reference
+        ).inline_keyboard
+        for b in row
+    ]
+    assert any("Answer" in t for t in labels)
+    assert not any("Reply to client" in t for t in labels)
+
+    ordinary = [
+        b.text
+        for row in kb.work_item_actions(origin.id, claimed=False).inline_keyboard
+        for b in row
+    ]
+    assert any("Reply to client" in t for t in ordinary)
+    assert not any("Answer" in t for t in ordinary)
+
+
+async def test_the_buttons_point_at_the_request_they_are_on(
+    session, acme_support, support_ops, finance_ops, operator, gw
+):
+    """They pointed at work item zero.
+
+    open_internal was handed a keyboard built before the row existed, so every
+    button on every request opened this way encoded id 0 and did nothing.
+    Silent, like all the worst ones.
+    """
+    origin, asked = await _asked(session, gw, acme_support, operator)
+
+    markups = [
+        c for c in gw.calls
+        if c.method == "edit_reply_markup" and c.chat_id == FINANCE_OPS
+    ]
+    assert markups, "no keyboard was ever attached to the asked request"
+
+    buttons = markups[-1].payload["buttons"]
+    assert buttons, "the keyboard is empty"
+    for label, data in buttons:
+        assert data is not None, f"{label!r} has no callback data"
+        assert data.endswith(f":{asked.id}") or f":{asked.id}:" in data, (
+            f"{label!r} points at {data!r}, not at {asked.display_reference}"
+        )
+    assert not any(d.endswith(":0") for _, d in buttons), (
+        "a button still points at work item zero"
+    )
