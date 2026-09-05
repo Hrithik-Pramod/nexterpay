@@ -546,6 +546,7 @@ async def relay_client_message(
     telegram_message_id: int,
     sender_telegram_user_id: int | None = None,
     attachments: list[IncomingAttachment] | None = None,
+    replying_to: str | None = None,
 ) -> None:
     """Client → topic. Reopens nothing and changes no status; staff decide."""
     source, ops = await chats_for(session, item)
@@ -601,16 +602,30 @@ async def relay_client_message(
         # into our group, which is exactly what a blockquote means, so it will
         # keep making sense to a reader who never heard the request behind it.
         quoted = f"<blockquote>{html.escape(text)}</blockquote>"
+
+        # What they were replying to, when it was not simply the last thing we
+        # said.
+        #
+        # NexterPay asked for this on 5 September. Telegram shows the client
+        # the message they are quoting; we were passing on only what they
+        # typed. So a client answering one specific reply among several -
+        # "no, the other one" - arrived as "no, the other one" and nothing
+        # else, and whoever picked it up had to guess.
+        #
+        # Trimmed hard: it is context, not content, and the message it
+        # belongs to is a few lines up the topic anyway.
+        context = ""
+        if replying_to:
+            flattened = " ".join(replying_to.split())
+            if len(flattened) > 160:
+                flattened = flattened[:159].rstrip() + "…"
+            context = f"\n<i>in reply to: {html.escape(flattened)}</i>"
+
+        who = f"<b>{html.escape(sender_name)} has replied</b> on {item.display_reference}"
         if owner is not None:
-            body = (
-                f"{mention_for(owner)} — <b>{html.escape(sender_name)} has "
-                f"replied</b> on {item.display_reference}\n{quoted}"
-            )
+            body = f"{mention_for(owner)} — {who}{context}\n{quoted}"
         else:
-            body = (
-                f"<b>{html.escape(sender_name)} has replied</b> on "
-                f"{item.display_reference}\n{quoted}"
-            )
+            body = f"{who}{context}\n{quoted}"
         await gateway.send_message(
             ops.telegram_chat_id, body, thread_id=item.topic_id, parse_mode="HTML"
         )

@@ -166,3 +166,95 @@ async def test_nothing_of_this_reaches_the_client(
 
     after = gw.messages_to(acme_support.telegram_chat_id)
     assert len(after) == before, f"the client was sent something: {after[before:]}"
+
+
+# --------------------------------------------------------------------------
+# What they were replying to
+#
+# NexterPay, 5 September. Telegram shows the client the message they are
+# quoting; we passed on only what they typed. So a client answering one
+# specific reply among several - "no, the other one" - arrived as "no, the
+# other one" and nothing else, and whoever picked it up had to guess.
+# --------------------------------------------------------------------------
+
+
+async def test_the_quoted_message_travels_with_the_reply(
+    session, acme_support, support_ops, operator, gw
+):
+    item = await _raised(session, gw, acme_support)
+    await relay.claim(session, gw, item, Actor.of(operator))
+
+    await relay.relay_client_message(
+        session, gw, item,
+        text="no, the other one",
+        sender_name="Gavs D",
+        telegram_message_id=901,
+        replying_to="We have raised this with the card scheme and will update you.",
+    )
+    notice = _notice(gw)
+
+    assert "in reply to" in notice
+    assert "raised this with the card scheme" in notice
+    assert "<blockquote>no, the other one</blockquote>" in notice
+
+
+async def test_it_is_absent_when_they_replied_to_nothing(
+    session, acme_support, support_ops, gw
+):
+    """A line saying "in reply to: " with nothing after it is worse than no
+    line, and most replies arrive without one."""
+    item = await _raised(session, gw, acme_support)
+    await relay.relay_client_message(
+        session, gw, item, text="any news?", sender_name="Gavs D",
+        telegram_message_id=902,
+    )
+    assert "in reply to" not in _notice(gw)
+
+
+async def test_a_long_quote_is_trimmed(
+    session, acme_support, support_ops, gw
+):
+    """Context, not content. The message it belongs to is a few lines up the
+    topic anyway, and this must not bury what they actually said."""
+    item = await _raised(session, gw, acme_support)
+    await relay.relay_client_message(
+        session, gw, item, text="yes", sender_name="Gavs D",
+        telegram_message_id=903, replying_to="word " * 200,
+    )
+    notice = _notice(gw)
+
+    assert "…" in notice
+    assert len(notice) < 700, f"{len(notice)} characters for a one-word reply"
+    assert "<blockquote>yes</blockquote>" in notice
+
+
+async def test_the_quote_cannot_break_the_markup(
+    session, acme_support, support_ops, gw
+):
+    """It is text we received from outside NexterPay, exactly like the reply
+    itself, and it goes into a message with markup in it."""
+    item = await _raised(session, gw, acme_support)
+    await relay.relay_client_message(
+        session, gw, item, text="ok", sender_name="Gavs D",
+        telegram_message_id=904, replying_to="see <b>this</b> </blockquote>",
+    )
+    notice = _notice(gw)
+
+    assert "&lt;b&gt;this&lt;/b&gt;" in notice
+    assert notice.count("<blockquote>") == 1
+
+
+def test_the_client_prompt_is_emphasised() -> None:
+    """NexterPay asked for it bold: it is the only place a client is told they
+    can attach a screenshot, and it was reading as ordinary chat."""
+    from app.bot.deps import prompt_for
+
+    class _User:
+        full_name = "Gavs D"
+        id = 4242
+
+    plain, _, _ = prompt_for(_User(), "Please describe the issue.")
+    bold, _, _ = prompt_for(_User(), "Please describe the issue.", emphasise=True)
+
+    assert "<b>" not in plain, "the staff prompts should not be shouting"
+    assert "<b>please describe the issue.</b>" in bold

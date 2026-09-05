@@ -101,8 +101,14 @@ async def start_request(query: CallbackQuery, state: FSMContext) -> None:
     # The mention is built by deps.prompt_for, which explains why it has to be
     # a tg://user link rather than a plain name. This was the only place that
     # got it right; three other handlers got it wrong, so it now lives in one.
+    # Bold, because it is the only place a client is told they can attach
+    # anything. NexterPay asked for it after a related question - how does a
+    # client forward something to us? - and this is the honest answer: they
+    # do not forward, they reply, and they can attach a screenshot while they
+    # are at it. Saying so plainly beats building a forwarding path the bot
+    # cannot see anyway.
     text, markup, mode = prompt_for(
-        query.from_user, ask, placeholder="Describe your request"
+        query.from_user, ask, placeholder="Describe your request", emphasise=True,
     )
     await query.message.answer(text, reply_markup=markup, parse_mode=mode)
     await query.answer()
@@ -342,4 +348,13 @@ async def client_reply(message: Message) -> None:
             telegram_message_id=incoming.telegram_message_id,
             sender_telegram_user_id=incoming.sender_telegram_user_id,
             attachments=extract_attachments(message),
+            # What they were quoting. Telegram shows it to them; without this
+            # the team saw only what they typed, so "no, the other one"
+            # arrived with nothing to say which one.
+            replying_to=(
+                message.reply_to_message.text
+                or message.reply_to_message.caption
+                if message.reply_to_message
+                else None
+            ),
         )

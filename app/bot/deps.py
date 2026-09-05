@@ -167,7 +167,9 @@ def explain(exc: Exception) -> str:
     return "Something went wrong. The error has been logged."
 
 
-def prompt_for(user, text: str, placeholder: str | None = None) -> tuple[str, object, str]:
+def prompt_for(
+    user, text: str, placeholder: str | None = None, *, emphasise: bool = False,
+) -> tuple[str, object, str]:
     """A prompt that actually opens the reply box for the person who asked.
 
     Returns (text, reply_markup, parse_mode) ready to pass to `answer`.
@@ -186,6 +188,11 @@ def prompt_for(user, text: str, placeholder: str | None = None) -> tuple[str, ob
     broadcasting, outbound raising, and the staff reply and note prompts -
     which is how NexterPay came to report that broadcasting "did not work" in
     two different groups.
+
+    `emphasise` bolds the instruction. Used on the one prompt a client sees,
+    at NexterPay's request on 5 September: it is the only place we tell them
+    they can attach screenshots, and it was reading as ordinary chat. Not used
+    on the staff prompts - bolding all of them would be shouting.
     """
     from aiogram.types import ForceReply
 
@@ -193,5 +200,8 @@ def prompt_for(user, text: str, placeholder: str | None = None) -> tuple[str, ob
         return text, ForceReply(selective=False), None
 
     who = html.escape(user.full_name)
-    body = f'<a href="tg://user?id={user.id}">{who}</a>, {text[0].lower()}{text[1:]}'
+    asked = f"{text[0].lower()}{text[1:]}"
+    if emphasise:
+        asked = f"<b>{asked}</b>"
+    body = f'<a href="tg://user?id={user.id}">{who}</a>, {asked}'
     return body, ForceReply(selective=True, input_field_placeholder=placeholder), "HTML"
