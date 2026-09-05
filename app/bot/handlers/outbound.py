@@ -31,6 +31,7 @@ from app.bot.deps import (
     refusal_reason,
     staff_context,
 )
+from app.bot.registry import leads_for, resolve_chat
 from app.db.base import session_scope
 from app.db.models import Chat
 from app.domain.enums import ChatKind
@@ -59,15 +60,28 @@ def _counterparty_keyboard(chats) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _confirm() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✉ Send and open", callback_data="ob:send"),
-                InlineKeyboardButton(text="Cancel", callback_data="ob:cancel"),
-            ]
-        ]
-    )
+def _confirm(lead=None) -> InlineKeyboardMarkup:
+    """Send to the room, or send addressed to the named contact.
+
+    The same two-button shape as replying, and for the same reason. NexterPay
+    asked where the choice fits: it is here, after the group is chosen and the
+    message typed, because until then there is no lead to offer - the contact
+    belongs to the group, so it cannot be known before one is picked.
+
+    The tag button only appears when somebody has been named for that group.
+    A button that would do nothing needs explaining, and explaining it is
+    worse than not offering it.
+    """
+    rows = [[InlineKeyboardButton(text="✉ Send and open", callback_data="ob:send")]]
+    if lead is not None:
+        rows.append(
+            [InlineKeyboardButton(
+                text=f"✉ Send and tag {lead.display_name}"[:60],
+                callback_data="ob:sendtag",
+            )]
+        )
+    rows.append([InlineKeyboardButton(text="Cancel", callback_data="ob:cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def _counterparties(session, department, *, suppliers: bool | None = None):
@@ -198,16 +212,25 @@ async def capture(message: Message, state: FSMContext) -> None:
     await state.update_data(body=body)
     subject = (body.splitlines()[0] if body else "")[:120] or "New request"
 
+    # The contact for the group they picked, if one has been named.
+    lead = None
+    async with session_scope() as session:
+        target = await resolve_chat(session, data.get("to_chat_id"))
+        if target is not None:
+            leads = await leads_for(session, target)
+            lead = leads[0] if leads else None
+
     await message.reply(
         f"This will open a new request with {data.get('to_title')} and send:\n\n"
         f"— — —\n{subject}\n\n{body}\n— — —\n\n"
         f"Nothing has been sent yet.",
-        reply_markup=_confirm(),
+        reply_markup=_confirm(lead),
     )
 
 
-@router.callback_query(F.data == "ob:send")
+@router.callback_query(F.data.in_({"ob:send", "ob:sendtag"}))
 async def send(query: CallbackQuery, state: FSMContext) -> None:
+    tag = (query.data or "") == "ob:sendtag"
     data = await state.get_data()
     body, to_chat_id = data.get("body"), data.get("to_chat_id")
     if not body or not to_chat_id:
@@ -234,6 +257,7 @@ async def send(query: CallbackQuery, state: FSMContext) -> None:
             item = await relay.open_outbound(
                 session, gateway(),
                 counterparty_chat=target, subject=subject, body=body, actor=actor,
+                tag_lead=tag,
             )
             reference, work_item_id, thread_id = (
                 item.display_reference, item.id, item.topic_id

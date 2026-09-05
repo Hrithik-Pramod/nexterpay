@@ -304,3 +304,85 @@ def test_leads_answers_about_the_counterparty_from_a_topic() -> None:
         "/npleads still answers about whichever chat it was sent in"
     )
     assert "ChatKind.OPERATIONS" in source
+
+
+# --------------------------------------------------------------------------
+# Tagging the contact when we open the conversation
+#
+# NexterPay, 5 September, asking where the choice fits: "/npnewcl would show
+# Acme in a drop down, after that if we have an option for group or name of
+# lead, so the message is tagged at client end - possible?"
+#
+# It fits after the group is picked and the message typed, because until then
+# there is no lead to offer: the contact belongs to the group, so it cannot be
+# known before one is chosen.
+# --------------------------------------------------------------------------
+
+
+async def test_raising_outbound_can_address_the_contact(
+    session, acme_support, support_ops, operator, gw
+):
+    from app.bot.registry import set_group_lead
+
+    await set_group_lead(
+        session, acme_support, telegram_user_id=7788, display_name="Gavs D",
+    )
+    await relay.open_outbound(
+        session, gw, counterparty_chat=acme_support,
+        subject="Reconciliation", body="Checking in on the March file.",
+        actor=Actor.of(operator), tag_lead=True,
+    )
+
+    to_client = gw.all_text_to(acme_support.telegram_chat_id)
+    assert "tg://user?id=7788" in to_client, "the contact was not tagged"
+    assert "Checking in on the March file." in to_client
+
+
+async def test_it_still_goes_to_the_room_by_default(
+    session, acme_support, support_ops, operator, gw
+):
+    """Off unless asked for. Tagging the same person on everything teaches
+    them to ignore it, which costs more than it buys."""
+    from app.bot.registry import set_group_lead
+
+    await set_group_lead(
+        session, acme_support, telegram_user_id=7788, display_name="Gavs D",
+    )
+    await relay.open_outbound(
+        session, gw, counterparty_chat=acme_support,
+        subject="Reconciliation", body="Checking in.", actor=Actor.of(operator),
+    )
+
+    assert "tg://user" not in gw.all_text_to(acme_support.telegram_chat_id)
+
+
+async def test_asking_to_tag_nobody_still_sends(
+    session, acme_support, support_ops, operator, gw
+):
+    """A group with no named contact must not swallow the message. The
+    button is not offered there, but the flag can still arrive - a lead
+    removed between the preview and the tap is enough."""
+    await relay.open_outbound(
+        session, gw, counterparty_chat=acme_support,
+        subject="Reconciliation", body="Checking in.", actor=Actor.of(operator),
+        tag_lead=True,
+    )
+    assert "Checking in." in gw.all_text_to(acme_support.telegram_chat_id)
+
+
+def test_the_tag_button_is_only_offered_where_someone_is_named() -> None:
+    """A button that would do nothing needs explaining, and explaining it is
+    worse than not offering it."""
+    from app.bot.handlers.outbound import _confirm
+
+    class _Lead:
+        display_name = "Gavs D"
+        telegram_user_id = 7788
+
+    plain = [b.text for row in _confirm().inline_keyboard for b in row]
+    tagged = [b.text for row in _confirm(_Lead()).inline_keyboard for b in row]
+
+    assert not any("tag" in t for t in plain)
+    assert any("Gavs D" in t for t in tagged)
+    # Cancel survives both, or there is no way out of the preview.
+    assert "Cancel" in plain and "Cancel" in tagged

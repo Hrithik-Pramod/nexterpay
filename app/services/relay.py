@@ -1133,6 +1133,7 @@ async def open_outbound(
     subject: str,
     body: str,
     actor: Actor,
+    tag_lead: bool = False,
 ) -> WorkItem:
     """A request NexterPay raise with a client or supplier.
 
@@ -1196,7 +1197,32 @@ async def open_outbound(
     )
 
     outbound = outbound_opening_text(item, body)
-    sent = await gateway.send_message(counterparty_chat.telegram_chat_id, outbound)
+
+    # Addressed to the named contact, if asked for. Same shape as a reply,
+    # and NexterPay's reasoning is that an opening message is the one most
+    # likely to need a person rather than a room - somebody has to decide to
+    # act on it, and nobody has been watching for it.
+    #
+    # Still a choice per message rather than automatic. Tagging the same
+    # person on everything teaches them to ignore it, which costs more than
+    # it buys.
+    parse_mode = None
+    if tag_lead:
+        from app.bot.registry import leads_for
+
+        leads = await leads_for(session, counterparty_chat)
+        if leads:
+            named = ", ".join(
+                f'<a href="tg://user?id={lead.telegram_user_id}">'
+                f"{html.escape(lead.display_name)}</a>"
+                for lead in leads
+            )
+            outbound = f"{named} —\n{html.escape(outbound)}"
+            parse_mode = "HTML"
+
+    sent = await gateway.send_message(
+        counterparty_chat.telegram_chat_id, outbound, parse_mode=parse_mode
+    )
     await _record_message(
         session, item,
         direction=MessageDirection.OUTBOUND,
