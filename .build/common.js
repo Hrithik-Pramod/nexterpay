@@ -89,7 +89,11 @@ const table = (widths, headers, rows, opts = {}) => new Table({
   rows: [
     new TableRow({ tableHeader: true,
       children: headers.map((h, i) => headCell(h, widths[i])) }),
+    // cantSplit, because a row broken across a page leaves its first cell on
+    // one page and its text on the next - an empty box under a repeated
+    // header, which reads as a missing entry rather than a layout accident.
     ...rows.map((r, ri) => new TableRow({
+      cantSplit: true,
       children: r.map((c, i) =>
         bodyCell(c, widths[i], opts.shade || (ri % 2 ? ALT_BG : undefined))),
     })),
