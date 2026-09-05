@@ -204,7 +204,7 @@ def test_leads_is_no_longer_open_to_anyone() -> None:
     from app.bot.handlers import admin
 
     source = inspect.getsource(admin.cmd_leads)
-    assert "_admin_or_refuse" in source, "/npleads still answers whoever asks"
+    assert "_may_manage_leads" in source, "/npleads still answers whoever asks"
 
 
 @pytest.mark.parametrize(
@@ -219,7 +219,7 @@ def test_every_lead_command_is_guarded(name: str) -> None:
     from app.bot.handlers import admin
 
     source = inspect.getsource(getattr(admin, name))
-    assert "_admin_or_refuse" in source, f"{name} is unguarded"
+    assert "_may_manage_leads" in source, f"{name} is unguarded"
 
 
 # --------------------------------------------------------------------------
@@ -386,3 +386,110 @@ def test_the_tag_button_is_only_offered_where_someone_is_named() -> None:
     assert any("Gavs D" in t for t in tagged)
     # Cancel survives both, or there is no way out of the preview.
     assert "Cancel" in plain and "Cancel" in tagged
+
+
+# --------------------------------------------------------------------------
+# Counterparties keeping their own contact list
+#
+# NexterPay, 5 September: "once leads are set, they should be able to self
+# admin, so set other leads, as we will not be in that group any longer."
+#
+# The permission is small - a contact controls only who gets mentioned inside
+# their own group - and the operational case is real: rejoining a client's
+# group every time somebody changes job is not a workflow.
+# --------------------------------------------------------------------------
+
+
+def _guard():
+    import inspect
+
+    from app.bot.handlers import admin
+
+    return inspect.getsource(admin._may_manage_leads)
+
+
+def test_a_named_contact_may_manage_their_own_group() -> None:
+    source = _guard()
+    assert "leads_for" in source, "the guard never looks at who is named"
+    assert "user.id in named" in source
+
+
+def test_it_is_scoped_to_the_group_they_are_named_in() -> None:
+    """Being named for Acme Support must not reach Acme Finance, let alone
+    Pexi. Leads are per group precisely because a client usually has a
+    different person on each desk."""
+    source = _guard()
+    assert "resolve_chat(session, message.chat.id)" in source, (
+        "the guard does not scope to the chat the command was sent in"
+    )
+
+
+def test_the_lead_check_comes_before_the_refusal() -> None:
+    """Order matters here in a way that is easy to get wrong.
+
+    `_admin_or_refuse` speaks when it refuses, so asking it first would tell a
+    named contact "that one is for administrators" and then let them through -
+    refused and permitted in the same breath.
+    """
+    source = _guard()
+    # The call, not any mention of it. The docstring names the helper several
+    # lines above the code, so searching for the bare name found the prose and
+    # compared the wrong two positions.
+    assert source.index("user.id in named") < source.index(
+        "return await _admin_or_refuse"
+    ), "the administrator refusal runs before the lead check"
+
+
+def test_an_operations_group_has_no_leads_of_its_own() -> None:
+    """Nobody is ever named for an Operations Group, so the lead branch must
+    not admit anyone there - it would be a permission with no owner."""
+    source = _guard()
+    assert "chat.kind is not ChatKind.OPERATIONS" in source
+
+
+async def test_the_last_contact_cannot_be_removed(
+    session, acme_support, support_ops, gw
+):
+    """The door must not lock from the inside.
+
+    Contacts are appointed by replying to something the person wrote, so only
+    somebody already in the group can appoint one. Remove the last contact and
+    there is nobody left who can name a successor.
+    """
+    import inspect
+
+    from app.bot.handlers import admin
+
+    source = inspect.getsource(admin.cmd_removelead)
+    assert "len(before) == 1" in source, (
+        "the last named contact can still be removed, which leaves nobody "
+        "able to name a replacement"
+    )
+    assert "SETLEAD" in source, "the refusal does not say how to get unstuck"
+
+
+async def test_removing_one_of_several_is_still_allowed(
+    session, acme_support, support_ops
+):
+    """The guard is about the last one, not about removal. A client with three
+    contacts must be able to drop one."""
+    from app.bot.registry import leads_for, remove_group_lead, set_group_lead
+
+    for n, name in ((1, "Ann"), (2, "Ben"), (3, "Cara")):
+        await set_group_lead(
+            session, acme_support, telegram_user_id=n, display_name=name,
+        )
+
+    await remove_group_lead(session, acme_support, 2)
+    remaining = {lead.display_name for lead in await leads_for(session, acme_support)}
+
+    assert remaining == {"Ann", "Cara"}
+
+
+def test_nexterpay_keeps_an_override() -> None:
+    """Delegating must not mean losing control of it. An administrator can
+    still set or remove in any group, named contacts or not."""
+    source = _guard()
+    assert "_admin_or_refuse" in source, (
+        "administrators no longer have a route through this guard"
+    )

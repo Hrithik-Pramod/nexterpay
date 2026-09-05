@@ -46,9 +46,11 @@ def _decorated_handlers(tree: ast.Module) -> list[ast.AsyncFunctionDef]:
 # value the caller acts on. A `return` guarded by one of these is not silent -
 # the words came from inside it.
 SPEAKING_HELPERS = (
-    "_or_refuse",     # admin.py - refuses out loud, returns False
-    "_wrong_topic",   # staff.py - explains the mix-up, returns True
-    "_open_from",     # client.py - opens a request, which acknowledges it
+    "_or_refuse",         # admin.py - refuses out loud, returns False
+    "_may_manage_leads",  # admin.py - defers to _or_refuse, or is silent on
+                          # purpose in a counterparty's group
+    "_wrong_topic",       # staff.py - explains the mix-up, returns True
+    "_open_from",         # client.py - opens a request, which acknowledges it
 )
 
 # Bare returns that are correct, each with the reason written down. This list

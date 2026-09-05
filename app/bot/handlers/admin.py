@@ -134,6 +134,43 @@ async def _admin_or_refuse(session, message: Message) -> bool:
     return False
 
 
+async def _may_manage_leads(session, message: Message) -> bool:
+    """Administrators anywhere; a named contact inside their own group.
+
+    NexterPay's decision on 5 September, and the reasoning is operational
+    rather than technical: they will not stay in every counterparty group
+    forever, and somebody has to keep the contact list current when a person
+    changes job. Rejoining a client's group to do it is not a workflow.
+
+    The permission is genuinely small. A contact controls only who gets
+    mentioned inside their own group. It grants no access, reveals nothing
+    about another counterparty, and the people it can name are their own
+    colleagues - who are in the room already.
+
+    Scoped to *this* chat. Being named for Acme Support does not let somebody
+    touch Acme Finance, let alone Pexi: leads are per group precisely because
+    a client usually has a different person on each desk.
+
+    Everyone else in a counterparty group still gets silence.
+    """
+    # Leads first, deliberately.
+    #
+    # `_admin_or_refuse` speaks when it refuses, so asking it first would tell
+    # a named contact "that one is for administrators" and then let them
+    # through anyway - refused and permitted in the same breath.
+    user = message.from_user
+    chat = await resolve_chat(session, message.chat.id)
+
+    if user is not None and chat is not None and chat.kind is not ChatKind.OPERATIONS:
+        named = {lead.telegram_user_id for lead in await leads_for(session, chat)}
+        if user.id in named:
+            return True
+
+    # Otherwise the ordinary rule, which speaks or stays silent as the room
+    # demands.
+    return await _admin_or_refuse(session, message)
+
+
 def _department(value: str) -> Department | None:
     try:
         return Department(value.strip().lower())
@@ -551,9 +588,13 @@ async def cmd_setlead(message: Message) -> None:
     Telegram will not tell a bot who is in a group, so the only way to learn
     somebody's identity is for them to speak and for us to point at it. Same
     mechanism as registering staff, for the same reason.
+
+    Open to an existing contact as well as to NexterPay administrators, so a
+    counterparty can keep their own list current once NexterPay step back from
+    the group. See `_may_manage_leads`.
     """
     async with session_scope() as session:
-        if not await _admin_or_refuse(session, message):
+        if not await _may_manage_leads(session, message):
             return
 
         chat = await resolve_chat(session, message.chat.id)
@@ -598,7 +639,7 @@ async def cmd_leads(message: Message) -> None:
     different question about `/npsetlead`.
     """
     async with session_scope() as session:
-        if not await _admin_or_refuse(session, message):
+        if not await _may_manage_leads(session, message):
             return
         chat = await resolve_chat(session, message.chat.id)
         if chat is None:
@@ -647,7 +688,7 @@ async def cmd_leads(message: Message) -> None:
 async def cmd_removelead(message: Message) -> None:
     """`/npremovelead` - as a reply. Deactivated, not deleted."""
     async with session_scope() as session:
-        if not await _admin_or_refuse(session, message):
+        if not await _may_manage_leads(session, message):
             return
 
         chat = await resolve_chat(session, message.chat.id)
@@ -655,6 +696,25 @@ async def cmd_removelead(message: Message) -> None:
         if chat is None or target is None:
             await message.reply(
                 f"Reply to a message from the person, then send /{cmd.REMOVELEAD}."
+            )
+            return
+
+        # The list may never be emptied.
+        #
+        # Contacts are appointed by replying to something the person wrote, so
+        # only somebody already in the group can appoint one. Remove the last
+        # contact and there is nobody left who can name a successor - the door
+        # locks from the inside, and somebody from NexterPay has to rejoin the
+        # group to open it. Refusing the last removal costs a moment; the
+        # alternative costs a phone call and an awkward explanation.
+        before = await leads_for(session, chat)
+        if len(before) == 1 and before[0].telegram_user_id == target.id:
+            await message.reply(
+                f"{target.full_name} is the only named contact here, so "
+                f"removing them would leave nobody able to name a "
+                f"replacement.\n\n"
+                f"Name somebody else first with /{cmd.SETLEAD}, then remove "
+                f"them."
             )
             return
 
