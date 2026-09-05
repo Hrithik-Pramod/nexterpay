@@ -104,8 +104,25 @@ async def test_the_reference_survives_the_light(
     title = _title(gw, item)
 
     assert item.display_reference in title
-    assert "Acme Payments" in title
+    assert item.subject in title
     assert len(title) <= 128, "Telegram caps a topic name at 128 characters"
+
+
+async def test_the_counterpartys_name_is_not_repeated_in_the_title(
+    session, acme_support, support_ops, gw
+):
+    """NexterPay, 5 September: the code is already in the reference.
+
+    "ACME-1036 · Acme Payments · ..." says Acme twice and spends fifteen
+    characters doing it. Telegram truncates at 128 and the list cuts from the
+    right, so those characters come out of the subject - the only part of the
+    title that says what the request is about.
+    """
+    item = await _raised(session, gw, acme_support)
+    title = _title(gw, item)
+
+    assert "Acme Payments" not in title
+    assert title.count("·") == 1, f"more separators than parts: {title}"
 
 
 async def test_topics_are_created_with_one_neutral_colour() -> None:

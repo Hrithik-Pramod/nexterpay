@@ -181,9 +181,20 @@ def topic_name(item: WorkItem, client_name: str) -> str:
     # people to read past both. Urgency is a claim about what to do next, and
     # there is nothing next.
     mark = None if item.status is WorkItemStatus.CLOSED else PRIORITY_MARKS.get(item.priority)
+
+    # The counterparty's name is deliberately absent. NexterPay's point, on
+    # 5 September: the four-letter code is already in the reference, so
+    # "ACME-1036 · Acme Payments · ..." says Acme twice and spends fifteen
+    # characters doing it. Telegram truncates a topic name at 128 and the list
+    # cuts from the right, so those characters come straight out of the
+    # subject - the only part that says what the request is actually about.
+    #
+    # `client_name` is kept in the signature: it is what the caller has to
+    # hand, and dropping it would make restoring this a change at every call
+    # site rather than a change here.
     return (
         f"{traffic_light(item)}{mark or ''} {item.display_reference} · "
-        f"{client_name} · {item.subject}"
+        f"{item.subject}"
     )[:128]
 
 
@@ -926,10 +937,39 @@ async def open_internal(
         text=header_text(item, client_name),
     )
 
+    # The question, and underneath it the thing the client actually asked.
+    #
+    # NexterPay's point on 5 September: forwarding to a department showed only
+    # the note typed by whoever asked, not the original request. Finance were
+    # being asked to confirm a rate with no sight of why anybody wanted it -
+    # so the first thing they did was go and find the other ticket, which is
+    # the work this feature exists to save.
+    #
+    # The origin's own words, quoted, and attributed to whoever raised it.
+    # Trimmed, because a client who wrote four paragraphs should not push the
+    # question off the screen; the full text is one tap away in the linked
+    # request.
+    original = " ".join((origin.original_message or "").split())
+    if len(original) > 600:
+        original = original[:599].rstrip() + "…"
+
+    context_lines = [
+        f"↳ {html.escape(actor.name)} asked {department.label} about "
+        f"{html.escape(origin.display_reference)}:",
+        html.escape(body),
+    ]
+    if original:
+        raiser = origin.raised_by_name or "the client"
+        who = "we raised it" if origin.raised_by_us else f"{html.escape(raiser)} raised it"
+        context_lines += [
+            "",
+            f"<b>{html.escape(origin.display_reference)}</b>, as {who}:",
+            f"<blockquote>{html.escape(original)}</blockquote>",
+        ]
+
     await gateway.send_message(
         ops.telegram_chat_id,
-        f"↳ {html.escape(actor.name)} asked {department.label} about "
-        f"{html.escape(origin.display_reference)}:\n{html.escape(body)}",
+        "\n".join(context_lines),
         thread_id=thread_id,
         parse_mode="HTML",
     )

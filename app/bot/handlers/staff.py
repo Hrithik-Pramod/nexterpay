@@ -433,13 +433,33 @@ async def on_action(query: CallbackQuery, state: FSMContext) -> None:
             await query.answer("Work item not found.", show_alert=True)
             return
 
-        try:
-            note = await _apply(session, query, action, value, item, actor, state)
-        except Exception as exc:
-            await query.answer(explain(exc)[:190], show_alert=True)
-            return
+        # Answered here, before the work, not after it.
+        #
+        # Telegram spins a loader on the button until answerCallbackQuery
+        # arrives, so answering last means the button spins for as long as the
+        # whole action takes. Claiming a request is four API calls - announce,
+        # rename the topic, rewrite the header, rebuild the keyboard - each
+        # queued behind the rate limiter, and NexterPay's own logs show one
+        # callback taking 8.4 seconds. It looked broken because it was
+        # unresponsive, which is a different fault from being slow and the one
+        # people report.
+        #
+        # Everything above this line is database reads, in milliseconds, so
+        # the two answers that need to be alerts still are. Everything below
+        # talks to Telegram.
+        await query.answer()
 
-    await query.answer(note or "Done")
+        try:
+            await _apply(session, query, action, value, item, actor, state)
+        except Exception as exc:
+            # The callback is already answered, so this cannot be an alert.
+            # Into the topic instead, where it is at least durable - an alert
+            # is gone the moment it is dismissed anyway.
+            logger.info("%s failed on %s", action, item.display_reference, exc_info=True)
+            try:
+                await query.message.reply(explain(exc))
+            except Exception:
+                logger.debug("Could not report the failure", exc_info=True)
 
 
 async def _apply(
@@ -504,6 +524,7 @@ async def _apply(
             # from an earlier request. Sending a client the wrong message twice
             # is not a mistake worth being relaxed about.
             await state.clear()
+            await _say(query, "That draft has already been sent, or it expired.")
             return "That draft has already been sent or expired"
         # "tag" is the second send button, offered only where the group has a
         # named contact. It addresses them by name so they are notified rather
@@ -524,7 +545,12 @@ async def _apply(
             # Not an error and not silence. Somebody has tapped Answer on a
             # request that was raised directly, which is a reasonable thing to
             # try, and the useful reply names the button they actually want.
-            return "Nothing to answer - this request was not asked by another desk"
+            await _say(
+                query,
+                "There is nothing to answer here - this request was raised "
+                "directly, not asked by another desk. Use Reply to client.",
+            )
+            return "Nothing to answer"
         origin = await session.get(WorkItem, item.asked_from_id)
         await state.set_state(StaffCompose.awaiting_answer)
         await state.update_data(
@@ -545,6 +571,7 @@ async def _apply(
         draft = (data.get("draft") or "").strip()
         if not draft or data.get("work_item_id") != item.id:
             await state.clear()
+            await _say(query, "That draft has already been sent, or it expired.")
             return "That draft has already been sent or expired"
         origin = await relay.answer_internal(session, gw, item, actor, draft)
         await state.clear()
@@ -650,6 +677,7 @@ async def _apply(
         draft = (data.get("draft") or "").strip()
         if not draft or data.get("work_item_id") != item.id:
             await state.clear()
+            await _say(query, "That draft has already been sent, or it expired.")
             return "That draft has already been sent or expired"
         department = Department(value)
         subject = (draft.splitlines()[0] if draft else "")[:120] or "Internal request"
@@ -823,6 +851,21 @@ async def _assignable(session, item: WorkItem) -> list[Staff]:
         .order_by(Staff.display_name)
     )
     return list(result.scalars().all())
+
+
+async def _say(query: CallbackQuery, text: str) -> None:
+    """Tell the person something, in the topic.
+
+    Needed because the callback is now answered before the work runs, so a
+    string returned from `_apply` reaches nobody. Every branch whose entire
+    output was that string has to say it out loud instead - which is the same
+    lesson as the silent administrator commands, arriving from a different
+    direction.
+    """
+    try:
+        await query.message.reply(text)
+    except Exception:
+        logger.debug("Could not reply in the topic", exc_info=True)
 
 
 async def _seal_preview(query: CallbackQuery, text: str) -> None:

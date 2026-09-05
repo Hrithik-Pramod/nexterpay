@@ -397,3 +397,79 @@ async def test_the_buttons_survive_the_header_being_refreshed(
     labels = [label for label, _ in gw.live_buttons_to(FINANCE_OPS)]
     assert labels, "the header refresh took the buttons off"
     assert any("Answer" in t for t in labels)
+
+
+async def test_the_client_s_original_request_travels_with_the_question(
+    session, acme_support, support_ops, finance_ops, operator, gw
+):
+    """NexterPay, 5 September: "only shows my comments not original from
+    clients request".
+
+    Finance were being asked to confirm a rate with no sight of why anyone
+    wanted it, so the first thing they did was go and open the other ticket -
+    which is precisely the work this feature exists to save.
+    """
+    origin = await relay.open_request(
+        session, gw, source_chat=acme_support,
+        subject="Settlement not received",
+        body="The 3 March settlement has not arrived and our client is chasing.",
+        raised_by_name="Tom Baker",
+    )
+    await relay.open_internal(
+        session, gw, origin=origin, department=Department.FINANCE,
+        subject="Rate check", body="Can you confirm the 3 March rate?",
+        actor=Actor.of(operator),
+    )
+
+    finance = gw.all_text_to(FINANCE_OPS)
+    assert "Can you confirm the 3 March rate?" in finance, "the question is missing"
+    assert "The 3 March settlement has not arrived" in finance, (
+        "the client's own request did not travel with it"
+    )
+    assert "Tom Baker" in finance, "whoever raised it is not named"
+    assert origin.display_reference in finance
+
+
+async def test_a_very_long_original_is_trimmed(
+    session, acme_support, support_ops, finance_ops, operator, gw
+):
+    """A client who writes four paragraphs must not push the question off the
+    screen. The full text is one tap away in the linked request."""
+    origin = await relay.open_request(
+        session, gw, source_chat=acme_support, subject="Long one",
+        body="word " * 400, raised_by_name="Tom Baker",
+    )
+    await relay.open_internal(
+        session, gw, origin=origin, department=Department.FINANCE,
+        subject="Check", body="Please look at this.", actor=Actor.of(operator),
+    )
+
+    context = [
+        t for t in gw.messages_to(FINANCE_OPS) if "asked Finance about" in t
+    ][-1]
+    assert len(context) < 1200, f"{len(context)} characters of context"
+    assert "…" in context, "it was cut without saying so"
+    assert "Please look at this." in context, "the question was crowded out"
+
+
+async def test_an_outbound_origin_says_we_raised_it(
+    session, acme_support, support_ops, finance_ops, operator, gw
+):
+    """"Tom Baker raised it" would be wrong on a request NexterPay opened
+    themselves, and the header already makes this distinction."""
+    origin = await relay.open_request(
+        session, gw, source_chat=acme_support, subject="Chase",
+        body="Chasing the March file.", raised_by_name="peter",
+    )
+    origin.raised_by_us = True
+    await session.flush()
+
+    await relay.open_internal(
+        session, gw, origin=origin, department=Department.FINANCE,
+        subject="Check", body="Anything on this?", actor=Actor.of(operator),
+    )
+
+    context = [
+        t for t in gw.messages_to(FINANCE_OPS) if "asked Finance about" in t
+    ][-1]
+    assert "we raised it" in context

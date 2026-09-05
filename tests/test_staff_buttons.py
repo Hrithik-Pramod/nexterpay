@@ -360,3 +360,130 @@ async def test_note_button_text_reaches_the_history(
     assert any("Internal note" in line for line in history), (
         f"note missing from history; bot said {replies!r}"
     )
+
+
+# --------------------------------------------------------------------------
+# A button must stop spinning before the work starts
+#
+# NexterPay, 5 September: "buttons are slow response". Telegram spins a loader
+# until answerCallbackQuery arrives, so answering after the work means the
+# button spins for as long as the action takes. Claiming a request is four API
+# calls, each queued behind the rate limiter; their own logs show a callback
+# taking 8.4 seconds. Unresponsive is a different fault from slow, and it is
+# the one people report.
+#
+# Checked by reading the order of the awaits, which for sequential code is the
+# order they run in. That is a real property, unlike the first version of the
+# /npwhoami guard, which looked for words in the source and passed against a
+# build with the condition disabled.
+# --------------------------------------------------------------------------
+
+
+def _on_action_body():
+    import ast
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "app" / "bot" / "handlers" / "staff.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "on_action":
+            return node
+    raise AssertionError("on_action is not in staff.py any more")
+
+
+def _is_bare_answer(stmt) -> bool:
+    """`await query.answer()` with nothing in it."""
+    import ast
+
+    if not isinstance(stmt, ast.Expr) or not isinstance(stmt.value, ast.Await):
+        return False
+    call = stmt.value.value
+    return (
+        isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == "answer"
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id == "query"
+        and not call.args
+        and not call.keywords
+    )
+
+
+def _block_containing_apply(node):
+    """The list of statements holding the try/except that calls `_apply`.
+
+    Walking the tree and comparing line numbers was the first attempt and it
+    was wrong twice over: ast.walk is not source order, and it matched the
+    `await query.answer()` in the parse-error guard at the top of the
+    function, which sits before `_apply` no matter what. The test passed
+    against both ways of breaking it.
+    """
+    import ast
+
+    for parent in ast.walk(node):
+        body = getattr(parent, "body", None)
+        if not isinstance(body, list):
+            continue
+        for index, stmt in enumerate(body):
+            if not isinstance(stmt, ast.Try):
+                continue
+            calls_apply = any(
+                isinstance(inner, ast.Call)
+                and isinstance(inner.func, ast.Name)
+                and inner.func.id == "_apply"
+                for inner in ast.walk(stmt)
+            )
+            if calls_apply:
+                return body, index
+    return None, None
+
+
+def test_the_callback_is_answered_before_the_work_runs() -> None:
+    """The statement immediately before the work must be the answer.
+
+    Stated as adjacency rather than as "somewhere earlier in the file",
+    because somewhere earlier is what let both broken versions through.
+    """
+    body, index = _block_containing_apply(_on_action_body())
+
+    assert body is not None, "nothing in on_action calls _apply any more"
+    assert index > 0, "the call to _apply is the first thing in its block"
+
+    preceding = body[index - 1]
+    assert _is_bare_answer(preceding), (
+        "the statement before the work is not `await query.answer()`. The "
+        "button will spin until the whole action finishes - which is what "
+        "NexterPay reported as slow buttons."
+    )
+
+
+def test_the_two_refusals_are_still_alerts() -> None:
+    """Answering early costs the ability to alert, so the two checks that
+    should alert have to happen before it - and they are both database reads,
+    which is why this is affordable."""
+    import ast
+
+    body = _on_action_body()
+    alerts = [
+        n.lineno
+        for n in ast.walk(body)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "answer"
+        and any(kw.arg == "show_alert" for kw in n.keywords)
+    ]
+    assert len(alerts) >= 2, "the permission and not-found refusals lost their alerts"
+
+
+def test_a_failure_after_answering_is_still_reported() -> None:
+    """The callback is already answered by then, so it cannot be an alert.
+    Silence would be the worst of both: slow to respond and then nothing."""
+    import inspect
+
+    from app.bot.handlers import staff
+
+    source = inspect.getsource(staff.on_action)
+    assert "except Exception" in source
+    assert "query.message.reply" in source, (
+        "a failure after the callback is answered now goes nowhere"
+    )
