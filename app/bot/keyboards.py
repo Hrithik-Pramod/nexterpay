@@ -305,10 +305,15 @@ def open_requests(items) -> InlineKeyboardMarkup:
 
 
 def acknowledgement_actions() -> InlineKeyboardMarkup:
-    """Sits under every acknowledgement, so the list is always one tap away."""
+    """Sits under every acknowledgement, so the list is always one tap away.
+
+    Says "My requests", the same as the menu. It said "My open requests" while
+    the menu said "My requests" - one action, two names - and "open" was
+    wrong besides, because the list carries four weeks of resolved ones too.
+    """
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="My open requests", callback_data="tk:list")]
+            [InlineKeyboardButton(text="My requests", callback_data="tk:list")]
         ]
     )
 

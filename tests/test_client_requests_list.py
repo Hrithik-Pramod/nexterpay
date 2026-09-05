@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import pytest
 
+from app.bot import keyboards as kb
+from app.bot.handlers.client import LIST_LIMIT, _request_list
 from app.db.models import Client
 from app.domain.enums import WorkItemStatus
 from app.domain.work_items import Actor
@@ -218,3 +220,121 @@ async def test_the_front_door_offers_looking_as_well_as_raising() -> None:
     # Business still gets its own wording for the raising half.
     business = kb.raise_request_prompt("business").inline_keyboard[0][0]
     assert business.text == "Commercial Enquiry"
+
+
+# --------------------------------------------------------------------------
+# How much of it is shown
+#
+# Found in live testing on 5 September, with twenty-odd requests in the Acme
+# group: there was no limit at all. One text line and one button per request,
+# in one message, growing forever.
+#
+# Telegram rejects a message over 4096 characters outright - it does not
+# truncate. So a client with enough history sends /nptickets and gets nothing
+# back: no list, no error, and no way to tell that from the bot being down.
+# The same silent failure this project has now paid for three times.
+# --------------------------------------------------------------------------
+
+class _Item:
+    """Enough of a WorkItem to render a line and a button."""
+
+    def __init__(self, n: int, status: WorkItemStatus, subject: str = "Something") -> None:
+        self.id = n
+        self.reference = n
+        self.client_reference = f"ACME-{n}"
+        self.subject = subject
+        self.status = status
+
+
+def _many(count: int, status=WorkItemStatus.OPEN) -> list[_Item]:
+    return [_Item(1000 + n, status) for n in range(count)]
+
+
+def test_a_short_list_is_shown_whole() -> None:
+    text, markup = _request_list(_many(3))
+
+    assert text.count("ACME-") == 3
+    assert len(markup.inline_keyboard) == 3
+    assert "not shown" not in text
+
+
+def test_a_long_list_is_capped() -> None:
+    text, markup = _request_list(_many(40))
+
+    assert text.count("ACME-") == LIST_LIMIT
+    assert len(markup.inline_keyboard) == LIST_LIMIT
+    assert "30 older ones not shown" in text
+
+
+def test_the_message_stays_under_telegrams_limit() -> None:
+    """The actual failure being prevented, measured rather than assumed.
+
+    Long subjects, because a client describing a payment problem writes a
+    sentence, not a word - and the cap has to hold for the worst realistic
+    case rather than the tidy one.
+    """
+    wordy = [
+        _Item(1000 + n, WorkItemStatus.OPEN,
+              "Card payments have been failing intermittently since this "
+              "morning for our EUR corridor, please investigate urgently")
+        for n in range(200)
+    ]
+    text, _ = _request_list(wordy)
+
+    assert len(text) < 4096, f"{len(text)} characters - Telegram would reject this"
+
+
+def test_an_open_request_is_never_hidden_behind_resolved_ones() -> None:
+    """Trimming by recency alone would push a live request off the end.
+
+    That is exactly backwards: the open ones are why anybody asks. A client
+    chasing something would be shown a screen of finished work and conclude
+    their request had vanished.
+    """
+    resolved = [_Item(2000 + n, WorkItemStatus.CLOSED) for n in range(30)]
+    live = [_Item(3000 + n, WorkItemStatus.OPEN) for n in range(4)]
+
+    text, _ = _request_list(resolved + live)
+
+    for item in live:
+        assert item.client_reference in text, (
+            f"{item.client_reference} is open and was hidden"
+        )
+
+
+def test_the_cap_is_a_screenful() -> None:
+    """Ten because that is what fits on a phone, which is the real limit.
+    A number chosen to satisfy Telegram alone would be far higher and far
+    less usable."""
+    assert 5 <= LIST_LIMIT <= 15
+
+
+def test_it_still_says_what_the_list_contains() -> None:
+    """The four-week window is not obvious and has to be stated, or a client
+    reads a resolved item as still open."""
+    text, _ = _request_list(_many(2))
+    assert "four weeks" in text
+    assert "Tap one" in text
+
+
+def test_both_ways_in_offer_the_same_name() -> None:
+    """The command, the menu button and the acknowledgement button all reach
+    one list. It carried two different names, and one of them - "My open
+    requests" - was wrong, because the list is not only open ones."""
+    ack = [b.text for row in kb.acknowledgement_actions().inline_keyboard for b in row]
+    menu = [b.text for row in kb.raise_request_prompt("support").inline_keyboard for b in row]
+
+    assert "My requests" in ack
+    assert "My requests" in menu
+    assert not any("open requests" in t for t in ack + menu)
+
+
+def test_the_buttons_and_the_lines_agree() -> None:
+    """A button for a request that is not in the text, or the reverse, is a
+    list that lies about itself."""
+    text, markup = _request_list(_many(25))
+    on_buttons = [row[0].text.split(" ·")[0] for row in markup.inline_keyboard]
+
+    for reference in on_buttons:
+        assert reference in text, f"{reference} has a button but no line"
+    assert len(on_buttons) == text.count("ACME-")

@@ -170,6 +170,53 @@ async def _open_from(message: Message, body: str, *, context: str | None = None)
     )
 
 
+# How many requests a client is shown at once.
+#
+# There was no limit. One line and one button per request, in a single
+# message, growing forever - and Telegram rejects a message over 4096
+# characters outright rather than truncating it. So a client with enough
+# history would send /nptickets and get nothing back at all: no list, no
+# error, no way to tell that from the bot being down. Acme reached twenty-odd
+# in a fortnight of testing.
+#
+# Ten is a screenful on a phone, which is the real limit anyway.
+LIST_LIMIT = 10
+
+
+def _request_list(items) -> tuple[str, object | None]:
+    """The text and buttons for a client's request list.
+
+    One function because there are two ways in - the command and the button -
+    and they were separate copies of the same twelve lines. They had already
+    drifted once: the button under an acknowledgement said "My open requests"
+    while the menu said "My requests", for the same list, which includes
+    resolved ones.
+
+    Open requests come first when the list is trimmed. Ordering by recency
+    alone could push a live request off the end behind resolved ones, which
+    is precisely backwards - the open ones are the reason anyone asks.
+    """
+    ordered = sorted(items, key=lambda i: (i.status.is_terminal, i.reference))
+    shown = ordered[:LIST_LIMIT]
+    hidden = len(ordered) - len(shown)
+
+    lines = [
+        f"{i.client_reference} · {i.subject}\n    {i.status.client_label}"
+        for i in shown
+    ]
+    text = "Your requests:\n\n" + "\n\n".join(lines)
+    if hidden:
+        text += (
+            f"\n\n{hidden} older one{'s' if hidden > 1 else ''} not shown. "
+            f"Quote the reference if you need one of those."
+        )
+    text += (
+        "\n\nOpen ones, plus anything resolved in the last four weeks. "
+        "Tap one to add to it."
+    )
+    return text, (kb.open_requests(shown) if shown else None)
+
+
 @router.message(cmd.any_case(cmd.TICKETS))
 async def cmd_tickets(message: Message) -> None:
     """`/np_tickets` - the client's own open requests."""
@@ -178,11 +225,7 @@ async def cmd_tickets(message: Message) -> None:
         if chat is None:
             return
         items = await relay.open_requests_for(session, chat, recent_closed=True)
-        lines = [
-            f"{i.client_reference} · {i.subject}\n    {i.status.client_label}"
-            for i in items
-        ]
-        markup = kb.open_requests(items) if items else None
+        body, markup = _request_list(items)
 
     if not items:
         await message.answer(
@@ -190,13 +233,7 @@ async def cmd_tickets(message: Message) -> None:
             f"Send /{cmd.FRONT_DOOR} to raise one."
         )
         return
-    await message.answer(
-        "Your requests:\n\n"
-        + "\n\n".join(lines)
-        + "\n\nOpen ones, plus anything resolved in the last four weeks. "
-        "Tap one to add to it.",
-        reply_markup=markup,
-    )
+    await message.answer(body, reply_markup=markup)
 
 
 @router.callback_query(F.data == "tk:list")
@@ -207,22 +244,12 @@ async def show_requests(query: CallbackQuery) -> None:
             await query.answer()
             return
         items = await relay.open_requests_for(session, chat, recent_closed=True)
-        lines = [
-            f"{i.client_reference} · {i.subject}\n    {i.status.client_label}"
-            for i in items
-        ]
-        markup = kb.open_requests(items) if items else None
+        body, markup = _request_list(items)
 
     if not items:
         await query.answer("You have no recent requests.", show_alert=True)
         return
-    await query.message.answer(
-        "Your requests:\n\n"
-        + "\n\n".join(lines)
-        + "\n\nOpen ones, plus anything resolved in the last four weeks. "
-        "Tap one to add to it.",
-        reply_markup=markup,
-    )
+    await query.message.answer(body, reply_markup=markup)
     await query.answer()
 
 
