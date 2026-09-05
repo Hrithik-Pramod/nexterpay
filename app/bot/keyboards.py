@@ -120,17 +120,21 @@ def work_item_actions(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def confirm_reply(work_item_id: int, lead=None) -> InlineKeyboardMarkup:
+def confirm_reply(work_item_id: int, leads=None) -> InlineKeyboardMarkup:
     """Last stop before a message leaves for a client group.
 
     The envelope and the client's name are on the button on purpose. Staff tap
     dozens of these a day and stop reading; the one thing that must never
     become muscle memory is sending internal wording to a customer.
 
-    Where the group has a nominated lead, a second send button addresses them
-    by name. Two buttons rather than one setting, because whether this
-    particular message needs a specific person's attention is a decision per
-    message, not a preference.
+    One button per named contact, not one button for all of them.
+    
+    It used to be a single "tag" button labelled with the first contact and
+    tagging every one of them - so a group with three named people showed
+    "Send and tag Ann" and mentioned Ann, Ben and Cara. The label lied about
+    what the button did, which on the one screen that exists to stop people
+    tapping without reading is the worst place for it. NexterPay described the
+    flow they expected as "the options for who is there", which is this.
     """
     rows = [
         [
@@ -142,13 +146,15 @@ def confirm_reply(work_item_id: int, lead=None) -> InlineKeyboardMarkup:
             ),
         ]
     ]
-    if lead is not None:
+    for lead in reversed(list(leads or [])):
         rows.insert(
             0,
             [
                 InlineKeyboardButton(
                     text=f"✉ Send and tag {lead.display_name}"[:60],
-                    callback_data=cb("sendreply", work_item_id, "tag"),
+                    callback_data=cb(
+                        "sendreply", work_item_id, str(lead.telegram_user_id)
+                    ),
                 )
             ],
         )

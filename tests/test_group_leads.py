@@ -89,7 +89,8 @@ async def test_a_tagged_reply_mentions_them_and_an_ordinary_one_does_not(
     assert f"tg://user?id={lead.telegram_user_id}" not in plain
 
     await relay.send_client_reply(
-        session, gw, item, Actor.of(operator), "Any update?", tag_lead=True
+        session, gw, item, Actor.of(operator), "Any update?",
+        tag_lead=lead.telegram_user_id,
     )
     tagged = gw.messages_to(CLIENT_CHAT)[-1]
     assert f'tg://user?id={lead.telegram_user_id}' in tagged
@@ -107,7 +108,9 @@ async def test_tagging_a_group_with_nobody_named_still_sends(
         body="Missing.", raised_by_name="Tom Baker",
     )
     await relay.send_client_reply(
-        session, gw, item, Actor.of(operator), "Still sent.", tag_lead=True
+        # An id nobody here is named under - a contact removed between the
+        # preview and the tap. The message matters more than the mention.
+        session, gw, item, Actor.of(operator), "Still sent.", tag_lead=8001,
     )
     assert "Still sent." in gw.messages_to(CLIENT_CHAT)[-1]
 
@@ -133,7 +136,7 @@ async def test_a_tagged_reply_still_hides_the_supplier_code(
     await relay.file_under(session, gw, item, supplier, Actor.of(operator))
 
     await relay.send_client_reply(
-        session, gw, item, Actor.of(operator), "Chasing them now.", tag_lead=True
+        session, gw, item, Actor.of(operator), "Chasing them now.", tag_lead=8001,
     )
     assert "SPEX" not in gw.all_text_to(CLIENT_CHAT)
 
@@ -151,7 +154,7 @@ async def test_staff_wording_is_escaped_in_a_tagged_reply(
     )
     await relay.send_client_reply(
         session, gw, item, Actor.of(operator),
-        "amount < 500 & rising <b>not bold</b>", tag_lead=True,
+        "amount < 500 & rising <b>not bold</b>", tag_lead=8001,
     )
     sent = gw.messages_to(CLIENT_CHAT)[-1]
     assert "amount &lt; 500 &amp; rising" in sent
@@ -330,7 +333,7 @@ async def test_raising_outbound_can_address_the_contact(
     await relay.open_outbound(
         session, gw, counterparty_chat=acme_support,
         subject="Reconciliation", body="Checking in on the March file.",
-        actor=Actor.of(operator), tag_lead=True,
+        actor=Actor.of(operator), tag_lead=7788,
     )
 
     to_client = gw.all_text_to(acme_support.telegram_chat_id)
@@ -365,7 +368,7 @@ async def test_asking_to_tag_nobody_still_sends(
     await relay.open_outbound(
         session, gw, counterparty_chat=acme_support,
         subject="Reconciliation", body="Checking in.", actor=Actor.of(operator),
-        tag_lead=True,
+        tag_lead=7788,
     )
     assert "Checking in." in gw.all_text_to(acme_support.telegram_chat_id)
 
@@ -380,7 +383,7 @@ def test_the_tag_button_is_only_offered_where_someone_is_named() -> None:
         telegram_user_id = 7788
 
     plain = [b.text for row in _confirm().inline_keyboard for b in row]
-    tagged = [b.text for row in _confirm(_Lead()).inline_keyboard for b in row]
+    tagged = [b.text for row in _confirm([_Lead()]).inline_keyboard for b in row]
 
     assert not any("tag" in t for t in plain)
     assert any("Gavs D" in t for t in tagged)
@@ -493,3 +496,75 @@ def test_nexterpay_keeps_an_override() -> None:
     assert "_admin_or_refuse" in source, (
         "administrators no longer have a route through this guard"
     )
+
+
+async def test_one_button_tags_one_person(
+    session, acme_support, support_ops, operator, gw
+):
+    """The bug the button shape was hiding.
+
+    A single "tag" button labelled with the first contact used to mention
+    every one of them - "Send and tag Ann" mentioned Ann, Ben and Cara. On the
+    one screen that exists to stop people tapping without reading, a button
+    that does more than its label says is the worst possible place for it.
+    """
+    ann = await _named(session, acme_support, user_id=9001, name="Ann")
+    await _named(session, acme_support, user_id=9002, name="Ben")
+    await _named(session, acme_support, user_id=9003, name="Cara")
+
+    item = await relay.open_request(
+        session, gw, source_chat=acme_support, subject="Settlement",
+        body="Missing.", raised_by_name="Tom Baker",
+    )
+    await relay.send_client_reply(
+        session, gw, item, Actor.of(operator), "Any update?",
+        tag_lead=ann.telegram_user_id,
+    )
+    sent = gw.messages_to(CLIENT_CHAT)[-1]
+
+    assert "tg://user?id=9001" in sent
+    assert "tg://user?id=9002" not in sent, "Ben was mentioned and nobody asked"
+    assert "tg://user?id=9003" not in sent, "Cara was mentioned and nobody asked"
+
+
+def test_there_is_a_button_for_each_named_contact() -> None:
+    """NexterPay described the flow they expected as "the options for who is
+    there". One button each, so the label and the effect agree."""
+    from app.bot import keyboards as kb
+
+    class _Lead:
+        def __init__(self, name, uid):
+            self.display_name, self.telegram_user_id = name, uid
+
+    leads = [_Lead("Ann", 9001), _Lead("Ben", 9002)]
+    labels = [
+        b.text for row in kb.confirm_reply(7, leads).inline_keyboard for b in row
+    ]
+    assert any("Ann" in t for t in labels)
+    assert any("Ben" in t for t in labels)
+
+    # And each carries its own person's id, or the buttons are decoration.
+    data = [
+        b.callback_data
+        for row in kb.confirm_reply(7, leads).inline_keyboard
+        for b in row
+        if "tag" in b.text
+    ]
+    assert sorted(data) == ["wi:sendreply:7:9001", "wi:sendreply:7:9002"]
+
+
+def test_the_outbound_preview_offers_the_same_choice() -> None:
+    """Two flows, one shape. Learning it twice is learning it wrong once."""
+    from app.bot.handlers.outbound import _confirm
+
+    class _Lead:
+        def __init__(self, name, uid):
+            self.display_name, self.telegram_user_id = name, uid
+
+    labels = [
+        b.text
+        for row in _confirm([_Lead("Ann", 9001), _Lead("Ben", 9002)]).inline_keyboard
+        for b in row
+    ]
+    assert any("Ann" in t for t in labels) and any("Ben" in t for t in labels)
+    assert "Cancel" in labels

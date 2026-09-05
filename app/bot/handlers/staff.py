@@ -298,7 +298,7 @@ async def capture_reply_draft(message: Message, state: FSMContext) -> None:
     await message.reply(
         f"This will be sent to {client_name} for {reference}:\n\n{text}\n\n"
         f"Nothing has been sent yet.",
-        reply_markup=kb.confirm_reply(work_item_id, leads[0] if leads else None),
+        reply_markup=kb.confirm_reply(work_item_id, leads),
     )
 
 
@@ -526,10 +526,10 @@ async def _apply(
             await state.clear()
             await _say(query, "That draft has already been sent, or it expired.")
             return "That draft has already been sent or expired"
-        # "tag" is the second send button, offered only where the group has a
-        # named contact. It addresses them by name so they are notified rather
-        # than relying on somebody noticing.
-        tag = value == "tag"
+        # The value is the Telegram id of the contact whose button was
+        # tapped, or absent for the plain send. Carrying the id rather than a
+        # "tag" flag is what lets one button mean one person.
+        tag = int(value) if value and value.isdigit() else None
         await relay.send_client_reply(session, gw, item, actor, draft, tag_lead=tag)
         await state.clear()
         await _seal_preview(query, f"Sent to the client:\n\n{draft}")

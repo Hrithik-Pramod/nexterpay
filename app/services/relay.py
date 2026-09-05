@@ -678,18 +678,24 @@ async def send_client_reply(
     text: str,
     *,
     attachment: IncomingAttachment | None = None,
-    tag_lead: bool = False,
+    tag_lead: int | None = None,
 ) -> None:
     """The only path from NexterPay to a client.
 
     The reply carries the reference and becomes the new anchor, so replying to
     it resolves back to this work item.
 
-    `tag_lead` addresses the group's nominated contact by name, so they are
-    notified rather than relying on somebody noticing. Off by default: whether
-    a particular message needs one person's attention is a decision per
-    message, and tagging the same person on every reply teaches them to ignore
-    it.
+    `tag_lead` is the Telegram id of one named contact, addressed by name so
+    they are notified rather than relying on somebody noticing. Off by
+    default: whether a particular message needs one person's attention is a
+    decision per message, and tagging the same person on every reply teaches
+    them to ignore it.
+
+    One person, not all of them. It used to take a boolean and mention every
+    named contact, while the button offering it was labelled with the first -
+    so "Send and tag Ann" mentioned Ann, Ben and Cara. A button that does more
+    than its label says is worst on this screen of all, which exists to stop
+    people tapping without reading.
     """
     actor.require_any()
     source, ops = await chats_for(session, item)
@@ -698,10 +704,13 @@ async def send_client_reply(
     outbound = f"{item.client_reference} — {text}"
 
     parse_mode = None
-    if tag_lead:
+    if tag_lead is not None:
         from app.bot.registry import leads_for
 
-        leads = await leads_for(session, source)
+        leads = [
+            lead for lead in await leads_for(session, source)
+            if lead.telegram_user_id == tag_lead
+        ]
         if leads:
             # Everything interpolated is escaped: the reference is ours, but
             # `text` is whatever a member of staff typed, and a stray "<" would
@@ -1133,7 +1142,7 @@ async def open_outbound(
     subject: str,
     body: str,
     actor: Actor,
-    tag_lead: bool = False,
+    tag_lead: int | None = None,
 ) -> WorkItem:
     """A request NexterPay raise with a client or supplier.
 
@@ -1207,10 +1216,13 @@ async def open_outbound(
     # person on everything teaches them to ignore it, which costs more than
     # it buys.
     parse_mode = None
-    if tag_lead:
+    if tag_lead is not None:
         from app.bot.registry import leads_for
 
-        leads = await leads_for(session, counterparty_chat)
+        leads = [
+            lead for lead in await leads_for(session, counterparty_chat)
+            if lead.telegram_user_id == tag_lead
+        ]
         if leads:
             named = ", ".join(
                 f'<a href="tg://user?id={lead.telegram_user_id}">'

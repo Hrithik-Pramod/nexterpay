@@ -60,7 +60,7 @@ def _counterparty_keyboard(chats) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _confirm(lead=None) -> InlineKeyboardMarkup:
+def _confirm(leads=None) -> InlineKeyboardMarkup:
     """Send to the room, or send addressed to the named contact.
 
     The same two-button shape as replying, and for the same reason. NexterPay
@@ -68,16 +68,20 @@ def _confirm(lead=None) -> InlineKeyboardMarkup:
     message typed, because until then there is no lead to offer - the contact
     belongs to the group, so it cannot be known before one is picked.
 
-    The tag button only appears when somebody has been named for that group.
-    A button that would do nothing needs explaining, and explaining it is
-    worse than not offering it.
+    One button per named contact, not one for all of them. A single button
+    labelled with the first while mentioning every one of them says something
+    the button does not do, and this is the screen that exists to stop people
+    tapping without reading.
+
+    None at all when nobody has been named: a button that would do nothing
+    needs explaining, and explaining it is worse than not offering it.
     """
     rows = [[InlineKeyboardButton(text="✉ Send and open", callback_data="ob:send")]]
-    if lead is not None:
+    for lead in leads or []:
         rows.append(
             [InlineKeyboardButton(
                 text=f"✉ Send and tag {lead.display_name}"[:60],
-                callback_data="ob:sendtag",
+                callback_data=f"ob:sendtag:{lead.telegram_user_id}",
             )]
         )
     rows.append([InlineKeyboardButton(text="Cancel", callback_data="ob:cancel")])
@@ -212,25 +216,26 @@ async def capture(message: Message, state: FSMContext) -> None:
     await state.update_data(body=body)
     subject = (body.splitlines()[0] if body else "")[:120] or "New request"
 
-    # The contact for the group they picked, if one has been named.
-    lead = None
+    # The contacts for the group they picked, if any have been named.
+    leads = []
     async with session_scope() as session:
         target = await resolve_chat(session, data.get("to_chat_id"))
         if target is not None:
             leads = await leads_for(session, target)
-            lead = leads[0] if leads else None
 
     await message.reply(
         f"This will open a new request with {data.get('to_title')} and send:\n\n"
         f"— — —\n{subject}\n\n{body}\n— — —\n\n"
         f"Nothing has been sent yet.",
-        reply_markup=_confirm(lead),
+        reply_markup=_confirm(leads),
     )
 
 
-@router.callback_query(F.data.in_({"ob:send", "ob:sendtag"}))
+@router.callback_query(F.data.startswith("ob:send"))
 async def send(query: CallbackQuery, state: FSMContext) -> None:
-    tag = (query.data or "") == "ob:sendtag"
+    # "ob:send", or "ob:sendtag:<telegram id>" naming one contact.
+    parts = (query.data or "").split(":")
+    tag = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else None
     data = await state.get_data()
     body, to_chat_id = data.get("body"), data.get("to_chat_id")
     if not body or not to_chat_id:

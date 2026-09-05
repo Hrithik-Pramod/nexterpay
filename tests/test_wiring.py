@@ -525,7 +525,7 @@ def test_no_keyboard_builds_a_button_nobody_answers() -> None:
         keyboards.work_item_actions(7, claimed=True),
         keyboards.work_item_actions(7, claimed=False, expanded=True),
         keyboards.confirm_reply(7),
-        keyboards.confirm_reply(7, _Lead()),
+        keyboards.confirm_reply(7, [_Lead()]),
         keyboards.closed_actions(7),
         keyboards.supplier_choices(7, [_Counterparty()]),
         keyboards.link_choices(7, [_Item()], [_Item()]),
