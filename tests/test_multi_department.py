@@ -280,3 +280,80 @@ async def test_whoami_is_readable_by_a_person_checking_their_own_record(session)
     assert whoami_text(two) == (
         "Dana Ruiz — registered, but not on any department."
     )
+
+
+# --------------------------------------------------------------------------
+# What the bot says about seniority, in the two places it says it
+#
+# NexterPay hit this on 5 September. peter is an administrator on Support and
+# a senior operator on Finance. /npwhoami told him administrators are "not
+# limited to one department"; Finance then refused him a Reopen because he is
+# not a manager there. Both statements were true and together they read as a
+# fault.
+#
+# Administration - registering a group, adding a person - is not tied to a
+# desk. Seniority is. The two texts have to say the same thing about that or
+# the next person reaches the same wrong conclusion.
+# --------------------------------------------------------------------------
+
+
+def test_the_refusal_says_seniority_is_per_desk() -> None:
+    from app.db.models import Staff
+    from app.domain.enums import StaffRole
+    from app.domain.errors import NotAuthorised
+    from app.domain.work_items import Actor
+
+    person = Staff(telegram_user_id=1, display_name="peter", is_active=True)
+    actor = Actor(
+        name="peter", telegram_user_id=1, staff=person,
+        role=StaffRole.SENIOR_OPERATOR,
+    )
+
+    with pytest.raises(NotAuthorised) as caught:
+        actor.require(StaffRole.MANAGER)
+
+    message = str(caught.value)
+    assert "this desk" in message, "the refusal does not say it is about this desk"
+    assert "does not carry across" in message
+    assert "senior_operator" not in message, "raw enum value leaked into the message"
+    assert "senior operator" in message
+
+
+def test_whoami_does_not_claim_administrators_outrank_everyone_everywhere() -> None:
+    """The sentence that caused it.
+
+    "Not limited to one department" was true of the administration commands
+    and false of seniority, and it sat directly above a line saying seniority
+    does not carry across.
+    """
+    from app.bot.main import _ROLE_GRANTS
+    from app.domain.enums import StaffRole
+
+    text = _ROLE_GRANTS[StaffRole.ADMINISTRATOR]
+
+    assert "this desk" in text, (
+        "the administrator line does not say which desk its seniority applies to"
+    )
+    # The old wording, which read as "everything, everywhere".
+    assert not text.strip().startswith("everything, plus"), text
+
+
+def test_both_texts_agree_that_seniority_stays_on_its_desk() -> None:
+    """Stated as a relationship rather than twice as a string, so changing
+    one without the other fails here rather than in a group."""
+    from app.bot.main import _ROLE_GRANTS, whoami_text
+    from app.db.models import Staff, StaffDepartment
+    from app.domain.enums import Department, StaffRole
+
+    person = Staff(telegram_user_id=1, display_name="peter", memberships=[])
+    person.memberships = [
+        StaffDepartment(department=Department.SUPPORT, role=StaffRole.ADMINISTRATOR),
+        StaffDepartment(department=Department.FINANCE, role=StaffRole.SENIOR_OPERATOR),
+    ]
+
+    reply = whoami_text(person)
+    assert "does not carry across" in reply
+    assert _ROLE_GRANTS[StaffRole.ADMINISTRATOR] in reply
+    # Both desks are named with their own role, which is the whole point.
+    assert "Support" in reply and "Finance" in reply
+    assert "administrator" in reply and "senior operator" in reply

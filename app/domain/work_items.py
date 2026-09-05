@@ -118,9 +118,21 @@ class Actor:
                 f"{self.staff.display_name} is not registered for this department"
             )
         if not self.role.at_least(role):
+            # "here" is doing the important work in this sentence, and it was
+            # doing it too quietly. Somebody who is an administrator on one
+            # desk reads "requires manager" and reasonably concludes the bot
+            # is wrong about them, because /npwhoami has just told them
+            # administrators are not limited to one department. Both are true:
+            # administration is not limited, seniority is. The refusal has to
+            # say which of the two it is talking about.
+            def _plain(value: str) -> str:
+                return value.replace("_", " ")
+
             raise NotAuthorised(
-                f"Action requires {role.value}; "
-                f"{self.staff.display_name} is {self.role.value} here"
+                f"That needs {_plain(role.value)} on this desk. "
+                f"{self.staff.display_name} is {_plain(self.role.value)} here. "
+                f"Seniority is held per department and does not carry across, "
+                f"so a role on another desk does not apply in this group."
             )
         return self.staff
 

@@ -47,9 +47,16 @@ _ROLE_GRANTS = {
     StaffRole.SENIOR_OPERATOR: "everything an Operator can, plus reassign and escalate",
     StaffRole.MANAGER:
         "everything a Senior Operator can, plus reopen a closed request and broadcast",
+    # Two different things, and running them together is what made this
+    # confusing in the group. Administration - registering a group, adding a
+    # person - is not tied to a desk at all. Seniority is, and being an
+    # administrator on Support does not make you a manager on Finance. The
+    # bot refuses on exactly that basis, so the wording has to match, or
+    # somebody reads "not limited to one department" and concludes the
+    # refusal is a fault.
     StaffRole.ADMINISTRATOR:
-        "everything, plus registering groups and managing staff. Not limited to "
-        "one department",
+        "everything a Manager can on this desk, plus registering groups and "
+        "managing staff — and those two work in any group, not just this one",
 }
 
 
