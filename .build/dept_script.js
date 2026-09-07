@@ -188,7 +188,8 @@ const body = [
      [{ t: "Silent outside NexterPay's own groups on purpose. Explaining our "
          + "internal mechanism to a counterparty would be the fault." }]],
     [[{ t: "A forwarded message does nothing" }],
-     [{ t: "The bot cannot see forwards — it runs with privacy mode on. "
+     [{ t: "The bot acts on a command, a reply to one of its own messages, or "
+         + "a message it can match to a request. A forward is none of those. "
          + "Reply instead, and attach whatever helps." }]],
     [[{ t: "“That needs manager on this desk”" }],
      [{ t: "Seniority is held per desk. Being senior elsewhere does not carry "

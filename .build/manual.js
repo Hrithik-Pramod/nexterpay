@@ -703,9 +703,10 @@ const body = [
      [{ t: "Seniority is per desk. Being senior elsewhere does not carry "
          + "across; administration does." }]],
     [[{ t: "A forwarded message does nothing" }],
-     [{ t: "The bot runs with privacy mode on and is not an administrator in "
-         + "counterparty groups, so Telegram never delivers a forward to it. "
-         + "Replying is the mechanism, and attachments travel with a reply." }]],
+     [{ t: "The bot acts on three things: a command, a reply to one of its own "
+         + "messages, and a message it can match to a request. A forward is "
+         + "none of them, so it is left alone. Reply instead — attachments "
+         + "travel with a reply." }]],
     [[{ t: "A closed request shows only two buttons" }],
      [{ t: "Everything else would be refused on a closed item." }]],
     [[{ t: "A client's reply to a closed request does not reopen it" }],
