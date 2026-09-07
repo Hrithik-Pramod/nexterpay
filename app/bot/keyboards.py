@@ -75,7 +75,7 @@ def work_item_actions(
         )
         if asked_from
         else InlineKeyboardButton(
-            text="✉ Reply to client", callback_data=cb("reply", work_item_id)
+            text="✉ Reply to Client", callback_data=cb("reply", work_item_id)
         )
     )
 
@@ -139,7 +139,7 @@ def confirm_reply(work_item_id: int, leads=None) -> InlineKeyboardMarkup:
     rows = [
         [
             InlineKeyboardButton(
-                text="✉ Send to client", callback_data=cb("sendreply", work_item_id)
+                text="✉ Send to Client", callback_data=cb("sendreply", work_item_id)
             ),
             InlineKeyboardButton(
                 text="Cancel", callback_data=cb("cancelreply", work_item_id)
@@ -293,7 +293,7 @@ def staff_front_door(
     rows = [
         [InlineKeyboardButton(text="Raise with a client", callback_data="np:newcl"),
          InlineKeyboardButton(text="Raise with a supplier", callback_data="np:newsu")],
-        [InlineKeyboardButton(text="This desk's workload", callback_data="np:workload")],
+        [InlineKeyboardButton(text="This Desk’s Workload", callback_data="np:workload")],
     ]
     if role is not None and role.at_least(StaffRole.MANAGER):
         rows.append(
@@ -411,7 +411,7 @@ def acknowledgement_actions() -> InlineKeyboardMarkup:
     """
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="My requests", callback_data="tk:list")]
+            [InlineKeyboardButton(text="My Requests", callback_data="tk:list")]
         ]
     )
 
@@ -432,7 +432,7 @@ def raise_request_prompt(department: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text=label, callback_data="raise:new")],
-            [InlineKeyboardButton(text="My requests", callback_data="tk:list")],
+            [InlineKeyboardButton(text="My Requests", callback_data="tk:list")],
         ]
     )
 

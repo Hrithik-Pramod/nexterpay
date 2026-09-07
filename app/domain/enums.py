@@ -93,12 +93,12 @@ _STATUS_LABELS = {
 # through the message text.
 CLIENT_STATUS_LABELS = {
     "open": "Received",
-    "claimed": "In progress",
-    "in_progress": "In progress",
-    "waiting_client": "Waiting on you",
-    "waiting_internal": "In progress",
-    "waiting_third_party": "In progress",
-    "escalated": "In progress",
+    "claimed": "In Progress",
+    "in_progress": "In Progress",
+    "waiting_client": "Waiting on You",
+    "waiting_internal": "In Progress",
+    "waiting_third_party": "In Progress",
+    "escalated": "In Progress",
     "completed": "Resolved",
     "closed": "Resolved",
 }

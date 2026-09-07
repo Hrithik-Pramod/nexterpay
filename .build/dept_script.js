@@ -14,8 +14,9 @@ const V = {
     button: "Raise Request",
     prompt: "Please describe the issue, including any reference numbers or "
           + "screenshots that would help us investigate.",
-    ackTail: "Please reply to this message to add anything further to it.",
-    claim: "Gavin is looking after this.",
+    ackTail: "Please reply to this message if you would like to add anything "
+           + "further.",
+    claim: "Gavin is now looking after your request.",
     closes: true,
     closeText: [
       "Request ACME-1042 is now resolved.",
@@ -31,9 +32,9 @@ const V = {
     button: "Commercial Enquiry",
     prompt: "Please describe what you would like to discuss. Include as much "
           + "detail as you can, and attach any documents that would help.",
-    ackTail: "One of the Business team will get back to you. Reply to this "
-           + "message to add anything further.",
-    claim: "The Business team are looking into this.",
+    ackTail: "One of our Business Team will get back to you. Please reply to "
+           + "this message if you would like to add anything further.",
+    claim: "Our Business Team is looking into your enquiry.",
     closes: false,
     closeText: null,
   },
@@ -80,7 +81,7 @@ const body = [
   steps([
     step(1, "/np", [
       { t: "“" }, { t: V.ask, i: true }, { t: "” with two buttons: " },
-      { t: V.button, b: true }, { t: " and " }, { t: "My requests", b: true },
+      { t: V.button, b: true }, { t: " and " }, { t: "My Requests", b: true },
       { t: "." }]),
     step(2, [{ t: "Tap " }, { t: V.button, b: true }],
       [{ t: "The message box opens with your name in it, and the instruction "
@@ -89,7 +90,7 @@ const body = [
     step(3, [{ t: "Type " }, { t: "card payments failing since this morning", code: true },
              { t: " and send" }],
       [{ t: "“Request " }, { t: "ACME-1042", code: true },
-       { t: ` has been logged with our ${DEPT} team.” Then: “` },
+       { t: ` has been logged with our ${DEPT} Team.” Then: “` },
        { t: V.ackTail, i: true }, { t: "” Write the reference down." }]),
     step(4, "/npraise a second one, in one go",
       "Same acknowledgement, new reference, no menu in between."),
@@ -98,12 +99,12 @@ const body = [
        { t: " It has been added to that same request." }]),
     step(6, [{ t: "Reply to an old bot message that is not about a live "
                  + "request" }],
-      [{ t: "“I could not match that to one of your requests, so nobody has "
-          + "been notified.” " },
+      [{ t: "“We couldn’t match that to one of your requests, so our " },
+       { t: DEPT, i: false }, { t: " Team has not been notified.” " },
        { t: "New this week — it used to do nothing at all.", b: true }]),
     step(7, "/nptickets",
       [{ t: "Your requests, ten at a time, open ones first, with statuses in "
-          + "plain words: Received, In progress, Waiting on you, Resolved." }]),
+          + "plain words: Received, In Progress, Waiting on You, Resolved." }]),
     step(8, [{ t: "Send a screenshot as a reply to the acknowledgement" }],
       "It reaches the desk. Size is not a limit."),
     step(9, "/nphelp",
@@ -127,13 +128,13 @@ const body = [
     step(12, [{ t: "Check the client group" }],
       [{ t: "“" }, { t: `ACME-1042 — ${V.claim}`, i: true }, { t: "” " },
        { t: "New this week.", b: true }]),
-    step(13, [{ t: "Tap " }, { t: "Reply to client", b: true },
+    step(13, [{ t: "Tap " }, { t: "Reply to Client", b: true },
               { t: ", type something, then " }, { t: "Cancel", b: true }],
       [{ t: "A preview appears; Cancel sends nothing. Confirm in the client "
           + "group that nothing arrived." }]),
-    step(14, [{ t: "Reply again and " }, { t: "Send to client", b: true }],
+    step(14, [{ t: "Reply again and " }, { t: "Send to Client", b: true }],
       [{ t: "In the client group: “" },
-       { t: "ACME-1042 — from Gavin — We are on it now.", i: true },
+       { t: "ACME-1042 — from Gavin — We’re looking into this now.", i: true },
        { t: "” " }, { t: "Signed, also new.", b: true }]),
     step(15, "/npnote the client has been chasing since Tuesday",
       [{ t: "Recorded in the topic. " },
@@ -146,7 +147,7 @@ const body = [
           + "in General it offers raising outbound, the workload, and — "
           + "depending on your level — broadcast and setup. " },
        { t: "The buttons do the thing, not tell you a command.", b: true }]),
-    step(18, [{ t: "In General, tap " }, { t: "This desk's workload", b: true }],
+    step(18, [{ t: "In General, tap " }, { t: "This Desk’s Workload", b: true }],
       "The workload prints. It should not reply with a command to type."),
     step(19, "/nphistory",
       "The full trail: raised, claimed, replies, notes, priority changes."),

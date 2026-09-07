@@ -100,7 +100,7 @@ def test_the_three_common_actions_are_the_ones_on_screen() -> None:
     labels = _labels(work_item_actions(1, claimed=False))
 
     assert labels[0] == "Claim"
-    assert any("Reply to client" in text for text in labels)
+    assert any("Reply to Client" in text for text in labels)
     assert "Close" in labels
     assert any("More" in text for text in labels)
     assert len(labels) == 4, f"the collapsed set should be three and a More: {labels}"
@@ -119,7 +119,7 @@ def test_nothing_was_dropped_when_the_buttons_were_trimmed() -> None:
 
     for expected in ("Claim", "Status", "Note", "Priority", "History", "Close"):
         assert any(expected in text for text in reachable), f"{expected} missing"
-    assert any("Reply to client" in text for text in reachable)
+    assert any("Reply to Client" in text for text in reachable)
     assert any("File under supplier" in text for text in reachable)
     assert any("Link ticket" in text for text in reachable)
 

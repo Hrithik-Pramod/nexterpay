@@ -336,14 +336,14 @@ async def test_the_asked_request_offers_answer_and_not_reply_to_client(
         for b in row
     ]
     assert any("Answer" in t for t in labels)
-    assert not any("Reply to client" in t for t in labels)
+    assert not any("Reply to Client" in t for t in labels)
 
     ordinary = [
         b.text
         for row in kb.work_item_actions(origin.id, claimed=False).inline_keyboard
         for b in row
     ]
-    assert any("Reply to client" in t for t in ordinary)
+    assert any("Reply to Client" in t for t in ordinary)
     assert not any("Answer" in t for t in ordinary)
 
 

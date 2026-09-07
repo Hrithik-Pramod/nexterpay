@@ -21,7 +21,7 @@ from app.bot.deps import client_context, gateway, prompt_for
 from app.bot.routing import IncomingMessage, build_strategy
 from app.config import get_settings
 from app.db.base import session_scope
-from app.db.models import WorkItem
+from app.db.models import Department, WorkItem
 from app.services import broadcast as broadcast_service
 from app.services import relay
 
@@ -125,7 +125,9 @@ async def capture_request(message: Message, state: FSMContext) -> None:
     await _open_from(message, body)
 
 
-def unrouted_notice(reply_to_message_id: int | None) -> str | None:
+def unrouted_notice(
+    reply_to_message_id: int | None, department: Department | None = None
+) -> str | None:
     """What to say when a client's message matched no request.
 
     The worst failure the platform has: the client believes they have been
@@ -142,12 +144,25 @@ def unrouted_notice(reply_to_message_id: int | None) -> str | None:
     A function rather than a branch inside the handler because the handler
     cannot be called from a test, and the first version of this guard was
     written as source-inspection and passed against the broken code.
+
+    Names the desk - "our Support Team has not been notified" rather than
+    "nobody has been notified". NexterPay's wording, 7 September. It is the
+    more useful sentence: a client in one of several groups with us learns
+    which team missed it, which is exactly what they need to know to decide
+    whether it mattered.
     """
     if reply_to_message_id is None:
         return None
+    # The whole clause, not a subject glued to a fixed verb - "nobody has" and
+    # "has not been notified" produce "nobody has not been notified", which is
+    # what the test caught.
+    who = (
+        f"our {department.label} Team has not been notified"
+        if department is not None
+        else "nobody has been notified"
+    )
     return (
-        "I could not match that to one of your requests, so nobody has been "
-        "notified.\n\n"
+        f"We couldn’t match that to one of your requests, so {who}.\n\n"
         f"Reply to a message about the request you mean, send /{cmd.TICKETS} "
         f"to pick from your list, or /{cmd.FRONT_DOOR} to raise a new one."
     )
@@ -351,7 +366,9 @@ async def client_reply(message: Message) -> None:
                     "Unrouted client message in chat %s: reply_to=%s",
                     message.chat.id, incoming.reply_to_message_id,
                 )
-                notice = unrouted_notice(incoming.reply_to_message_id)
+                notice = unrouted_notice(
+                    incoming.reply_to_message_id, chat.department
+                )
                 if notice is not None:
                     await message.reply(notice)
                 return

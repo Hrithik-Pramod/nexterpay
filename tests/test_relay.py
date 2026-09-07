@@ -567,7 +567,7 @@ async def test_claiming_tells_the_client_who_has_it(
 
     to_client = gw.all_text_to(acme_support.telegram_chat_id)
     assert operator.display_name in to_client
-    assert "looking after this" in to_client
+    assert "is now looking after your request" in to_client
     assert item.client_reference in to_client
 
 
@@ -604,7 +604,7 @@ async def test_business_is_told_the_team_not_the_person(
     await relay.claim(session, gw, item, Actor.of(operator))
 
     to_client = gw.all_text_to(acme_business.telegram_chat_id)
-    assert "The Business team are looking into this" in to_client
+    assert "Our Business Team is looking into your enquiry" in to_client
     assert operator.display_name not in to_client, "Business was given a name"
 
 

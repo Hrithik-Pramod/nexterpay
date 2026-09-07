@@ -119,7 +119,7 @@ const body = [
     "Tap the button below, or send it in one go - for example:",
     "/npraise payment not received for INV-2041",
     "",
-    "   [ Raise Request ]   [ My requests ]",
+    "   [ Raise Request ]   [ My Requests ]",
   ]),
   ...SAYS("Tom taps Raise Request. The bot opens his composer", [
     "Tom Baker, please describe the issue, including any reference",
@@ -127,11 +127,11 @@ const body = [
   ]),
   ...SAYS("Tom types", ["Card payments failing since this morning"]),
   ...SAYS("The bot replies", [
-    "Request ACME-1042 has been logged with our Support team.",
+    "Request ACME-1042 has been logged with our Support Team.",
     "",
-    "Please reply to this message to add anything further to it.",
+    "Please reply to this message if you would like to add anything further.",
     "",
-    "   [ My requests ]",
+    "   [ My Requests ]",
   ]),
   P("", { after: 110 }),
   P("At the same moment a topic opens in Support Operations, red, at the top "
@@ -151,7 +151,7 @@ const body = [
     "Card payments failing since this morning",
     "",
     "Actions:",
-    "   [ Claim ]   [ Reply to client ]   [ Close ]",
+    "   [ Claim ]   [ Reply to Client ]   [ Close ]",
     "   [ More ]",
   ]),
   P("", { after: 110 }),
@@ -179,24 +179,33 @@ const body = [
     "the topic light turns AMBER, and Claim becomes Reassign",
   ]),
   ...SAYS("and in Acme's group, at the same moment", [
-    "ACME-1042 — Gavin is looking after this.",
+    "ACME-1042 — Gavin is now looking after your request.",
   ]),
-  P("", { after: 100 }),
+  ...SAYS("in a Business group the same tap says", [
+    "ACME-1042 — Our Business Team is looking into your enquiry.",
+  ]),
+  P("", { after: 90 }),
+  RICH([{ t: "Business names the team rather than the person, ", b: true },
+        { t: "so a commercial conversation does not read as a queue with a "
+           + "named handler. Replies are still signed everywhere, Business "
+           + "included — a negotiation is the most personal conversation on "
+           + "the platform, and it is the claim notice that reads as process, "
+           + "not the answer." }], { after: 100 }),
 
-  ...SAYS("Gavin taps Reply to client and types. He sees a preview first", [
+  ...SAYS("Gavin taps Reply to Client and types. He sees a preview first", [
     "Gavin, reply to Acme Payments for ACME-1042 - type it below.",
     "You will see it before it is sent.",
     "",
     "   [ Send and tag Tom Baker ]",
-    "   [ Send to client ]   [ Cancel ]",
+    "   [ Send to Client ]   [ Cancel ]",
   ]),
   P("", { after: 90 }),
   RICH([{ t: "Nothing has left the building yet. ", b: true },
         { t: "Cancel sends nothing. There is one button per named contact, so "
            + "the label and the effect always agree." }], { after: 100 }),
 
-  ...SAYS("He taps Send to client. Acme's group receives", [
-    "ACME-1042 — from Gavin — We are on it now.",
+  ...SAYS("He taps Send to Client. Acme's group receives", [
+    "ACME-1042 — from Gavin — We’re looking into this now.",
   ]),
   ...SAYS("Had he tapped Send and tag Tom Baker instead", [
     "ACME-1042 — from Gavin — @Tom Baker — Any update your end?",
@@ -208,7 +217,7 @@ const body = [
 
   ...SAYS("Tom replies. Support Operations receives", [
     "@Gavin — Tom Baker has replied on ACME-1042",
-    "in reply to: ACME-1042 — from Gavin — We are on it now.",
+    "in reply to: ACME-1042 — from Gavin — We’re looking into this now.",
     "  | any news?",
     "",
     "• Message received from Tom Baker",
@@ -223,6 +232,22 @@ const body = [
              + "strongest separation available." }]),
   BULLET([{ t: "What they were replying to is shown", b: true },
           { t: ", so “no, the other one” is not a mystery." }]),
+
+  ...SAYS("If Tom replies to something we cannot tie to a request, he is told so", [
+    "We couldn’t match that to one of your requests, so our Support",
+    "Team has not been notified.",
+    "",
+    "Reply to a message about the request you mean, send /nptickets",
+    "to pick from your list, or /np to raise a new one.",
+  ]),
+  P("", { after: 90 }),
+  RICH([{ t: "It names the desk. ", b: true },
+        { t: "A client with groups on several of our desks learns which one "
+           + "missed it, which is what they need in order to decide whether it "
+           + "mattered. Silence here was the worst failure "
+           + "the platform had: the client believes they have been heard, "
+           + "nobody has heard them, and neither side finds out until somebody "
+           + "chases." }], { after: 100 }),
 
   ...SAYS("Gavin adds a note — /npnote client chasing since Tuesday", [
     "• Internal note by Gavin",
@@ -281,7 +306,7 @@ const body = [
   BULLET([{ t: "The client's original request travels with the question", b: true },
           { t: ", so Finance are not confirming a rate with no idea why "
              + "anybody wants it." }]),
-  BULLET([{ t: "There is no “Reply to client” button here", b: true },
+  BULLET([{ t: "There is no “Reply to Client” button here", b: true },
           { t: ". Finance writing to Acme about ACME-1043 would quote a "
              + "reference Acme has never seen, about a question Acme never "
              + "asked. The desk holding the client relationship talks to the "
@@ -329,6 +354,51 @@ const body = [
              + "it is already closed rather than left wondering." }]),
   BULLET([{ t: "Reopen ", b: true },
           { t: "is on the closed request, and needs Manager." }]),
+
+  new Paragraph({ children: [new PageBreak()] }),
+
+  // ==================================================================
+  H1("5a.  How Business differs, in full"),
+  P("Every other department behaves as sections 2 to 5 describe. Business is "
+    + "the one desk with its own words, because a commercial conversation is "
+    + "not a fault report. This is the whole of the difference.", { after: 100 }),
+  ...SAYS("The front door — /np in a Business group", [
+    "What would you like to discuss?",
+    "",
+    "   [ Commercial Enquiry ]   [ My Requests ]",
+  ]),
+  ...SAYS("The composer", [
+    "Tom Baker, please describe what you would like to discuss.",
+    "Include as much detail as you can, and attach any documents",
+    "that would help.",
+  ]),
+  ...SAYS("The acknowledgement", [
+    "Request ACME-1042 has been logged with our Business Team.",
+    "",
+    "One of our Business Team will get back to you. Please reply to",
+    "this message if you would like to add anything further.",
+    "",
+    "   [ My Requests ]",
+  ]),
+  ...SAYS("On claim", [
+    "ACME-1042 — Our Business Team is looking into your enquiry.",
+  ]),
+  ...SAYS("A reply — signed, exactly as everywhere else", [
+    "ACME-1042 — from Gavin — We’re looking into this now.",
+  ]),
+  ...SAYS("An unmatched reply", [
+    "We couldn’t match that to one of your requests, so our Business",
+    "Team has not been notified.",
+  ]),
+  ...SAYS("On close", [
+    "Nothing at all.",
+  ]),
+  P("", { after: 100 }),
+  RICH([{ t: "The silence on closing is the only place Business says less "
+             + "than another desk", b: true },
+        { t: ", and it is the thing most often reported to us as a fault. "
+           + "Everywhere else it says the same amount in different words." }],
+       { after: 130 }),
 
   new Paragraph({ children: [new PageBreak()] }),
 
@@ -404,7 +474,7 @@ const body = [
   table(CMD, ["Command", "What it does", "Who"], [
     [[{ t: "/np", code: true }],
      [{ t: "The front door. “What do you need help with?” with " },
-      { t: "Raise Request", b: true }, { t: " and " }, { t: "My requests", b: true },
+      { t: "Raise Request", b: true }, { t: " and " }, { t: "My Requests", b: true },
       { t: ". In Business the question is “What would you like to discuss?” "
          + "and the button reads " }, { t: "Commercial Enquiry", b: true },
       { t: "." }],
@@ -513,7 +583,7 @@ const body = [
   // ==================================================================
   H1("9.  Every button"),
   ...SAYS("On an open request", [
-    "   [ Claim ]   [ Reply to client ]   [ Close ]",
+    "   [ Claim ]   [ Reply to Client ]   [ Close ]",
     "   [ More ]",
     "",
     "More opens:",
@@ -523,7 +593,7 @@ const body = [
     "   [ Ask another department ]",
     "   [ Less ]",
   ]),
-  ...SAYS("Once claimed", ["   [ Reassign ]  [ Reply to client ]  [ Close ]"]),
+  ...SAYS("Once claimed", ["   [ Reassign ]  [ Reply to Client ]  [ Close ]"]),
   ...SAYS("On a request another desk asked for", [
     "   [ Claim ]   [ Answer ACME-1042 ]   [ Close ]",
   ]),
@@ -536,18 +606,18 @@ const body = [
   H2("Statuses"),
   table([2600, 2400, 4640], ["Staff set", "Client sees", "Meaning"], [
     [[{ t: "Open" }], [{ t: "Received" }], [{ t: "Nobody has claimed it." }]],
-    [[{ t: "Claimed" }], [{ t: "In progress" }],
+    [[{ t: "Claimed" }], [{ t: "In Progress" }],
      [{ t: "Somebody owns it. Set automatically by Claim, together with In "
          + "Progress." }]],
-    [[{ t: "In Progress" }], [{ t: "In progress" }],
+    [[{ t: "In Progress" }], [{ t: "In Progress" }],
      [{ t: "Being worked on." }]],
-    [[{ t: "Waiting for Client" }], [{ t: "Waiting on you" }],
+    [[{ t: "Waiting for Client" }], [{ t: "Waiting on You" }],
      [{ t: "The only status that asks the client for something." }]],
-    [[{ t: "Waiting for Internal Team" }], [{ t: "In progress" }],
+    [[{ t: "Waiting for Internal Team" }], [{ t: "In Progress" }],
      [{ t: "Ours to chase, not theirs." }]],
-    [[{ t: "Waiting for Third Party" }], [{ t: "In progress" }],
+    [[{ t: "Waiting for Third Party" }], [{ t: "In Progress" }],
      [{ t: "A supplier or scheme is holding it up." }]],
-    [[{ t: "Escalated" }], [{ t: "In progress" }],
+    [[{ t: "Escalated" }], [{ t: "In Progress" }],
      [{ t: "Senior Operator and above." }]],
     [[{ t: "Completed" }], [{ t: "Resolved" }],
      [{ t: "Work finished, topic not yet archived. Still amber." }]],
@@ -556,7 +626,7 @@ const body = [
   ]),
   P("", { after: 100 }),
   P("Staff track nine; a client is shown four. Waiting on the internal team, "
-    + "waiting on a supplier and escalated all read as “In progress” to them — "
+    + "waiting on a supplier and escalated all read as “In Progress” to them — "
     + "the distinction is ours to act on, and telling them would only prompt "
     + "questions we would rather answer in a reply.", { after: 130 }),
 
@@ -641,7 +711,7 @@ const body = [
     [[{ t: "A client's reply to a closed request does not reopen it" }],
      [{ t: "Whoever closed it is notified and decides. The client is told it "
          + "is already closed rather than left wondering." }]],
-    [[{ t: "“I could not match that to one of your requests”" }],
+    [[{ t: "“We couldn’t match that to one of your requests”" }],
      [{ t: "A real answer, not a fault. The client replied to something we "
          + "could not tie to a request — better said than silently "
          + "swallowed." }]],

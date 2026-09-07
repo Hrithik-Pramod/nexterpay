@@ -54,7 +54,7 @@ def for_client_group(department: Department, *, is_supplier: bool) -> str:
         "",
         "The one thing to remember: start with /np.",
         "",
-        _line(cmd.FRONT_DOOR, f"the menu. Tap {raise_label}, or My requests."),
+        _line(cmd.FRONT_DOOR, f"the menu. Tap {raise_label}, or My Requests."),
         _line(f"{cmd.RAISE} <details>", "raise something in one go, without the menu"),
         _line(cmd.TICKETS, "everything open, plus anything resolved in the last "
                            "four weeks"),

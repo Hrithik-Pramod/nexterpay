@@ -525,7 +525,7 @@ def test_in_general_it_offers_the_desk() -> None:
         work_item_id=None, role=StaffRole.OPERATOR, is_administrator=False
     )
     assert any("Raise with a client" in t for t in labels)
-    assert any("workload" in t for t in labels)
+    assert any("Workload" in t for t in labels)
 
 
 def test_it_offers_nothing_the_person_would_be_refused() -> None:

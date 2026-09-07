@@ -394,15 +394,40 @@ def acknowledgement_text(item: WorkItem) -> str:
     wants to know is that someone is coming back to them.
     """
     closing = (
-        "One of the Business team will get back to you. Reply to this message "
-        "to add anything further."
+        "One of our Business Team will get back to you. Please reply to this "
+        "message if you would like to add anything further."
         if item.department is Department.BUSINESS
-        else "Please reply to this message to add anything further to it."
+        else "Please reply to this message if you would like to add anything "
+        "further."
     )
     return (
         f"Request {item.client_reference} has been logged with our "
-        f"{item.department.label} team.\n\n{closing}"
+        f"{item.department.label} Team.\n\n{closing}"
     )
+
+
+def claim_notice_text(item: WorkItem, actor_name: str | None) -> str | None:
+    """What a counterparty is told when somebody picks their request up.
+
+    A function rather than three lines inside `claim` so that it can be read
+    without a database. The documents that go to NexterPay are checked against
+    it, and a check that quotes a message it cannot call is a check that
+    passes while the wording drifts - which is exactly what happened here on
+    7 September before this was pulled out.
+
+    Business names the team rather than the person: a commercial conversation
+    should not read as a queue with a named handler. "Enquiry" rather than
+    "request" because that is what the Business front door calls it, and one
+    thing should not have two names between one message and the next.
+
+    Returns None when there is nobody to name and no team wording to fall back
+    on - saying "someone" would be worse than the silence.
+    """
+    if item.department is Department.BUSINESS:
+        return f"Our {item.department.label} Team is looking into your enquiry."
+    if actor_name:
+        return f"{actor_name} is now looking after your request."
+    return None
 
 
 async def open_request(
@@ -886,11 +911,13 @@ async def claim(
     The name is the staff member's display name from their record rather than
     their Telegram name, so NexterPay decide what a counterparty sees.
 
-    Business is told the same thing without the name - "The Business team are
-    looking into this". NexterPay's wording, and their reasoning is sound: a
-    commercial conversation should not read as a queue with a named handler,
-    but silence was worse than either. The client still learns somebody has
-    picked it up.
+    Business is told the same thing without the name. NexterPay's wording, and
+    their reasoning is sound: a commercial conversation should not read as a
+    queue with a named handler, but silence was worse than either. The client
+    still learns somebody has picked it up.
+
+    The wording itself lives in `claim_notice_text`, where it can be read
+    without a database.
 
     Replies stay signed everywhere, Business included. A negotiation is the
     most personal conversation on the platform; it is the claim notice that
@@ -901,11 +928,8 @@ async def claim(
     await _announce_since(session, gateway, item, before)
     await refresh_header(session, gateway, item)
 
-    if item.department is Department.BUSINESS:
-        who = f"The {item.department.label} team are looking into this."
-    elif actor.name:
-        who = f"{actor.name} is looking after this."
-    else:
+    who = claim_notice_text(item, actor.name)
+    if who is None:
         return
 
     source, _ = await chats_for(session, item)

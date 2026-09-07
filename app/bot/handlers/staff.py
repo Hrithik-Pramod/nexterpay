@@ -390,7 +390,7 @@ async def _wrong_topic(message: Message, state: FSMContext, topic_id: int | None
     await state.clear()
     await message.reply(
         "That draft belonged to a different request, so I have discarded it. "
-        "Tap 'Reply to client' in this topic to start again."
+        "Tap 'Reply to Client' in this topic to start again."
     )
     return True
 
@@ -678,7 +678,7 @@ async def _apply(
             await _say(
                 query,
                 "There is nothing to answer here - this request was raised "
-                "directly, not asked by another desk. Use Reply to client.",
+                "directly, not asked by another desk. Use Reply to Client.",
             )
             return "Nothing to answer"
         origin = await session.get(WorkItem, item.asked_from_id)

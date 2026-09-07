@@ -54,9 +54,9 @@ async def test_clients_see_the_simplified_status_wording() -> None:
     not the client's situation.
     """
     assert WorkItemStatus.OPEN.client_label == "Received"
-    assert WorkItemStatus.WAITING_CLIENT.client_label == "Waiting on you"
-    assert WorkItemStatus.ESCALATED.client_label == "In progress"
-    assert WorkItemStatus.WAITING_THIRD_PARTY.client_label == "In progress"
+    assert WorkItemStatus.WAITING_CLIENT.client_label == "Waiting on You"
+    assert WorkItemStatus.ESCALATED.client_label == "In Progress"
+    assert WorkItemStatus.WAITING_THIRD_PARTY.client_label == "In Progress"
     assert WorkItemStatus.COMPLETED.client_label == "Resolved"
 
     internal_only = {"Escalated", "Waiting for Third Party", "Waiting for Internal Team"}
@@ -215,7 +215,7 @@ async def test_the_front_door_offers_looking_as_well_as_raising() -> None:
             for b in row
         ]
         assert any("request" in t.lower() or "enquiry" in t.lower() for t in labels)
-        assert "My requests" in labels, f"{department} cannot look without raising"
+        assert "My Requests" in labels, f"{department} cannot look without raising"
 
     # Business still gets its own wording for the raising half.
     business = kb.raise_request_prompt("business").inline_keyboard[0][0]
@@ -324,8 +324,8 @@ def test_both_ways_in_offer_the_same_name() -> None:
     ack = [b.text for row in kb.acknowledgement_actions().inline_keyboard for b in row]
     menu = [b.text for row in kb.raise_request_prompt("support").inline_keyboard for b in row]
 
-    assert "My requests" in ack
-    assert "My requests" in menu
+    assert "My Requests" in ack
+    assert "My Requests" in menu
     assert not any("open requests" in t for t in ack + menu)
 
 
@@ -355,8 +355,66 @@ def test_a_reply_we_cannot_match_gets_an_answer() -> None:
 
     notice = unrouted_notice(4242)
     assert notice is not None
-    assert "could not match" in notice
+    assert "couldn’t match" in notice
+    assert "been notified" in notice
+
+
+def test_the_notice_names_the_desk_that_did_not_hear_them() -> None:
+    """NexterPay, 7 September: "our Support Team has not been notified"
+    rather than "nobody has been notified".
+
+    A client with groups on several of our desks learns which one missed it,
+    which is what they need to decide whether it mattered. Checked for every
+    department, because the sentence is built from the label and a department
+    added later must not read as "our Compliance and Risk team".
+    """
+    from app.bot.handlers.client import unrouted_notice
+    from app.db.models import Department
+
+    for department in Department:
+        notice = unrouted_notice(4242, department)
+        assert f"our {department.label} Team has not been notified" in notice, (
+            f"{department.label} is not named correctly"
+        )
+        assert "nobody" not in notice
+
+
+def test_the_notice_still_works_without_a_department() -> None:
+    """The department is optional, so the sentence must hold together when it
+    is missing rather than reading "our None Team"."""
+    from app.bot.handlers.client import unrouted_notice
+
+    notice = unrouted_notice(4242, None)
+    assert "None" not in notice
+    assert "nobody has not been notified" not in notice
+    assert "nobody has not" not in notice
     assert "nobody has been notified" in notice
+
+
+def test_the_handler_passes_the_department_through() -> None:
+    """The wording is only right if the caller supplies the department. The
+    handler cannot be called from a test, so this reads the call site - and
+    checks the argument is the chat's department rather than any constant.
+    """
+    import ast
+    import inspect
+
+    from app.bot.handlers import client as client_handlers
+
+    tree = ast.parse(inspect.getsource(client_handlers))
+    calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "unrouted_notice"
+    ]
+    assert calls, "unrouted_notice is never called"
+    for call in calls:
+        assert len(call.args) == 2, "the department is not being passed"
+        second = call.args[1]
+        assert isinstance(second, ast.Attribute) and second.attr == "department", (
+            "the second argument is not the chat's department"
+        )
 
 
 def test_it_says_what_to_do_next() -> None:
