@@ -125,6 +125,34 @@ async def capture_request(message: Message, state: FSMContext) -> None:
     await _open_from(message, body)
 
 
+def unrouted_notice(reply_to_message_id: int | None) -> str | None:
+    """What to say when a client's message matched no request.
+
+    The worst failure the platform has: the client believes they have been
+    heard, nobody has heard them, and neither side finds out until somebody
+    chases. NexterPay hit it on 7 September - raised in Business, replied as
+    the client, and the reply never reached the desk.
+
+    Only when they actually replied to something. Under privacy mode the only
+    messages reaching the bot are replies to its own and commands, so one
+    arriving with no reply_to is one we were never meant to act on - answering
+    it would mean the bot talking over ordinary conversation in a client's
+    group.
+
+    A function rather than a branch inside the handler because the handler
+    cannot be called from a test, and the first version of this guard was
+    written as source-inspection and passed against the broken code.
+    """
+    if reply_to_message_id is None:
+        return None
+    return (
+        "I could not match that to one of your requests, so nobody has been "
+        "notified.\n\n"
+        f"Reply to a message about the request you mean, send /{cmd.TICKETS} "
+        f"to pick from your list, or /{cmd.FRONT_DOOR} to raise a new one."
+    )
+
+
 def _broadcast_context(record) -> str:
     """What the team sees at the top of a request raised from a broadcast.
 
@@ -320,9 +348,12 @@ async def client_reply(message: Message) -> None:
                 opened_from_broadcast = _broadcast_context(replied_to)
             else:
                 logger.info(
-                    "Unrouted client message in chat %s (not a reply to one of ours)",
-                    message.chat.id,
+                    "Unrouted client message in chat %s: reply_to=%s",
+                    message.chat.id, incoming.reply_to_message_id,
                 )
+                notice = unrouted_notice(incoming.reply_to_message_id)
+                if notice is not None:
+                    await message.reply(notice)
                 return
         else:
             opened_from_broadcast = None

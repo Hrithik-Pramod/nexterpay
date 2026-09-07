@@ -533,6 +533,42 @@ async def cmd_setcode(message: Message, command: CommandObject) -> None:
         await message.reply(f"{counterparty.name} is now {code}.")
 
 
+async def workload_text(session, chat) -> str:
+    """The desk's open work, as text.
+
+    Pulled out of the handler so /npworkload and the /np button run the same
+    code. Two implementations of the same answer is how they come to disagree
+    without anybody noticing which one is right.
+    """
+    result = await session.execute(
+        select(WorkItem).where(
+            WorkItem.operations_chat_id == chat.id,
+            WorkItem.status != WorkItemStatus.CLOSED,
+        ).order_by(WorkItem.priority, WorkItem.created_at)
+    )
+    items = list(result.scalars().all())
+    if not items:
+        return "No open work items."
+
+    owners: dict[int, str] = {}
+    for staff in (await session.execute(select(Staff))).scalars().all():
+        owners[staff.id] = staff.display_name
+
+    lines = [f"Open work items — {chat.department.label} ({len(items)})", ""]
+    for item in items:
+        owner = owners.get(item.owner_staff_id, "unassigned")
+        # Only the outbound ones are marked. Most work is inbound, so labelling
+        # both sides here would put the same word on nearly every line and stop
+        # anyone noticing it. The pinned header spells both out; a list wants
+        # the exception to stand out.
+        direction = "  · outbound" if item.raised_by_us else ""
+        lines.append(
+            f"{item.display_reference}  [{item.priority.label}]  "
+            f"{item.status.label}  — {owner}{direction}\n    {item.subject[:60]}"
+        )
+    return "\n".join(lines)[:4000]
+
+
 @router.message(cmd.any_case(cmd.WORKLOAD))
 async def cmd_workload(message: Message) -> None:
     """Open items by owner for this department.
@@ -549,36 +585,9 @@ async def cmd_workload(message: Message) -> None:
         if ctx is None:
             return
         chat, _ = ctx
+        body = await workload_text(session, chat)
 
-        result = await session.execute(
-            select(WorkItem).where(
-                WorkItem.operations_chat_id == chat.id,
-                WorkItem.status != WorkItemStatus.CLOSED,
-            ).order_by(WorkItem.priority, WorkItem.created_at)
-        )
-        items = list(result.scalars().all())
-
-        owners: dict[int, str] = {}
-        for staff in (await session.execute(select(Staff))).scalars().all():
-            owners[staff.id] = staff.display_name
-
-    if not items:
-        await message.reply("No open work items.")
-        return
-
-    lines = [f"Open work items — {chat.department.label} ({len(items)})", ""]
-    for item in items:
-        owner = owners.get(item.owner_staff_id, "unassigned")
-        # Only the outbound ones are marked. Most work is inbound, so labelling
-        # both sides here would put the same word on nearly every line and stop
-        # anyone noticing it. The pinned header spells both out; a list wants
-        # the exception to stand out.
-        direction = "  · outbound" if item.raised_by_us else ""
-        lines.append(
-            f"{item.display_reference}  [{item.priority.label}]  "
-            f"{item.status.label}  — {owner}{direction}\n    {item.subject[:60]}"
-        )
-    await message.reply("\n".join(lines)[:4000])
+    await message.reply(body)
 
 
 @router.message(cmd.any_case(cmd.SETLEAD))
@@ -750,6 +759,32 @@ class Setup(StatesGroup):
 
 @router.message(cmd.any_case(cmd.SETUP))
 async def cmd_setup(message: Message, state: FSMContext) -> None:
+    await _setup(message, message.from_user, state)
+
+
+async def setup_from_button(message: Message, user, state: FSMContext) -> None:
+    """The /np menu's entry. On a callback the message belongs to the bot, so
+    the acting person is carried in rather than read off it."""
+    await _setup(message, user, state)
+
+
+class _As:
+    """A message, seen as having been sent by somebody else.
+
+    `_admin_or_refuse` takes a Message and reads `from_user` off it, which is
+    the bot when the call came from a button. Rather than thread an identity
+    through every guard, this presents the same message with the right sender.
+    """
+
+    def __init__(self, message, user):
+        self._message, self.from_user = message, user
+
+    def __getattr__(self, name):
+        return getattr(self._message, name)
+
+
+async def _setup(message: Message, user, state: FSMContext) -> None:
+    message = _As(message, user)
     async with session_scope() as session:
         if not await _admin_or_refuse(session, message):
             return

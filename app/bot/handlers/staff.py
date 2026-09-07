@@ -101,30 +101,84 @@ async def staff_front_door(message: Message) -> None:
 
 @router.callback_query(F.data.startswith("np:"))
 async def on_front_door(query: CallbackQuery, state: FSMContext) -> None:
-    """The staff menu's own buttons.
+    """The staff menu's buttons, which do the thing.
 
-    Each one hands off to the command that already does the job rather than
-    duplicating it - a second implementation of broadcasting reachable only
-    from a button is how two behaviours diverge without anybody noticing.
+    They used to reply with the command to type, which NexterPay reasonably
+    called out: "the buttons don't do what they say, they just tell you the
+    bot codes". A button that names a command is a worse help message, not a
+    shortcut.
+
+    Each one now runs the same code the command runs - imported here rather
+    than reimplemented, because two implementations of broadcasting is how two
+    behaviours come to differ without anybody noticing which is right.
     """
+    from app.bot.handlers import admin as admin_handlers
+    from app.bot.handlers import broadcast as broadcast_handlers
+    from app.bot.handlers import outbound as outbound_handlers
+    from app.bot.help import build as build_help
+    from app.bot.roles import reference as role_reference
+
     action = (query.data or "").split(":", 1)[1]
     await query.answer()
+    message = query.message
 
-    told = {
-        "newcl": f"Send /{cmd.NEW_CLIENT} here to open a request with a client.",
-        "newsu": f"Send /{cmd.NEW_SUPPLIER} here to open one with a supplier.",
-        "workload": f"Send /{cmd.WORKLOAD} for every open request on this desk.",
-        "broadcast": f"Send /{cmd.BROADCAST} to write one message to many groups.",
-        "setup": f"Send /{cmd.SETUP} to register a group or add a person.",
-        "help": f"Send /{cmd.HELP} for what you can do from where you stand.",
-        "role": f"Send /{cmd.ROLE} for what each level can do.",
-    }.get(action)
-    if told is None:
-        return
+    # The menu has served its purpose; leaving it on screen invites a second
+    # tap into a flow that has already started.
     try:
-        await query.message.edit_text(told, reply_markup=None)
+        await message.edit_reply_markup(reply_markup=None)
     except Exception:
-        logger.debug("Could not update the front door", exc_info=True)
+        logger.debug("Could not clear the front door", exc_info=True)
+
+    try:
+        if action in ("newcl", "newsu"):
+            await outbound_handlers.start_from_button(
+                message, query.from_user, state, suppliers=action == "newsu",
+            )
+        elif action == "broadcast":
+            await broadcast_handlers.start_from_button(message, query.from_user, state)
+        elif action == "setup":
+            await admin_handlers.setup_from_button(message, query.from_user, state)
+        elif action == "workload":
+            async with session_scope() as session:
+                ctx = await staff_context(
+                    session, message.chat.id,
+                    query.from_user.id if query.from_user else None,
+                )
+                if ctx is None:
+                    return
+                chat, _ = ctx
+                body = await admin_handlers.workload_text(session, chat)
+            await message.answer(body)
+        elif action in ("help", "role"):
+            async with session_scope() as session:
+                chat = await resolve_chat(session, message.chat.id)
+                person = (
+                    await _staff_for(session, query.from_user)
+                    if query.from_user else None
+                )
+                if action == "help":
+                    role = (
+                        person.role_in(chat.department)
+                        if person is not None and chat is not None else None
+                    )
+                    body = build_help(
+                        chat, role,
+                        is_administrator=person.is_administrator if person else False,
+                    )
+                else:
+                    body = role_reference(
+                        person, chat.department if chat else None
+                    )
+            await message.answer(body)
+    except Exception as exc:
+        logger.exception("Front door action %s failed", action)
+        await message.answer(explain(exc))
+
+
+async def _staff_for(session, user):
+    from app.bot.registry import resolve_staff
+
+    return await resolve_staff(session, user.id)
 
 
 @router.message(cmd.any_case(cmd.REPLY))

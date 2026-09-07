@@ -94,15 +94,27 @@ def _confirm() -> InlineKeyboardMarkup:
 
 @router.message(cmd.any_case(cmd.BROADCAST))
 async def start(message: Message, state: FSMContext) -> None:
+    await _start(message, message.from_user, state)
+
+
+async def start_from_button(message: Message, user, state: FSMContext) -> None:
+    """The /np menu's entry. Same flow, and the acting person carried in.
+
+    On a callback `message.from_user` is the bot, so the identity has to come
+    from the query - a permission check against the bot fails open.
+    """
+    await _start(message, user, state)
+
+
+async def _start(message: Message, user, state: FSMContext) -> None:
     async with session_scope() as session:
         ctx = await staff_context(
-            session, message.chat.id, message.from_user.id if message.from_user else None
+            session, message.chat.id, user.id if user else None
         )
         if ctx is None:
             await message.reply(
                 await refusal_reason(
-                    message.from_user.id if message.from_user else None,
-                    session, message.chat.id,
+                    user.id if user else None, session, message.chat.id,
                 )
             )
             return
@@ -118,7 +130,7 @@ async def start(message: Message, state: FSMContext) -> None:
     await state.set_state(BroadcastCompose.awaiting_message)
     await state.update_data(selected=[])
     text, markup, mode = prompt_for(
-        message.from_user,
+        user,
         "Type the message you want to broadcast. You will choose who receives "
         "it, and see it in full, before anything is sent.",
         placeholder="The message to broadcast",

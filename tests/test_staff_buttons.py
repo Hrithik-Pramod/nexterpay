@@ -599,3 +599,51 @@ def test_every_front_door_button_is_answered() -> None:
                 else:
                     # The in-topic buttons reuse the work item callbacks.
                     assert kb.parse_cb(data)[1] == work_item_id
+
+
+def test_the_buttons_do_the_thing_rather_than_name_the_command() -> None:
+    """NexterPay: "the buttons don't do what they say, they just tell you the
+    bot codes". A button that names a command is a worse help message, not a
+    shortcut."""
+    import inspect
+
+    from app.bot.handlers import staff
+
+    source = inspect.getsource(staff.on_front_door)
+    assert "start_from_button" in source, "the menu still only describes commands"
+    assert "workload_text" in source
+    assert "Send /" not in source, "a button is still replying with a command to type"
+
+
+def test_each_button_runs_the_same_code_as_its_command() -> None:
+    """Two implementations of broadcasting is how two behaviours come to
+    differ without anybody noticing which one is right."""
+    from app.bot.handlers import admin, broadcast, outbound
+
+    assert callable(outbound.start_from_button)
+    assert callable(broadcast.start_from_button)
+    assert callable(admin.setup_from_button)
+    assert callable(admin.workload_text)
+
+
+def test_the_acting_person_is_carried_in_not_read_off_the_message() -> None:
+    """The trap in reusing a message handler from a callback.
+
+    A callback's `message` belongs to the bot, so `message.from_user` is the
+    bot - and a permission check resolving against the bot fails open, which
+    is the wrong direction to fail. Every button entry point takes the user
+    from the query instead.
+    """
+    import inspect
+
+    from app.bot.handlers import admin, broadcast, outbound
+
+    for fn in (
+        outbound.start_from_button, broadcast.start_from_button,
+        admin.setup_from_button,
+    ):
+        params = list(inspect.signature(fn).parameters)
+        assert "user" in params, (
+            f"{fn.__name__} does not take the acting person and will check "
+            f"permissions against the bot"
+        )

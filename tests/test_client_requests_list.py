@@ -338,3 +338,43 @@ def test_the_buttons_and_the_lines_agree() -> None:
     for reference in on_buttons:
         assert reference in text, f"{reference} has a button but no line"
     assert len(on_buttons) == text.count("ACME-")
+
+
+# --------------------------------------------------------------------------
+# A client's message must never vanish
+#
+# NexterPay, 7 September: raised in Business, replied as the client, and the
+# reply never reached the desk. Whatever the cause, the behaviour was the
+# worst the platform has - the client believes they have been heard, nobody
+# has heard them, and neither side finds out until somebody chases.
+# --------------------------------------------------------------------------
+
+
+def test_a_reply_we_cannot_match_gets_an_answer() -> None:
+    from app.bot.handlers.client import unrouted_notice
+
+    notice = unrouted_notice(4242)
+    assert notice is not None
+    assert "could not match" in notice
+    assert "nobody has been notified" in notice
+
+
+def test_it_says_what_to_do_next() -> None:
+    """A dead end that only says "no" leaves the client exactly where they
+    were, which is the position that produced the report."""
+    from app.bot import commands as cmd
+    from app.bot.handlers.client import unrouted_notice
+
+    notice = unrouted_notice(4242)
+    assert f"/{cmd.TICKETS}" in notice
+    assert f"/{cmd.FRONT_DOOR}" in notice
+
+
+def test_an_ordinary_message_is_still_left_alone() -> None:
+    """Under privacy mode the only things reaching the bot are replies to its
+    own messages and commands. Something arriving with no reply_to was never
+    ours to answer, and speaking would mean talking over the client's own
+    conversation in their group."""
+    from app.bot.handlers.client import unrouted_notice
+
+    assert unrouted_notice(None) is None

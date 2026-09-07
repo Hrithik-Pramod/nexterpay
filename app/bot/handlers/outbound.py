@@ -127,8 +127,26 @@ async def start_with_supplier(message: Message, state: FSMContext) -> None:
     await _start(message, state, suppliers=True, noun="supplier")
 
 
+async def start_from_button(
+    message: Message, user, state: FSMContext, *, suppliers: bool
+) -> None:
+    """The /np menu's entry, which must behave exactly as the command does.
+
+    A callback's `message` is the bot's own, so `message.from_user` is the
+    bot - the acting person has to be carried in separately or every
+    permission check resolves against the wrong identity. That is the trap in
+    reusing a message handler from a callback, and it fails open rather than
+    closed, which is the worse direction.
+    """
+    return await _start(
+        message, state, suppliers=suppliers,
+        noun="supplier" if suppliers else "client", acting_user=user,
+    )
+
+
 async def _start(
-    message: Message, state: FSMContext, *, suppliers: bool, noun: str
+    message: Message, state: FSMContext, *, suppliers: bool, noun: str,
+    acting_user=None,
 ) -> None:
     """One flow, two doors.
 
@@ -137,15 +155,19 @@ async def _start(
     were about to open a conversation with. Putting it in the command means
     the decision is made before the list appears, not from it.
     """
+    # The acting person, not the message's sender. On a callback the message
+    # is the bot's own, so message.from_user is the bot - and a permission
+    # check against the bot fails open, which is the wrong direction to fail.
+    user = acting_user or message.from_user
+
     async with session_scope() as session:
         ctx = await staff_context(
-            session, message.chat.id, message.from_user.id if message.from_user else None
+            session, message.chat.id, user.id if user else None
         )
         if ctx is None:
             await message.reply(
                 await refusal_reason(
-                    message.from_user.id if message.from_user else None,
-                    session, message.chat.id,
+                    user.id if user else None, session, message.chat.id,
                 )
             )
             return
