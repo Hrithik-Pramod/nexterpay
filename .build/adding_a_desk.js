@@ -112,10 +112,13 @@ const body = [
     step(11, "/npstart",
       "Says what this group is now registered as. Check the code is the one "
       + "they already use before going further."),
-    step(12, [{ t: "Reply to a message from their person with " },
-              { t: "/npsetlead", code: true }],
+    step(12, [{ t: "Ask them to send " }, { t: "/np", code: true },
+              { t: ", then reply to " }, { t: "that", b: true },
+              { t: " message with " }, { t: "/npsetlead", code: true }],
       [{ t: "Names them as a contact here. Contacts are per group, so this "
-          + "does not carry over from their Support group." }]),
+          + "does not carry over from their Support group. " },
+       { t: "It has to be a reply to a command, not to ordinary chat — "
+          + "section 5a explains why.", b: true }]),
     step(13, "/npleads", "Lists who is named."),
   ]),
 
@@ -148,6 +151,28 @@ const body = [
         { t: "/npaddparty PEXI Supplier Pexi", code: true },
         { t: " creates the counterparty on its own, and File under supplier "
            + "will then offer it." }], { after: 140 }),
+
+  // ================================================================
+  H1("5a.  Naming a contact: reply to a command, not to chat"),
+  RICH([{ t: "Found while setting these groups up on 7 September, and it will "
+             + "waste your afternoon if you do not know it.", b: true }],
+       { after: 90 }),
+  P("In a client or supplier group the bot is an ordinary member, not an "
+    + "administrator. Telegram therefore only hands it two kinds of message: "
+    + "commands, and replies to its own messages. It never receives ordinary "
+    + "chat.", { after: 90 }),
+  P("So when you reply to somebody's ordinary message with /npsetlead, the bot "
+    + "is given a reply pointing at a message it never received — and it "
+    + "answers “That has to be a reply”, which is true from where it is "
+    + "standing and thoroughly confusing from where you are.", { after: 100 }),
+  RICH([{ t: "The fix: ", b: true },
+        { t: "ask the person to send " }, { t: "/np", code: true },
+        { t: " first, then reply to " }, { t: "that", b: true },
+        { t: " message. A command is something the bot receives, so the reply "
+           + "resolves and they are named." }], { after: 100 }),
+  P("This does not apply in an Operations Group, where the bot is an "
+    + "administrator and sees everything — there, /npadduser works as a reply "
+    + "to any message at all.", { after: 130 }),
 
   // ================================================================
   H1("5.  Checking it worked"),
@@ -186,21 +211,31 @@ const body = [
 
   // ================================================================
   H1("7.  Where you end up"),
+  P("All six groups below were created and registered on 7 September. Every "
+    + "desk now has one client and one supplier.", { after: 90 }),
   table([2600, 3500, 3540], ["Desk", "Client group", "Supplier group"], [
-    [[{ t: "Support" }], [{ t: "already set up" }], [{ t: "already set up" }]],
-    [[{ t: "Finance" }], [{ t: "already set up" }], [{ t: "already set up" }]],
-    [[{ t: "Business" }], [{ t: "already set up" }],
-     [{ t: "new — section 4", b: true }]],
-    [[{ t: "Compliance and Risk" }], [{ t: "already set up" }],
-     [{ t: "already set up" }]],
-    [[{ t: "Development" }], [{ t: "new — section 3", b: true }],
-     [{ t: "new — section 4", b: true }]],
+    [[{ t: "Support" }], [{ t: "TEST — Acme Support" }],
+     [{ t: "TEST — Pexi Support", b: true }]],
+    [[{ t: "Finance" }], [{ t: "TEST — Acme Finance" }],
+     [{ t: "TEST — Pexi Finance" }]],
+    [[{ t: "Business" }], [{ t: "TEST — Acme Business" }],
+     [{ t: "TEST — Pexi Business", b: true }]],
+    [[{ t: "Compliance and Risk" }], [{ t: "TEST — Acme Compliance" }],
+     [{ t: "TEST — Pexi Compliance", b: true }]],
+    [[{ t: "Development" }], [{ t: "TEST — Acme Development", b: true }],
+     [{ t: "TEST — Pexi Development", b: true }]],
   ]),
-  P("", { after: 100 }),
-  P("Worth confirming the four marked “already set up” actually are. Send "
-    + "/npstart in each group and it will tell you what it is registered as; "
-    + "anything unregistered answers plainly rather than staying silent.",
-    { after: 130 }),
+  P("", { after: 90 }),
+  P("Bold is new. Only Finance had a supplier before — Support, Business and "
+    + "Compliance all had a client and nothing on the other side of the trade, "
+    + "which is why the original request for two supplier groups turned out to "
+    + "need four.", { after: 100 }),
+  RICH([{ t: "Every counterparty reuses its existing name, so the codes are "
+             + "unchanged: ", },
+        { t: "ACME", code: true }, { t: " and " }, { t: "SPEX", code: true },
+        { t: ". No duplicate counterparty was created — each registration "
+           + "confirmed the existing code back, which is the check worth "
+           + "repeating on any desk added later." }], { after: 130 }),
 
   // ================================================================
   H1("8.  Things that look like faults and are not"),
@@ -218,11 +253,11 @@ const body = [
     [[{ t: "The Business supplier group says nothing when a request closes" }],
      [{ t: "Business closes silently, on every group on that desk. By "
          + "design." }]],
-    [[{ t: "/npsetlead says nothing" }],
-     [{ t: "It has to be sent as a reply to a message from the person you are "
-         + "naming. Telegram will not tell a bot who is in a group, so "
-         + "pointing at a message is the only way it can learn who somebody "
-         + "is." }]],
+    [[{ t: "“That has to be a reply” — when you did reply" }],
+     [{ t: "You replied to ordinary chat. In a counterparty group the bot only "
+         + "receives commands, so that is the only thing it can resolve a "
+         + "reply against. Ask them to send /np, then reply to that. "
+         + "Section 5a." }]],
   ], { shade: WARN_BG }),
 ];
 
