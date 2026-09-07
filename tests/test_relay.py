@@ -441,6 +441,13 @@ def test_only_these_functions_may_write_to_a_client_chat() -> None:
         "send_client_reply",  # the only route for staff-written words
         "relay_client_message",  # telling someone a request is already closed
         "close",              # the closure notice
+        # Added deliberately on 5 September, and it is the one on this list
+        # that interpolates anything about a person: "ACME-1042 - Gavin is
+        # looking after this". The name is the staff display name from their
+        # record, which NexterPay set, not free text somebody typed - so the
+        # rule that no staff *wording* leaves this module still holds. Worth
+        # noticing that the guard caught it rather than letting it through.
+        "claim",
     }
 
     # Every name a counterparty chat is held under in this module. Missing one
@@ -535,3 +542,86 @@ def test_refresh_header_does_not_carry_a_keyboard() -> None:
         "refresh_header now sets a reply_markup; every header's buttons are "
         "whatever it last passed"
     )
+
+
+# --------------------------------------------------------------------------
+# Who the counterparty is dealing with
+#
+# NexterPay, Report 3: "if it's claimed, the client should know who they are
+# speaking with, more personal - 'From Jason'". Until now a client saw their
+# request acknowledged and then silence until somebody replied, with no sign
+# anyone had picked it up.
+# --------------------------------------------------------------------------
+
+
+async def test_claiming_tells_the_client_who_has_it(
+    session, acme_support, support_ops, operator, gw
+):
+    from app.domain.work_items import Actor
+
+    item = await relay.open_request(
+        session, gw, source_chat=acme_support, subject="Settlement",
+        body="Missing.", raised_by_name="Tom Baker",
+    )
+    await relay.claim(session, gw, item, Actor.of(operator))
+
+    to_client = gw.all_text_to(acme_support.telegram_chat_id)
+    assert operator.display_name in to_client
+    assert "looking after this" in to_client
+    assert item.client_reference in to_client
+
+
+async def test_every_reply_says_who_it_is_from(
+    session, acme_support, support_ops, operator, gw
+):
+    from app.domain.work_items import Actor
+
+    item = await relay.open_request(
+        session, gw, source_chat=acme_support, subject="Settlement",
+        body="Missing.", raised_by_name="Tom Baker",
+    )
+    await relay.send_client_reply(
+        session, gw, item, Actor.of(operator), "We are on it."
+    )
+    sent = gw.messages_to(acme_support.telegram_chat_id)[-1]
+
+    assert f"from {operator.display_name}" in sent
+    assert "We are on it." in sent
+
+
+async def test_business_is_not_told_who_claimed_it(
+    session, acme_business, operator, gw
+):
+    """Same exception as closing. That group is a commercial conversation,
+    not a queue, and "Gavin is looking after this" reads as process where a
+    straight answer is wanted."""
+    from app.domain.work_items import Actor
+
+    item = await relay.open_request(
+        session, gw, source_chat=acme_business, subject="Pricing",
+        body="EUR to NGN pricing please.", raised_by_name="Tom Baker",
+    )
+    before = len(gw.messages_to(acme_business.telegram_chat_id))
+    await relay.claim(session, gw, item, Actor.of(operator))
+
+    after = gw.messages_to(acme_business.telegram_chat_id)
+    assert len(after) == before, f"Business was told: {after[before:]}"
+
+
+async def test_the_name_shown_is_the_record_not_telegram(
+    session, acme_support, support_ops, operator, gw
+):
+    """NexterPay set the display name on the staff record, so they control
+    what a counterparty sees - not whatever somebody has as their Telegram
+    name that week."""
+    from app.domain.work_items import Actor
+
+    operator.display_name = "Gavin (NexterPay)"
+    await session.flush()
+
+    item = await relay.open_request(
+        session, gw, source_chat=acme_support, subject="Settlement",
+        body="Missing.", raised_by_name="Tom Baker",
+    )
+    await relay.claim(session, gw, item, Actor.of(operator))
+    assert "Gavin (NexterPay)" in gw.all_text_to(acme_support.telegram_chat_id)

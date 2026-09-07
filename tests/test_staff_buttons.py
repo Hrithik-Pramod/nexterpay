@@ -487,3 +487,115 @@ def test_a_failure_after_answering_is_still_reported() -> None:
     assert "query.message.reply" in source, (
         "a failure after the callback is answered now goes nowhere"
     )
+
+
+# --------------------------------------------------------------------------
+# /np inside an Operations Group
+#
+# NexterPay, Report 3: "make /np work in all operations groups, as an easy
+# point of access". It did nothing there at all - the handler lives in the
+# client router and returns early when the group is not a client group, so
+# staff typing the one command everybody had been taught got silence. They
+# were describing a gap, not a preference.
+# --------------------------------------------------------------------------
+
+
+def _front_door(**kwargs):
+    from app.bot import keyboards as kb
+
+    return [
+        b.text for row in kb.staff_front_door(**kwargs).inline_keyboard for b in row
+    ]
+
+
+def test_in_a_topic_it_offers_that_request() -> None:
+    from app.domain.enums import StaffRole
+
+    labels = _front_door(
+        work_item_id=42, role=StaffRole.OPERATOR, is_administrator=False
+    )
+    assert any("this request" in t for t in labels)
+    assert any("History" in t for t in labels)
+
+
+def test_in_general_it_offers_the_desk() -> None:
+    from app.domain.enums import StaffRole
+
+    labels = _front_door(
+        work_item_id=None, role=StaffRole.OPERATOR, is_administrator=False
+    )
+    assert any("Raise with a client" in t for t in labels)
+    assert any("workload" in t for t in labels)
+
+
+def test_it_offers_nothing_the_person_would_be_refused() -> None:
+    """A menu that offers you something and then says no is worse than one
+    that never offered - it turns a level into a fault report."""
+    from app.domain.enums import StaffRole
+
+    operator = _front_door(
+        work_item_id=None, role=StaffRole.OPERATOR, is_administrator=False
+    )
+    assert not any("Broadcast" in t for t in operator)
+    assert not any("Set up" in t for t in operator)
+
+    manager = _front_door(
+        work_item_id=None, role=StaffRole.MANAGER, is_administrator=False
+    )
+    assert any("Broadcast" in t for t in manager)
+    assert not any("Set up" in t for t in manager)
+
+    admin = _front_door(
+        work_item_id=None, role=StaffRole.MANAGER, is_administrator=True
+    )
+    assert any("Set up" in t for t in admin)
+
+
+def test_broadcast_is_offered_at_the_level_the_code_enforces() -> None:
+    """Not at a level somebody typed into the keyboard from memory."""
+    from app.domain.enums import StaffRole
+    from app.services.broadcast import ROLE_REQUIRED_TO_BROADCAST
+
+    below = [
+        r for r in StaffRole if not r.at_least(ROLE_REQUIRED_TO_BROADCAST)
+    ]
+    for role in below:
+        labels = _front_door(work_item_id=None, role=role, is_administrator=False)
+        assert not any("Broadcast" in t for t in labels), (
+            f"{role.value} is offered Broadcast and would be refused"
+        )
+
+
+def test_it_falls_through_rather_than_stealing_from_client_groups() -> None:
+    """The client router must keep answering /np in a client group. Raising
+    SkipHandler is what hands the message on rather than swallowing it."""
+    import inspect
+
+    from app.bot.handlers import staff
+
+    source = inspect.getsource(staff.staff_front_door)
+    assert "SkipHandler" in source
+
+
+def test_every_front_door_button_is_answered() -> None:
+    """A button nobody handles is the silent failure again, one layer up."""
+    import inspect
+
+    from app.bot import keyboards as kb
+    from app.bot.handlers import staff
+    from app.domain.enums import StaffRole
+
+    handler = inspect.getsource(staff.on_front_door)
+    for work_item_id in (None, 42):
+        markup = kb.staff_front_door(
+            work_item_id=work_item_id, role=StaffRole.MANAGER, is_administrator=True
+        )
+        for row in markup.inline_keyboard:
+            for button in row:
+                data = button.callback_data
+                if data.startswith("np:"):
+                    action = data.split(":", 1)[1]
+                    assert f'"{action}"' in handler, f"nothing answers {data}"
+                else:
+                    # The in-topic buttons reuse the work item callbacks.
+                    assert kb.parse_cb(data)[1] == work_item_id

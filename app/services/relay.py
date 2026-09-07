@@ -9,10 +9,12 @@ asserts this directly.
 A short, named set of functions also writes to a client chat, but only ever
 with text this module composes itself: the acknowledgement in `open_request`,
 the opening message in `open_outbound`, the anchor in `post_anchor`, the
-closure notice in `close`, and the note in `relay_client_message` telling
-someone a request is already closed. Nothing in that list can carry staff
-wording. `test_only_these_functions_may_write_to_a_client_chat` holds the same
-list and fails if a sixth appears.
+closure notice in `close`, the note in `relay_client_message` telling someone
+a request is already closed, and the line in `claim` naming who has picked it
+up. Nothing in that list can carry staff wording - `claim` interpolates a
+staff member's display name, which NexterPay set on the record, and nothing
+else. `test_only_these_functions_may_write_to_a_client_chat` holds the same
+list and fails if a seventh appears.
 
 `link` is deliberately not on it and must never join it. A link is an internal
 observation that two pieces of work are the same problem, and the reference it
@@ -699,9 +701,20 @@ async def send_client_reply(
     """
     actor.require_any()
     source, ops = await chats_for(session, item)
+
+    # Signed, so the counterparty knows who they are dealing with.
+    #
+    # NexterPay asked for this on 5 September - "the client should know who
+    # they are speaking with, more personal". They are right, and it costs
+    # nothing: a reply from a name is a conversation, a reply from a company
+    # is a ticketing system. It is the staff member's display name from their
+    # record, not their Telegram name, so NexterPay control what a client
+    # sees.
+    signature = f" — from {actor.name}" if actor.name else ""
+
     # client_reference, not display_reference: an outbound message must never
     # carry the supplier code. See the note on the property.
-    outbound = f"{item.client_reference} — {text}"
+    outbound = f"{item.client_reference}{signature} — {text}"
 
     parse_mode = None
     if tag_lead is not None:
@@ -721,7 +734,8 @@ async def send_client_reply(
                 for lead in leads
             )
             outbound = (
-                f"{html.escape(item.client_reference)} — {named} — {html.escape(text)}"
+                f"{html.escape(item.client_reference)}{html.escape(signature)} — "
+                f"{named} — {html.escape(text)}"
             )
             parse_mode = "HTML"
 
@@ -862,10 +876,40 @@ async def change_priority(
 async def claim(
     session: AsyncSession, gateway: TelegramGateway, item: WorkItem, actor: Actor
 ) -> None:
+    """Take ownership, and tell the counterparty who now has it.
+
+    NexterPay, 5 September: "if it is claimed, the client should know who they
+    are speaking with, more personal". Until now the client saw a request
+    acknowledged and then silence until somebody replied, with no sign anyone
+    had picked it up.
+
+    The name is the staff member's display name from their record rather than
+    their Telegram name, so NexterPay decide what a counterparty sees.
+
+    Business is the exception, as with closing: that group is a commercial
+    conversation, not a queue, and "Gavin is looking after this" reads as
+    process where a straight answer is wanted.
+    """
     before = await _last_event_id(session, item)
     await wi.claim(session, item, actor)
     await _announce_since(session, gateway, item, before)
     await refresh_header(session, gateway, item)
+
+    if item.department is Department.BUSINESS or not actor.name:
+        return
+    source, _ = await chats_for(session, item)
+    sent = await gateway.send_message(
+        source.telegram_chat_id,
+        f"{item.client_reference} — {actor.name} is looking after this.",
+    )
+    await _record_message(
+        session, item,
+        direction=MessageDirection.OUTBOUND,
+        chat_id=source.telegram_chat_id,
+        message_id=sent.message_id,
+        sender_name="NexterPay Operations",
+        text=f"{item.client_reference} — {actor.name} is looking after this.",
+    )
 
 
 async def assign(

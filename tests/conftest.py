@@ -116,3 +116,27 @@ async def acme_compliance(session: AsyncSession) -> Chat:
         department=Department.COMPLIANCE,
         title="Acme — Compliance",
     )
+
+
+@pytest_asyncio.fixture
+async def acme_business(session: AsyncSession) -> Chat:
+    """The Business desk, which behaves differently on purpose.
+
+    Two things are suppressed there and nowhere else: the closure notice, and
+    the line naming who claimed a request. Both because that group is a
+    commercial conversation rather than a queue - process chatter reads as
+    noise where a straight answer is wanted.
+    """
+    await register_operations_chat(
+        session,
+        telegram_chat_id=-1001000000007,
+        department=Department.BUSINESS,
+        title="Business Operations",
+    )
+    return await register_client_chat(
+        session,
+        telegram_chat_id=-1002000000007,
+        client_name="Acme Payments",
+        department=Department.BUSINESS,
+        title="Acme — Business",
+    )

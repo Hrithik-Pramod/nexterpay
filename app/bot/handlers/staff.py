@@ -51,6 +51,82 @@ async def _resolve(session, message_or_query, thread_id) -> tuple | None:
     return chat, actor, item
 
 
+@router.message(cmd.any_case(cmd.FRONT_DOOR))
+async def staff_front_door(message: Message) -> None:
+    """`/np` inside an Operations Group.
+
+    It did nothing here at all - the handler lives in the client router and
+    returns early when the group is not a client group, so staff typing the
+    one command they had all been taught got silence. NexterPay asked for it
+    as "an easy point of access", and they were describing a gap rather than
+    a preference.
+
+    Falls through to the client router if this is not an Operations Group, so
+    a client group behaves exactly as before.
+    """
+    async with session_scope() as session:
+        ctx = await staff_context(
+            session, message.chat.id,
+            message.from_user.id if message.from_user else None,
+        )
+        if ctx is None:
+            # Not our room, or not our person. The client router answers in a
+            # client group; anywhere else the refusal explains itself.
+            chat = await resolve_chat(session, message.chat.id)
+            if chat is not None and chat.kind is ChatKind.OPERATIONS:
+                await message.reply(
+                    await refusal_reason(
+                        message.from_user.id if message.from_user else None,
+                        session, message.chat.id,
+                    )
+                )
+                return
+            raise SkipHandler
+
+        chat, actor = ctx
+        item = await work_item_for_thread(session, chat, message.message_thread_id)
+        person = actor.staff
+        markup = kb.staff_front_door(
+            item.id if item else None,
+            role=actor.role,
+            is_administrator=person.is_administrator if person else False,
+        )
+        where = (
+            f"{item.display_reference} — {item.subject}"
+            if item else f"{chat.department.label} Operations"
+        )
+
+    await message.reply(f"{where}\n\nWhat would you like to do?", reply_markup=markup)
+
+
+@router.callback_query(F.data.startswith("np:"))
+async def on_front_door(query: CallbackQuery, state: FSMContext) -> None:
+    """The staff menu's own buttons.
+
+    Each one hands off to the command that already does the job rather than
+    duplicating it - a second implementation of broadcasting reachable only
+    from a button is how two behaviours diverge without anybody noticing.
+    """
+    action = (query.data or "").split(":", 1)[1]
+    await query.answer()
+
+    told = {
+        "newcl": f"Send /{cmd.NEW_CLIENT} here to open a request with a client.",
+        "newsu": f"Send /{cmd.NEW_SUPPLIER} here to open one with a supplier.",
+        "workload": f"Send /{cmd.WORKLOAD} for every open request on this desk.",
+        "broadcast": f"Send /{cmd.BROADCAST} to write one message to many groups.",
+        "setup": f"Send /{cmd.SETUP} to register a group or add a person.",
+        "help": f"Send /{cmd.HELP} for what you can do from where you stand.",
+        "role": f"Send /{cmd.ROLE} for what each level can do.",
+    }.get(action)
+    if told is None:
+        return
+    try:
+        await query.message.edit_text(told, reply_markup=None)
+    except Exception:
+        logger.debug("Could not update the front door", exc_info=True)
+
+
 @router.message(cmd.any_case(cmd.REPLY))
 async def cmd_reply(message: Message, command: CommandObject) -> None:
     """The only route from an Operations Group to a client."""

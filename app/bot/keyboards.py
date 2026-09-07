@@ -264,6 +264,53 @@ def confirm_internal(work_item_id: int, department) -> InlineKeyboardMarkup:
     )
 
 
+def staff_front_door(
+    work_item_id: int | None, *, role, is_administrator: bool
+) -> InlineKeyboardMarkup:
+    """`/np` inside an Operations Group.
+
+    NexterPay asked for /np to be "an easy point of access" for staff too - it
+    was the one command clients were taught, and in an Operations Group it did
+    nothing at all, silently, which is the failure this project has spent a
+    week removing.
+
+    What it offers depends on where it is sent, because the useful answer
+    does. In a request's topic the question is "what do I do with this one";
+    in General it is "what do I do at all". And it is filtered by level, so
+    nobody is shown a button they would be refused - a menu that offers you
+    something and then says no is worse than one that never offered.
+    """
+    from app.domain.enums import StaffRole
+
+    if work_item_id is not None:
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="Actions for this request", callback_data=cb("more", work_item_id))],
+            [InlineKeyboardButton(
+                text="History", callback_data=cb("history", work_item_id))],
+        ])
+
+    rows = [
+        [InlineKeyboardButton(text="Raise with a client", callback_data="np:newcl"),
+         InlineKeyboardButton(text="Raise with a supplier", callback_data="np:newsu")],
+        [InlineKeyboardButton(text="This desk's workload", callback_data="np:workload")],
+    ]
+    if role is not None and role.at_least(StaffRole.MANAGER):
+        rows.append(
+            [InlineKeyboardButton(text="Broadcast", callback_data="np:broadcast")]
+        )
+    if is_administrator:
+        rows.append(
+            [InlineKeyboardButton(text="Set up a group or a person",
+                                  callback_data="np:setup")]
+        )
+    rows.append([
+        InlineKeyboardButton(text="What can I do here", callback_data="np:help"),
+        InlineKeyboardButton(text="Levels", callback_data="np:role"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def confirm_answer(work_item_id: int, to_reference: str) -> InlineKeyboardMarkup:
     """Previewed like every other outbound message, even though this one only
     travels between two Operations Groups.
