@@ -886,29 +886,38 @@ async def claim(
     The name is the staff member's display name from their record rather than
     their Telegram name, so NexterPay decide what a counterparty sees.
 
-    Business is the exception, as with closing: that group is a commercial
-    conversation, not a queue, and "Gavin is looking after this" reads as
-    process where a straight answer is wanted.
+    Business is told the same thing without the name - "The Business team are
+    looking into this". NexterPay's wording, and their reasoning is sound: a
+    commercial conversation should not read as a queue with a named handler,
+    but silence was worse than either. The client still learns somebody has
+    picked it up.
+
+    Replies stay signed everywhere, Business included. A negotiation is the
+    most personal conversation on the platform; it is the claim notice that
+    reads as process, not the answer.
     """
     before = await _last_event_id(session, item)
     await wi.claim(session, item, actor)
     await _announce_since(session, gateway, item, before)
     await refresh_header(session, gateway, item)
 
-    if item.department is Department.BUSINESS or not actor.name:
+    if item.department is Department.BUSINESS:
+        who = f"The {item.department.label} team are looking into this."
+    elif actor.name:
+        who = f"{actor.name} is looking after this."
+    else:
         return
+
     source, _ = await chats_for(session, item)
-    sent = await gateway.send_message(
-        source.telegram_chat_id,
-        f"{item.client_reference} — {actor.name} is looking after this.",
-    )
+    notice = f"{item.client_reference} — {who}"
+    sent = await gateway.send_message(source.telegram_chat_id, notice)
     await _record_message(
         session, item,
         direction=MessageDirection.OUTBOUND,
         chat_id=source.telegram_chat_id,
         message_id=sent.message_id,
         sender_name="NexterPay Operations",
-        text=f"{item.client_reference} — {actor.name} is looking after this.",
+        text=notice,
     )
 
 

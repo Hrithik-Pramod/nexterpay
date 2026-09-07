@@ -589,23 +589,42 @@ async def test_every_reply_says_who_it_is_from(
     assert "We are on it." in sent
 
 
-async def test_business_is_not_told_who_claimed_it(
+async def test_business_is_told_the_team_not_the_person(
     session, acme_business, operator, gw
 ):
-    """Same exception as closing. That group is a commercial conversation,
-    not a queue, and "Gavin is looking after this" reads as process where a
-    straight answer is wanted."""
+    """NexterPay's wording. A commercial conversation should not read as a
+    queue with a named handler - but silence was worse than either, because
+    the client still needs to know somebody has picked it up."""
     from app.domain.work_items import Actor
 
     item = await relay.open_request(
         session, gw, source_chat=acme_business, subject="Pricing",
         body="EUR to NGN pricing please.", raised_by_name="Tom Baker",
     )
-    before = len(gw.messages_to(acme_business.telegram_chat_id))
     await relay.claim(session, gw, item, Actor.of(operator))
 
-    after = gw.messages_to(acme_business.telegram_chat_id)
-    assert len(after) == before, f"Business was told: {after[before:]}"
+    to_client = gw.all_text_to(acme_business.telegram_chat_id)
+    assert "The Business team are looking into this" in to_client
+    assert operator.display_name not in to_client, "Business was given a name"
+
+
+async def test_a_reply_is_signed_even_in_business(
+    session, acme_business, operator, gw
+):
+    """It is the claim notice that reads as process, not the answer. A
+    negotiation is the most personal conversation on the platform."""
+    from app.domain.work_items import Actor
+
+    item = await relay.open_request(
+        session, gw, source_chat=acme_business, subject="Pricing",
+        body="EUR to NGN pricing please.", raised_by_name="Tom Baker",
+    )
+    await relay.send_client_reply(
+        session, gw, item, Actor.of(operator), "We can do 1.16 on that corridor."
+    )
+    assert f"from {operator.display_name}" in gw.messages_to(
+        acme_business.telegram_chat_id
+    )[-1]
 
 
 async def test_the_name_shown_is_the_record_not_telegram(
