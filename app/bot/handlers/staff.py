@@ -8,6 +8,7 @@ changes this and no code path that relays a plain message outward.
 from __future__ import annotations
 
 import logging
+from dataclasses import asdict
 
 from aiogram import F, Router
 from aiogram.dispatcher.event.bases import SkipHandler
@@ -35,6 +36,7 @@ from app.domain.enums import ChatKind, Department, Priority, WorkItemStatus
 from app.domain.history import load_events, render_history
 from app.domain.work_items import ROLE_REQUIRED_TO_REASSIGN
 from app.services import relay
+from app.services.relay import IncomingAttachment
 
 logger = logging.getLogger(__name__)
 router = Router(name="staff")
@@ -173,6 +175,26 @@ async def on_front_door(query: CallbackQuery, state: FSMContext) -> None:
     except Exception as exc:
         logger.exception("Front door action %s failed", action)
         await message.answer(explain(exc))
+
+
+def reply_body(draft: str | None, *, has_file: bool) -> str | None:
+    """The words that go out with a reply, or None when there is nothing to send.
+
+    A function because the handler cannot be called from a test, and this is
+    the decision that was wrong: it used to be "no text, no reply", which
+    refused a screenshot with no caption and — worse — sent the caption alone
+    when there was one, dropping the file silently.
+
+    A file still needs a line of text. The message carrying the reference is
+    what the client replies to, so a file sent with nothing attached to it
+    arrives detached from any request.
+    """
+    words = (draft or "").strip()
+    if words:
+        return words
+    if has_file:
+        return "please see the attached."
+    return None
 
 
 async def _staff_for(session, user):
@@ -402,9 +424,24 @@ async def capture_reply_draft(message: Message, state: FSMContext) -> None:
     if await _wrong_topic(message, state, data.get("topic_id")):
         return
 
+    # Attachments, not only words.
+    #
+    # NexterPay, Report 4: "Cannot send from Company to client a screenshot."
+    # Correct, and worse than it sounds. This handler used to keep the text and
+    # drop the file on the floor - so a screenshot with a caption sent the
+    # caption alone and reported success, and a screenshot with no caption was
+    # refused with "type the message the client should see". `/npreply` as a
+    # caption always worked, which is why it looked like a quirk rather than a
+    # fault; the button is the route everyone actually uses.
+    #
+    # Stored as a plain dict rather than the dataclass so the draft survives a
+    # storage backend that has to serialise it.
+    attachments = extract_attachments(message)
     text = (message.text or message.caption or "").strip()
-    if not text:
-        await message.reply("Type the message the client should see, or tap Cancel.")
+    if reply_body(text, has_file=bool(attachments)) is None:
+        await message.reply(
+            "Type the message the client should see, attach a file, or tap Cancel."
+        )
         return
 
     work_item_id = data.get("work_item_id")
@@ -424,9 +461,26 @@ async def capture_reply_draft(message: Message, state: FSMContext) -> None:
         source, _ = await relay.chats_for(session, item)
         leads = await leads_for(session, source)
 
-    await state.update_data(draft=text)
+    await state.update_data(
+        draft=text,
+        draft_attachment=asdict(attachments[0]) if attachments else None,
+    )
+    # The preview names the attachment. A confirmation screen exists to stop
+    # people tapping without reading, so it has to show everything that is
+    # about to leave - a file included silently is the same class of problem
+    # as a file dropped silently.
+    body = text or "(no message)"
+    carried = ""
+    if attachments:
+        first = attachments[0]
+        carried = f"\n\nWith: {first.file_name or first.kind}"
+        if len(attachments) > 1:
+            carried += (
+                f"\n\nOnly this one will be sent. Send the other "
+                f"{len(attachments) - 1} separately."
+            )
     await message.reply(
-        f"This will be sent to {client_name} for {reference}:\n\n{text}\n\n"
+        f"This will be sent to {client_name} for {reference}:\n\n{body}{carried}\n\n"
         f"Nothing has been sent yet.",
         reply_markup=kb.confirm_reply(work_item_id, leads),
     )
@@ -649,7 +703,8 @@ async def _apply(
     if action == "sendreply":
         data = await state.get_data()
         draft = (data.get("draft") or "").strip()
-        if not draft or data.get("work_item_id") != item.id:
+        att_data = data.get("draft_attachment")
+        if (not draft and not att_data) or data.get("work_item_id") != item.id:
             # Covers a second tap on the same preview, and a preview left over
             # from an earlier request. Sending a client the wrong message twice
             # is not a mistake worth being relaxed about.
@@ -660,9 +715,16 @@ async def _apply(
         # tapped, or absent for the plain send. Carrying the id rather than a
         # "tag" flag is what lets one button mean one person.
         tag = int(value) if value and value.isdigit() else None
-        await relay.send_client_reply(session, gw, item, actor, draft, tag_lead=tag)
+        attachment = IncomingAttachment(**att_data) if att_data else None
+        body = reply_body(draft, has_file=attachment is not None)
+        await relay.send_client_reply(
+            session, gw, item, actor, body, attachment=attachment, tag_lead=tag
+        )
         await state.clear()
-        await _seal_preview(query, f"Sent to the client:\n\n{draft}")
+        sealed = f"Sent to the client:\n\n{body}"
+        if attachment is not None:
+            sealed += f"\n\nWith: {attachment.file_name or attachment.kind}"
+        await _seal_preview(query, sealed)
         return f"Sent to the client for {item.display_reference}"
 
     if action == "cancelreply":
