@@ -989,17 +989,42 @@ async def _closed_by(session: AsyncSession, item: WorkItem):
     return await session.get(Staff, event.actor_staff_id)
 
 
+def outbound_body(subject: str, body: str) -> str:
+    """The part of an outbound message that follows the subject line.
+
+    When a member of staff raises something outbound, the subject is taken
+    from the first line of what they typed. Printing the subject line and then
+    the whole body therefore repeats that line - and when they typed a single
+    line, repeats the entire message.
+
+    NexterPay's tester, 12 September: "See the double message". He was looking
+    at the preview; the same duplication was in the message the counterparty
+    received, which is the half that mattered.
+
+    Only drops the line when it really is the subject. `open_outbound` can be
+    called with a subject that did not come from the body, and a subject longer
+    than 120 characters is truncated - in both cases the body is shown whole,
+    because repeating a line is a much smaller fault than silently eating one.
+    """
+    lines = body.splitlines()
+    first = lines[0].strip() if lines else ""
+    if first and first == (subject or "").strip():
+        return "\n".join(lines[1:]).strip()
+    return body.strip()
+
+
 def outbound_opening_text(item: WorkItem, body: str) -> str:
     """What the counterparty receives when NexterPay raise something with them.
 
     Deliberately not the acknowledgement wording. "Request X has been logged
     with our Support team" is nonsense when we are the ones raising it.
     """
-    return (
-        f"{item.client_reference} · {item.subject}\n\n"
-        f"{body}\n\n"
-        f"Reply to this message to respond."
-    )
+    parts = [f"{item.client_reference} · {item.subject}"]
+    rest = outbound_body(item.subject or "", body)
+    if rest:
+        parts.append(rest)
+    parts.append("Reply to this message to respond.")
+    return "\n\n".join(parts)
 
 
 async def open_internal(

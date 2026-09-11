@@ -6,10 +6,19 @@ const { NAVY, GREY, WARN_BG, P, RICH, BULLET, H1, H2, RULE_P, table } = C;
 const DEPT = process.argv[2];          // "Support" | "Business"
 const OUT = process.argv[3];
 
-// Everything that differs between the two desks, taken from the running code
+// Everything that differs between the desks, taken from the running code
 // rather than from memory - see the transcript captured on 7 September.
+//
+// `label` is separate from the script's title because the two differ on one
+// desk: the Compliance script is called "Compliance", but the department is
+// "Compliance and Risk" and that is the name the bot puts in front of a
+// client - "logged with our Compliance and Risk Team". Interpolating the
+// title would have printed an expectation the bot never produces, which is
+// the one thing a test script must never do.
 const V = {
   Support: {
+    label: "Support",
+    opsName: "Support Operations",
     ask: "What do you need help with?",
     button: "Raise Request",
     prompt: "Please describe the issue, including any reference numbers or "
@@ -17,6 +26,8 @@ const V = {
     ackTail: "Please reply to this message if you would like to add anything "
            + "further.",
     claim: "Gavin is now looking after your request.",
+    example: "card payments failing since this morning",
+    ref: "ACME-1042",
     closes: true,
     closeText: [
       "Request ACME-1042 is now resolved.",
@@ -27,7 +38,33 @@ const V = {
       "If anything is still outstanding, reply to this message.",
     ],
   },
+  Compliance: {
+    label: "Compliance and Risk",
+    opsName: "Compliance Operations",
+    ask: "What do you need help with?",
+    button: "Raise Request",
+    prompt: "Please describe the issue, including any reference numbers or "
+          + "screenshots that would help us investigate.",
+    ackTail: "Please reply to this message if you would like to add anything "
+           + "further.",
+    claim: "Gavin is now looking after your request.",
+    example: "please send the KYC pack for the new corridor",
+    ref: "ACME-1050",
+    closes: true,
+    closeText: [
+      "Request ACME-1050 is now resolved.",
+      "",
+      "What you raised on 11 September:",
+      '"Please send the KYC pack for the new corridor"',
+      "",
+      "If anything is still outstanding, reply to this message.",
+    ],
+  },
   Business: {
+    label: "Business",
+    opsName: "Business Operations",
+    example: "what would pricing look like for EUR to NGN?",
+    ref: "ACME-1047",
     ask: "What would you like to discuss?",
     button: "Commercial Enquiry",
     prompt: "Please describe what you would like to discuss. Include as much "
@@ -60,15 +97,16 @@ const title = [
   new Paragraph({ spacing: { after: 60 }, children: [new TextRun({
     text: `${DEPT} — Test Script`, size: 26, color: NAVY })] }),
   new Paragraph({ spacing: { after: 150 }, children: [new TextRun({
-    text: "7 September 2026  ·  Both sides, about twenty minutes  ·  "
+    text: "11 September 2026  ·  All three groups, about half an hour  ·  "
         + "Current as of today's build",
     size: 18, color: GREY })] }),
   RULE_P(),
 ];
 
 const body = [
-  P(`Two halves: what a client does in TEST — Acme ${DEPT}, and what the desk `
-    + `does in ${DEPT} Operations. One person can run both in two windows. `
+  P(`Three groups: what a client does in TEST — Acme ${DEPT}, what the desk `
+    + `does in TEST — ${V.opsName}, and the supplier side in `
+    + `TEST — Pexi ${DEPT}. One person can run all three in three windows. `
     + `Tick as you go; if something fails, note it and carry on.`, { after: 120 }),
   RICH([{ t: "One rule for the client side: ", b: true },
         { t: "start with " }, { t: "/np", code: true },
@@ -87,10 +125,10 @@ const body = [
       [{ t: "The message box opens with your name in it, and the instruction "
           + "in " }, { t: "bold", b: true }, { t: ": “" },
        { t: V.prompt, i: true }, { t: "”" }]),
-    step(3, [{ t: "Type " }, { t: "card payments failing since this morning", code: true },
+    step(3, [{ t: "Type " }, { t: V.example, code: true },
              { t: " and send" }],
-      [{ t: "“Request " }, { t: "ACME-1042", code: true },
-       { t: ` has been logged with our ${DEPT} Team.” Then: “` },
+      [{ t: "“Request " }, { t: V.ref, code: true },
+       { t: ` has been logged with our ${V.label} Team.” Then: “` },
        { t: V.ackTail, i: true }, { t: "” Write the reference down." }]),
     step(4, "/npraise a second one, in one go",
       "Same acknowledgement, new reference, no menu in between."),
@@ -100,8 +138,9 @@ const body = [
     step(6, [{ t: "Reply to an old bot message that is not about a live "
                  + "request" }],
       [{ t: "“We couldn’t match that to one of your requests, so our " },
-       { t: DEPT, i: false }, { t: " Team has not been notified.” " },
-       { t: "New this week — it used to do nothing at all.", b: true }]),
+       { t: V.label, i: false }, { t: " Team has not been notified.” " },
+       { t: "It names this desk, so a client with groups on several of "
+          + "ours knows which one missed it.", b: true }]),
     step(7, "/nptickets",
       [{ t: "Your requests, ten at a time, open ones first, with statuses in "
           + "plain words: Received, In Progress, Waiting on You, Resolved." }]),
@@ -114,7 +153,7 @@ const body = [
   new Paragraph({ children: [new PageBreak()] }),
 
   // ================================================================
-  H1(`2.  As the desk — in ${DEPT} Operations`),
+  H1(`2.  As the desk — in TEST — ${V.opsName}`),
   P("Open the topic for the request raised in step 3. It will be at the top of "
     + "the list with a red light.", { after: 100 }),
   steps([
@@ -126,16 +165,24 @@ const body = [
           + "light turns " }, { t: "amber", b: true },
        { t: ", and the button becomes Reassign." }]),
     step(12, [{ t: "Check the client group" }],
-      [{ t: "“" }, { t: `ACME-1042 — ${V.claim}`, i: true }, { t: "” " },
-       { t: "New this week.", b: true }]),
+      [{ t: "“" }, { t: `${V.ref} — ${V.claim}`, i: true }, { t: "”" }]),
     step(13, [{ t: "Tap " }, { t: "Reply to Client", b: true },
               { t: ", type something, then " }, { t: "Cancel", b: true }],
       [{ t: "A preview appears; Cancel sends nothing. Confirm in the client "
           + "group that nothing arrived." }]),
     step(14, [{ t: "Reply again and " }, { t: "Send to Client", b: true }],
       [{ t: "In the client group: “" },
-       { t: "ACME-1042 — from Gavin — We’re looking into this now.", i: true },
-       { t: "” " }, { t: "Signed, also new.", b: true }]),
+       { t: `${V.ref} — from Gavin — We’re looking into this now.`, i: true },
+       { t: "” Signed with the name on your staff record." }]),
+    step("14a", [{ t: "Tap " }, { t: "Reply to Client", b: true },
+                 { t: " and attach a screenshot " }, { t: "with no caption", b: true }],
+      [{ t: "The preview names the file, then it reaches the client. " },
+       { t: "Fixed 11 September — this used to be refused outright, and a "
+          + "screenshot with a caption sent the caption and silently dropped "
+          + "the picture. Worth testing properly.", b: true }]),
+    step("14b", [{ t: "Do the same again " }, { t: "with a caption", b: true }],
+      [{ t: "Client gets both the caption and the image. The caption is not "
+          + "replaced." }]),
     step(15, "/npnote the client has been chasing since Tuesday",
       [{ t: "Recorded in the topic. " },
        { t: "Now check the client group — this must not be there.", b: true }]),
@@ -173,8 +220,48 @@ const body = [
   ...(V.closes ? [P("", { after: 90 }), ...MONO(V.closeText)] : []),
   P("", { after: 140 }),
 
+  new Paragraph({ children: [new PageBreak()] }),
+
   // ================================================================
-  H1("4.  Things that look like faults and are not"),
+  H1(`4.  The supplier side — TEST — Pexi ${DEPT}`),
+  P("New since the last scripts: every desk now has a supplier group as well "
+    + "as a client one. A supplier group works exactly like a client group — "
+    + "the difference is the filing, and it is worth seeing the difference "
+    + "rather than taking it on trust.", { after: 100 }),
+  steps([
+    step(23, [{ t: "In " }, { t: `TEST — Pexi ${DEPT}`, b: true },
+              { t: ", send " }, { t: "/np", code: true },
+              { t: " and raise something" }],
+      [{ t: "The reference reads " }, { t: "SPEX-", code: true },
+       { t: ", not " }, { t: "ACME-", code: true },
+       { t: ". Same flow, different counterparty." }]),
+    step(24, [{ t: "In the desk's General, send " },
+              { t: "/npnewsu", code: true }],
+      [{ t: "Offers " }, { t: `SPEX · TEST — Pexi ${DEPT}`, code: true },
+       { t: ". This is us raising something with them, rather than them with "
+          + "us. Cancel, or send one and watch it arrive." }]),
+    step(25, [{ t: "On the client request from step 3, tap " },
+              { t: "More", b: true }, { t: " → " },
+              { t: "File under supplier", b: true }, { t: " → Pexi" }],
+      [{ t: "The reference becomes " },
+       { t: V.ref.replace("ACME-", "ACME-SPEX-"), code: true },
+       { t: " on our side. " },
+       { t: `Now check the client group: they still see ${V.ref}.`, b: true },
+       { t: " A client is never shown which supplier their issue sits with." }]),
+    step(26, [{ t: "Reply to the client on that request" }],
+      [{ t: "The message still reads " }, { t: V.ref, code: true },
+       { t: ". The supplier code never leaves the building." }]),
+  ]),
+  P("", { after: 100 }),
+  RICH([{ t: "Step 25 is the one worth being fussy about. ", b: true },
+        { t: "Filing under a supplier is an internal act of bookkeeping. If a "
+           + "client ever sees a SPEX reference, that is a leak and I want to "
+           + "know the same day." }], { after: 140 }),
+
+  new Paragraph({ children: [new PageBreak()] }),
+
+  // ================================================================
+  H1("5.  Things that look like faults and are not"),
   table([3200, 6440], ["What you see", "Why"], [
     [[{ t: "A reply to us gets nothing back" }],
      [{ t: "Only the first message opens a request and earns an "
@@ -196,10 +283,15 @@ const body = [
          + "across; administration does." }]],
     [[{ t: "A closed request shows only two buttons" }],
      [{ t: "Everything else would be refused on a closed item." }]],
+    [[{ t: "“That has to be a reply” — when you did reply" }],
+     [{ t: "Only when naming a contact with /npsetlead in a client or supplier "
+         + "group. The bot is an ordinary member there and only ever receives "
+         + "commands, so it cannot resolve a reply to ordinary chat. Ask them "
+         + "to send /np, then reply to that." }]],
   ], { shade: WARN_BG }),
 
   // ================================================================
-  H1("5.  Reporting"),
+  H1("6.  Reporting"),
   RICH([{ t: "For anything unexpected: " },
         { t: "what you did, what you expected, what happened, the group, the "
            + "reference, and roughly when.", b: true },

@@ -245,9 +245,15 @@ async def capture(message: Message, state: FSMContext) -> None:
         if target is not None:
             leads = await leads_for(session, target)
 
+    # Composed the same way the real message is, rather than assembled again
+    # here. Two implementations of "what will they see" is how the preview came
+    # to show the first line twice while claiming to be a preview.
+    rest = relay.outbound_body(subject, body)
+    shown = f"{subject}\n\n{rest}" if rest else subject
+
     await message.reply(
         f"This will open a new request with {data.get('to_title')} and send:\n\n"
-        f"— — —\n{subject}\n\n{body}\n— — —\n\n"
+        f"— — —\n{shown}\n— — —\n\n"
         f"Nothing has been sent yet.",
         reply_markup=_confirm(leads),
     )
