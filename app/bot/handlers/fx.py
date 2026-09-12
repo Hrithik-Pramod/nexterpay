@@ -460,20 +460,38 @@ async def counterparty_confirms(query: CallbackQuery) -> None:
     checked is that the button was tapped in the group the order was sent to -
     a callback carries whatever id it was built with, and one confirmed from
     the wrong room is not a confirmation.
+
+    Every branch answers. A counterparty who taps Confirm and gets silence
+    concludes the deal is agreed, which on an FX order is the most expensive
+    wrong conclusion available - so there is no path through this that says
+    nothing, including the ones that should never be reached.
+
+    Answered after the lookup rather than before it, unlike the staff buttons.
+    Those do real work and needed the spinner stopped first; this is two
+    lookups by primary key, and answering at the end means the toast can carry
+    the actual outcome rather than a blank acknowledgement.
     """
     _, _, order_id, side_value = (query.data or "").split(":")
     side = FxSide(side_value)
-    await query.answer()
 
     async with session_scope() as session:
         order = await session.get(FxOrder, int(order_id))
         if order is None:
+            await query.answer(
+                "That order no longer exists. Please speak to us before "
+                "acting on it.",
+                show_alert=True,
+            )
             return
         expected = await _group_for_side(session, order, side)
         if expected is None or query.message.chat.id != expected:
             logger.info(
                 "FX confirm from the wrong chat: order=%s chat=%s",
                 order_id, query.message.chat.id,
+            )
+            await query.answer(
+                "This order can only be confirmed in the group it was sent to.",
+                show_alert=True,
             )
             return
 
@@ -488,23 +506,40 @@ async def counterparty_confirms(query: CallbackQuery) -> None:
         except fx.FxError:
             # Already confirmed, most likely. Saying so is kinder than silence
             # and safer than confirming twice.
-            await query.message.answer("That has already been confirmed, thank you.")
+            await query.answer("That has already been confirmed, thank you.")
             return
 
+    await query.answer("Confirmed.")
     await query.message.answer("Thank you — confirmed.")
 
 
 @router.callback_query(F.data.startswith("fx:receipt:"))
 async def client_confirms_receipt(query: CallbackQuery) -> None:
+    """The client saying the funds have arrived, which is what closes a deal.
+
+    Speaks in every branch, for the same reason as confirming an order: a
+    client who taps and hears nothing assumes we have been told, and stops
+    chasing something that is still open on our side.
+    """
     order_id = int((query.data or "").split(":")[2])
-    await query.answer()
 
     async with session_scope() as session:
         order = await session.get(FxOrder, order_id)
         if order is None:
+            await query.answer(
+                "That order no longer exists. Please speak to us.", show_alert=True
+            )
             return
         expected = await _group_for_side(session, order, FxSide.CLIENT)
         if expected is None or query.message.chat.id != expected:
+            logger.info(
+                "FX receipt from the wrong chat: order=%s chat=%s",
+                order_id, query.message.chat.id,
+            )
+            await query.answer(
+                "This can only be confirmed in the group it was sent to.",
+                show_alert=True,
+            )
             return
 
         who = query.from_user.full_name if query.from_user else "Client"
@@ -513,8 +548,12 @@ async def client_confirms_receipt(query: CallbackQuery) -> None:
         try:
             await fx.client_confirms_receipt(session, order, actor=actor)
         except fx.FxError:
+            await query.answer(
+                "That has already been confirmed, thank you.", show_alert=True
+            )
             return
 
+    await query.answer("Confirmed.")
     await query.message.answer("Thank you — this order is now closed.")
 
 

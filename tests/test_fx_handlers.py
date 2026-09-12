@@ -197,12 +197,37 @@ def test_the_client_and_supplier_creators_are_not_interchangeable() -> None:
     assert "FxSide.CLIENT" in source
 
 
-def test_a_confirmation_from_the_wrong_group_is_ignored() -> None:
-    """A callback carries whatever id it was built with. One confirmed from
-    another room is not a confirmation, and this is money."""
+def test_a_confirmation_from_the_wrong_group_is_refused_out_loud() -> None:
+    """A callback carries whatever id it was built with, so the group is
+    checked. And the refusal speaks: a counterparty who taps Confirm and hears
+    nothing concludes the deal is agreed, which on an FX order is the most
+    expensive wrong conclusion available.
+    """
     source = ast.unparse(_fn("counterparty_confirms"))
     assert "_group_for_side" in source
     assert "chat.id" in source
+    assert "can only be confirmed in the group" in source
+
+
+@pytest.mark.parametrize(
+    "name", ["counterparty_confirms", "client_confirms_receipt"]
+)
+def test_the_counterparty_buttons_answer_on_every_path(name) -> None:
+    """Counted rather than eyeballed: every `return` in these two has to be
+    preceded by something that speaks, and the happy path too."""
+    fn = _fn(name)
+    answers = sum(
+        1 for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "answer"
+    )
+    returns = sum(1 for node in ast.walk(fn) if isinstance(node, ast.Return))
+
+    assert answers > returns, (
+        f"{name} has {returns} exits and only {answers} answers - at least one "
+        f"path leaves the counterparty with a button that did nothing"
+    )
 
 
 def test_the_deal_list_is_refused_outside_an_operations_group() -> None:
