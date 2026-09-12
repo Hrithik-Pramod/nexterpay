@@ -113,6 +113,51 @@ def _fmt(event: Event, *, verbose: bool = False) -> str:
     if t is EventType.TOPIC_CLOSED:
         return "Topic closed"
 
+    # --- FX -------------------------------------------------------------
+    #
+    # These lines carry the supplier's rate, and so does the margin implied by
+    # sitting it next to ours. That is safe here and only here: history is
+    # rendered into an Operations Group by /nphistory and by the running
+    # commentary in the topic, both of which are staff-only. Nothing in this
+    # module is ever composed for a counterparty - `fx.view_for` is the only
+    # thing that does that, and it reads one side alone.
+    #
+    # The figures are the point. "The rate was set to 1.1642 by Gavin" is the
+    # line somebody reads back six weeks later when a client disputes what was
+    # agreed, which is why FX has its own event types rather than reusing
+    # STATUS_CHANGED.
+    if t is EventType.FX_RATE_REQUESTED:
+        return f"FX enquiry opened by {actor}"
+    if t is EventType.FX_SUPPLIER_QUOTED:
+        return f"{p.get('supplier', 'Supplier')} quoted {p.get('rate', '?')} to us ({actor})"
+    if t is EventType.FX_SUPPLIER_RATE_REJECTED:
+        line = f"Supplier rate {p.get('rate', '?')} rejected by {actor}"
+        return line + (_quote(p.get("reason")) if verbose and p.get("reason") else "")
+    if t is EventType.FX_RATE_QUOTED:
+        return f"Client quoted {p.get('rate', '?')} by {actor}"
+    if t is EventType.FX_RATE_REJECTED:
+        line = f"Client rejected {p.get('rate', '?')}"
+        return line + (_quote(p.get("reason")) if verbose and p.get("reason") else "")
+    if t is EventType.FX_ORDER_CREATED:
+        side = (p.get("side") or "").capitalize() or "Order"
+        pays = f"{p.get('pays', '?')} {p.get('pays_currency', '')}".strip()
+        gets = f"{p.get('receives', '?')} {p.get('receives_currency', '')}".strip()
+        return (
+            f"{side} order created by {actor} — {pays} → {gets} "
+            f"at {p.get('rate', '?')}, as {p.get('account', 'unnamed')}"
+        )
+    if t is EventType.FX_CLIENT_CONFIRMED:
+        return (
+            f"Client confirmed — {p.get('pays', '?')} at {p.get('rate', '?')}, "
+            f"receiving {p.get('receives', '?')}"
+        )
+    if t is EventType.FX_SUPPLIER_ACCEPTED:
+        return "Supplier accepted the order"
+    if t is EventType.FX_HASH_RECORDED:
+        return f"Settled by {actor} — {p.get('tx_hash', 'no hash')}"
+    if t is EventType.FX_RECEIPT_CONFIRMED:
+        return "Client confirmed receipt — order closed"
+
     raise NotImplementedError(f"No renderer for event type {t!r}")
 
 

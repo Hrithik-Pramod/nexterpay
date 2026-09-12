@@ -139,6 +139,83 @@ _ROLE_RANK = {
 }
 
 
+class FxOrderStatus(str, enum.Enum):
+    """Where an FX deal has got to.
+
+    The test each of these had to pass, from the FX Flow note of 5 September:
+    a stage earns its place if it changes who you are waiting on. Anyone
+    looking at the board should be able to tell whose move it is without
+    reading the conversation. Two consecutive stages that both mean "waiting
+    on the client" are one state carrying two facts.
+
+    Applied to NexterPay's description of 12 September, that gives seven and a
+    return path. `AWAITING_SUPPLIER_ACCEPTANCE` and `AWAITING_SETTLEMENT` both
+    wait on the supplier and both survive the test, because accepting an order
+    and sending the money are different acts - a supplier can sit in the first
+    for an hour and the second for five days, and the chase is different.
+    """
+
+    RATE_REQUESTED = "rate_requested"            # waiting on the supplier to quote us
+    RATE_QUOTED = "rate_quoted"                  # waiting on the client
+    RATE_REJECTED = "rate_rejected"              # waiting on us - the return path
+    AWAITING_CLIENT_CONFIRMATION = "awaiting_client_confirmation"
+    AWAITING_SUPPLIER_ACCEPTANCE = "awaiting_supplier_acceptance"
+    AWAITING_SETTLEMENT = "awaiting_settlement"  # chasing happens in here
+    AWAITING_RECEIPT = "awaiting_receipt"        # hash passed on, waiting on the client
+    CLOSED = "closed"
+
+    @property
+    def label(self) -> str:
+        return _FX_STATUS_LABELS[self]
+
+    @property
+    def waiting_on(self) -> str:
+        """Whose move it is. The reason each state exists."""
+        return _FX_WAITING_ON[self]
+
+    @property
+    def is_terminal(self) -> bool:
+        return self is FxOrderStatus.CLOSED
+
+
+_FX_STATUS_LABELS = {
+    FxOrderStatus.RATE_REQUESTED: "Rate requested",
+    FxOrderStatus.RATE_QUOTED: "Rate quoted",
+    FxOrderStatus.RATE_REJECTED: "Rate rejected",
+    FxOrderStatus.AWAITING_CLIENT_CONFIRMATION: "Awaiting client confirmation",
+    FxOrderStatus.AWAITING_SUPPLIER_ACCEPTANCE: "Awaiting supplier acceptance",
+    FxOrderStatus.AWAITING_SETTLEMENT: "Awaiting settlement",
+    FxOrderStatus.AWAITING_RECEIPT: "Awaiting receipt",
+    FxOrderStatus.CLOSED: "Closed",
+}
+
+_FX_WAITING_ON = {
+    FxOrderStatus.RATE_REQUESTED: "Supplier",
+    FxOrderStatus.RATE_QUOTED: "Client",
+    FxOrderStatus.RATE_REJECTED: "NexterPay",
+    FxOrderStatus.AWAITING_CLIENT_CONFIRMATION: "Client",
+    FxOrderStatus.AWAITING_SUPPLIER_ACCEPTANCE: "Supplier",
+    FxOrderStatus.AWAITING_SETTLEMENT: "Supplier",
+    FxOrderStatus.AWAITING_RECEIPT: "Client",
+    FxOrderStatus.CLOSED: "Nobody",
+}
+
+
+class FxSide(str, enum.Enum):
+    """Which half of a deal an order belongs to.
+
+    Load-bearing rather than descriptive. Every figure on an FX deal exists
+    twice - our rate and the supplier's, what the client pays and what the
+    supplier receives - and the difference is NexterPay's margin. A function
+    that writes to a counterparty takes a side and reads only that side's
+    fields, so a leak would need somebody to pass the wrong side rather than
+    merely to forget which field was which.
+    """
+
+    CLIENT = "client"
+    SUPPLIER = "supplier"
+
+
 class MessageDirection(str, enum.Enum):
     INBOUND = "inbound"      # client -> NexterPay
     OUTBOUND = "outbound"    # NexterPay -> client
@@ -173,3 +250,18 @@ class EventType(str, enum.Enum):
     WORK_ITEM_CLOSED = "work_item_closed"
     WORK_ITEM_REOPENED = "work_item_reopened"
     TOPIC_CLOSED = "topic_closed"
+
+    # The FX deal. Separate event types rather than reusing STATUS_CHANGED,
+    # because these carry money: "the rate was set to 1.1642 by Gavin" is the
+    # line somebody will be reading back six weeks later when a client disputes
+    # what was agreed, and a generic status change cannot hold it.
+    FX_RATE_REQUESTED = "fx_rate_requested"
+    FX_SUPPLIER_QUOTED = "fx_supplier_quoted"
+    FX_SUPPLIER_RATE_REJECTED = "fx_supplier_rate_rejected"
+    FX_RATE_QUOTED = "fx_rate_quoted"
+    FX_RATE_REJECTED = "fx_rate_rejected"
+    FX_ORDER_CREATED = "fx_order_created"
+    FX_CLIENT_CONFIRMED = "fx_client_confirmed"
+    FX_SUPPLIER_ACCEPTED = "fx_supplier_accepted"
+    FX_HASH_RECORDED = "fx_hash_recorded"
+    FX_RECEIPT_CONFIRMED = "fx_receipt_confirmed"

@@ -21,6 +21,7 @@ Design notes
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import (
     JSON,
@@ -31,6 +32,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -45,6 +47,7 @@ from app.domain.enums import (
     ChatKind,
     Department,
     EventType,
+    FxOrderStatus,
     MessageDirection,
     Priority,
     StaffRole,
@@ -401,6 +404,160 @@ class WorkItem(Base, TimestampMixin):
 
     def __repr__(self) -> str:
         return f"<WorkItem {self.display_reference} {self.status.value}>"
+
+
+class FxOrder(Base, TimestampMixin):
+    """A foreign exchange deal, with a client on one side and a supplier on the
+    other and NexterPay in the middle.
+
+    Specified by NexterPay on 12 September. The shape that matters: every
+    figure exists twice. The client is quoted our rate and the supplier quotes
+    us theirs; the client pays one amount and the supplier receives another.
+    The difference between the two rates is NexterPay's margin, and the
+    supplier's rate reaching a client is the one failure in this system that
+    costs money rather than goodwill.
+
+    So the two sides are separate columns with separate names rather than one
+    set of figures with a flag. `client_rate` and `supplier_rate` cannot be
+    confused for each other by a function that forgot which it was holding,
+    and `client_view()` is the only thing that composes figures for a
+    counterparty - it takes a side and reads that side alone.
+
+    The deal is anchored to work items rather than replacing them. The client
+    half is an ordinary request in the client's group and the supplier half is
+    an ordinary request in theirs, which means every existing guarantee about
+    what a counterparty can see already applies, and the FX layer adds the
+    figures rather than a second way for messages to travel.
+    """
+
+    __tablename__ = "fx_orders"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    reference: Mapped[int] = mapped_column(Integer, unique=True, nullable=False, index=True)
+
+    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id"), nullable=False)
+    # Null until somebody has chosen who to ask. A client asking "what is
+    # available?" has not named a supplier and often nobody has yet.
+    supplier_id: Mapped[int | None] = mapped_column(ForeignKey("clients.id"), nullable=True)
+
+    client_code: Mapped[str | None] = mapped_column(String(4), nullable=True)
+    supplier_code: Mapped[str | None] = mapped_column(String(4), nullable=True)
+
+    # The two requests this deal is conducted through. The supplier half does
+    # not exist until we go out for a quote.
+    client_work_item_id: Mapped[int] = mapped_column(
+        ForeignKey("work_items.id"), nullable=False
+    )
+    supplier_work_item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("work_items.id"), nullable=True
+    )
+
+    status: Mapped[FxOrderStatus] = mapped_column(
+        _enum(FxOrderStatus, "fx_order_status"),
+        nullable=False,
+        default=FxOrderStatus.RATE_REQUESTED,
+    )
+
+    # ---- the client's half -------------------------------------------------
+    #
+    # `account_name` is free format and it is what the counterparty sees on the
+    # order. NexterPay, 12 September: for a client it is their business name;
+    # for a supplier it is our account code with them, "Nexterpay7". That is
+    # what keeps the client's identity off the supplier's side of the deal.
+    client_account_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    client_rate: Mapped[Decimal | None] = mapped_column(Numeric(20, 10), nullable=True)
+    client_pays: Mapped[Decimal | None] = mapped_column(Numeric(24, 8), nullable=True)
+    client_pays_currency: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    client_receives: Mapped[Decimal | None] = mapped_column(Numeric(24, 8), nullable=True)
+    client_receives_currency: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    client_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # ---- the supplier's half, which never crosses --------------------------
+    supplier_account_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    supplier_rate: Mapped[Decimal | None] = mapped_column(Numeric(20, 10), nullable=True)
+    supplier_pays: Mapped[Decimal | None] = mapped_column(Numeric(24, 8), nullable=True)
+    supplier_pays_currency: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    supplier_receives: Mapped[Decimal | None] = mapped_column(Numeric(24, 8), nullable=True)
+    supplier_receives_currency: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    supplier_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # ---- settlement --------------------------------------------------------
+    #
+    # Tron only for now; Ethereum is phase two. The chain is stored rather than
+    # assumed so that the explorer link does not have to be guessed later.
+    tx_hash: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    chain: Mapped[str] = mapped_column(String(16), nullable=False, default="tron")
+    settled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    client: Mapped[Client] = relationship(foreign_keys=[client_id])
+    supplier: Mapped[Client | None] = relationship(foreign_keys=[supplier_id])
+    client_work_item: Mapped[WorkItem] = relationship(foreign_keys=[client_work_item_id])
+    supplier_work_item: Mapped[WorkItem | None] = relationship(
+        foreign_keys=[supplier_work_item_id]
+    )
+
+    __table_args__ = (
+        Index("ix_fx_orders_open", "status"),
+        Index("ix_fx_orders_client", "client_id"),
+    )
+
+    @property
+    def display_reference(self) -> str:
+        """The internal reference, carrying the supplier code where there is one."""
+        if self.client_code and self.supplier_code:
+            return f"FX{self.client_code}-{self.supplier_code}-{self.reference}"
+        if self.client_code:
+            return f"FX{self.client_code}-{self.reference}"
+        return f"FX#{self.reference}"
+
+    @property
+    def client_reference(self) -> str:
+        """What the client is shown. Never carries the supplier code.
+
+        Same rule as a work item, and it matters more here: on an FX deal the
+        supplier code would tell a client who NexterPay buy from, which is the
+        beginning of working out the margin.
+        """
+        if self.client_code:
+            return f"FX{self.client_code}-{self.reference}"
+        return f"FX#{self.reference}"
+
+    @property
+    def margin(self) -> Decimal | None:
+        """What NexterPay make. Internal, and never rendered to either side."""
+        if self.client_rate is None or self.supplier_rate is None:
+            return None
+        return self.client_rate - self.supplier_rate
+
+    @property
+    def is_open(self) -> bool:
+        return not self.status.is_terminal
+
+    def __repr__(self) -> str:
+        return f"<FxOrder {self.display_reference} {self.status.value}>"
+
+
+class FxReferenceCounter(Base):
+    """Backs the FX order number, separately from work item references.
+
+    Separate so that FX orders read FXACME-1042 and run 1000, 1001, 1002
+    rather than taking every third number from the shared pool and looking
+    like something is missing.
+    """
+
+    __tablename__ = "fx_reference_counter"
+
+    id: Mapped[int] = mapped_column(primary_key=True, default=1)
+    next_value: Mapped[int] = mapped_column(Integer, nullable=False, default=1000)
 
 
 class GroupLead(Base, TimestampMixin):
