@@ -414,6 +414,34 @@ def test_every_offered_rejection_is_one_the_domain_accepts() -> None:
             )
 
 
+def test_the_rejection_prompt_helper_always_speaks() -> None:
+    """The price of an exemption in `test_silent_refusals`.
+
+    `reject_pick_deal` ends a branch with a bare `return` after handing off to
+    `_ask_reason`, and the silence guard cannot see inside a helper - so
+    `_ask_reason` is listed in SPEAKING_HELPERS there. That listing is a claim
+    about this function, and this is the check that makes it true: no branches,
+    and it speaks. Add an `if` to `_ask_reason` and this fails, which is what
+    stops the exemption from quietly becoming a hole.
+    """
+    for node in ast.walk(_tree(handlers)):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_ask_reason":
+            branches = [n for n in ast.walk(node) if isinstance(n, ast.If)]
+            assert not branches, (
+                "_ask_reason has branched, so it can no longer be assumed to "
+                "speak on every path - remove it from SPEAKING_HELPERS"
+            )
+            spoke = any(
+                isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Attribute)
+                and n.func.attr in {"answer", "reply", "send_message"}
+                for n in ast.walk(node)
+            )
+            assert spoke, "_ask_reason says nothing"
+            return
+    raise AssertionError("_ask_reason not found")
+
+
 def test_the_two_prompts_ask_different_questions() -> None:
     supplier = handlers.reject_prompt(FxSide.SUPPLIER)
     client = handlers.reject_prompt(FxSide.CLIENT)

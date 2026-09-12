@@ -51,6 +51,11 @@ SPEAKING_HELPERS = (
                           # purpose in a counterparty's group
     "_wrong_topic",       # staff.py - explains the mix-up, returns True
     "_open_from",         # client.py - opens a request, which acknowledges it
+    "_ask_reason",        # fx.py - asks why a rate was turned down, and always
+                          # asks out loud. Earned rather than asserted: see
+                          # test_the_rejection_prompt_helper_always_speaks in
+                          # test_fx_rate_entry.py, which fails if a silent path
+                          # is ever added to it.
 )
 
 # Bare returns that are correct, each with the reason written down. This list
