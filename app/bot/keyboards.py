@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from app.domain.enums import Priority, WorkItemStatus
+from app.domain.enums import Department, Priority, WorkItemStatus
 
 PREFIX = "wi"
 
@@ -37,7 +37,7 @@ def parse_cb(data: str) -> tuple[str, int, str | None]:
 
 def work_item_actions(
     work_item_id: int, *, claimed: bool, expanded: bool = False,
-    asked_from: str | None = None,
+    asked_from: str | None = None, department=None,
 ) -> InlineKeyboardMarkup:
     """Three buttons and a More, rather than nine.
 
@@ -115,8 +115,22 @@ def work_item_actions(
                 text="Ask another department", callback_data=cb("askdept", work_item_id)
             )
         ],
-        [InlineKeyboardButton(text="Less ⌃", callback_data=cb("less", work_item_id))],
     ]
+
+    # Finance only. An FX deal is a Finance instrument, and a Start FX button
+    # on a Support ticket is one more thing to read past on every request that
+    # will never be one - which is the argument that trimmed nine buttons to
+    # three in the first place.
+    if department is Department.FINANCE:
+        rows.append(
+            [InlineKeyboardButton(
+                text="Start FX deal", callback_data=cb("startfx", work_item_id)
+            )]
+        )
+
+    rows.append(
+        [InlineKeyboardButton(text="Less ⌃", callback_data=cb("less", work_item_id))]
+    )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

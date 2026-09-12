@@ -244,6 +244,66 @@ def test_the_commands_are_registered() -> None:
     assert cmd.ORDER_SUPPLIER.startswith("np")
 
 
+def test_there_is_a_way_to_start_a_deal_from_telegram() -> None:
+    """The bug this file exists to stop repeating.
+
+    Both order commands list open deals and refuse when there are none,
+    pointing at "More → Start FX" - a button that had never been built. So FX
+    was unreachable: 555 tests green, and no way in. Found by driving the bot
+    rather than by any of them.
+
+    The button and the action that answers it are checked together, because
+    either alone is a dead end.
+    """
+    from app.bot import keyboards as kb
+    from app.domain.enums import Department
+
+    markup = kb.work_item_actions(
+        7, claimed=False, expanded=True, department=Department.FINANCE
+    )
+    payloads = [b.callback_data for row in markup.inline_keyboard for b in row]
+    assert kb.cb("startfx", 7) in payloads, "no way to open an FX deal"
+
+    from app.bot.handlers import staff as staff_handlers
+
+    source = inspect.getsource(staff_handlers._apply)
+    assert '"startfx"' in source, "the Start FX button reaches no handler"
+    assert "start_deal" in source
+
+
+def test_start_fx_is_offered_on_finance_and_nowhere_else() -> None:
+    """An FX deal is a Finance instrument. A Start FX button on a Support
+    ticket is one more thing to read past on every request that will never be
+    one - the argument that trimmed nine buttons to three."""
+    from app.bot import keyboards as kb
+    from app.domain.enums import Department
+
+    for department in Department:
+        markup = kb.work_item_actions(
+            7, claimed=False, expanded=True, department=department
+        )
+        payloads = [b.callback_data for row in markup.inline_keyboard for b in row]
+        offered = kb.cb("startfx", 7) in payloads
+        assert offered == (department is Department.FINANCE), (
+            f"Start FX is {'offered' if offered else 'missing'} on "
+            f"{department.label}"
+        )
+
+
+def test_the_expanded_menu_survives_a_rebuild() -> None:
+    """Tapping More rebuilds the keyboard. A rebuild that forgot the department
+    would show Start FX once and then take it away again on the next tap -
+    which is how the Answer button was lost on asked-for requests."""
+    from app.bot.handlers import staff as staff_handlers
+
+    source = inspect.getsource(staff_handlers._apply)
+    more_branch = source[source.index('if action in ("more"'):]
+    more_branch = more_branch[:more_branch.index("return")]
+
+    assert "department=" in more_branch, "the rebuild drops the department"
+    assert "asked_from=" in more_branch, "the rebuild drops the origin reference"
+
+
 def test_the_commands_are_claimed_by_the_fx_router() -> None:
     """Registration is checked here rather than through build_dispatcher().
 

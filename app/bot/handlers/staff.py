@@ -664,7 +664,8 @@ async def _apply(
     if action == "claim":
         await relay.claim(session, gw, item, actor)
         await _refresh_keyboard(
-            query, item.id, claimed=True, asked_from=origin_ref
+            query, item.id, claimed=True, asked_from=origin_ref,
+            department=item.department,
         )
         return f"Claimed {item.display_reference}"
 
@@ -824,7 +825,8 @@ async def _apply(
             return "That ticket no longer exists"
         await relay.link(session, gw, item, other, actor)
         await _refresh_keyboard(
-            query, item.id, claimed=item.owner_staff_id is not None, asked_from=origin_ref
+            query, item.id, claimed=item.owner_staff_id is not None,
+            asked_from=origin_ref, department=item.department,
         )
         return f"Linked to {other.display_reference}"
 
@@ -834,7 +836,8 @@ async def _apply(
             return "That ticket no longer exists"
         removed = await relay.unlink(session, gw, item, other, actor)
         await _refresh_keyboard(
-            query, item.id, claimed=item.owner_staff_id is not None, asked_from=origin_ref
+            query, item.id, claimed=item.owner_staff_id is not None,
+            asked_from=origin_ref, department=item.department,
         )
         return (
             f"Link to {other.display_reference} removed" if removed else "They were not linked"
@@ -901,7 +904,8 @@ async def _apply(
             return "That counterparty no longer exists"
         await relay.file_under(session, gw, item, supplier, actor)
         await _refresh_keyboard(
-            query, item.id, claimed=item.owner_staff_id is not None, asked_from=origin_ref
+            query, item.id, claimed=item.owner_staff_id is not None,
+            asked_from=origin_ref, department=item.department,
         )
         return f"Filed under {supplier.code}"
 
@@ -911,7 +915,8 @@ async def _apply(
             return "That person is no longer active staff"
         await relay.assign(session, gw, item, assignee, actor)
         await _refresh_keyboard(
-            query, item.id, claimed=True, asked_from=origin_ref
+            query, item.id, claimed=True, asked_from=origin_ref,
+            department=item.department,
         )
         return f"Assigned to {assignee.display_name}"
 
@@ -926,14 +931,16 @@ async def _apply(
     if action == "setstatus":
         await relay.change_status(session, gw, item, WorkItemStatus(value), actor)
         await _refresh_keyboard(
-            query, item.id, claimed=item.owner_staff_id is not None, asked_from=origin_ref
+            query, item.id, claimed=item.owner_staff_id is not None,
+            asked_from=origin_ref, department=item.department,
         )
         return WorkItemStatus(value).label
 
     if action == "setpriority":
         await relay.change_priority(session, gw, item, Priority(value), actor)
         await _refresh_keyboard(
-            query, item.id, claimed=item.owner_staff_id is not None, asked_from=origin_ref
+            query, item.id, claimed=item.owner_staff_id is not None,
+            asked_from=origin_ref, department=item.department,
         )
         return Priority(value).label
 
@@ -945,8 +952,32 @@ async def _apply(
             query, item.id,
             claimed=item.owner_staff_id is not None,
             expanded=action in ("more", "back"),
+            asked_from=origin_ref,
+            department=item.department,
         )
         return ""
+
+    if action == "startfx":
+        # The entry point to the whole FX flow, and it was missing: the two
+        # order commands list open deals, and without this there was no way to
+        # open one. The bot's own message told staff to use a button that had
+        # never been built - documented before it existed, which is the fault
+        # this project has made before and the reason the message is now
+        # generated from the command name rather than typed out.
+        from app.bot.handlers import fx as fx_handlers
+
+        order = await fx_handlers.start_deal(session, item, actor)
+        await _refresh_keyboard(
+            query, item.id, claimed=item.owner_staff_id is not None,
+            asked_from=origin_ref, department=item.department,
+        )
+        await query.message.reply(
+            f"FX deal {order.display_reference} opened against "
+            f"{item.display_reference}.\n\n"
+            f"Ask the supplier for a rate, then use /{cmd.ORDER_CLIENT} to "
+            f"create the client's order and /{cmd.ORDER_SUPPLIER} for theirs."
+        )
+        return f"Opened {order.display_reference}"
 
     if action == "history":
         lines = render_history(await load_events(session, item))
@@ -960,7 +991,8 @@ async def _apply(
         # here so the rule holds however it is reached.
         await relay.reopen(session, gw, item, actor)
         await _refresh_keyboard(
-            query, item.id, claimed=item.owner_staff_id is not None, asked_from=origin_ref
+            query, item.id, claimed=item.owner_staff_id is not None,
+            asked_from=origin_ref, department=item.department,
         )
         return f"Reopened {item.display_reference}"
 
@@ -1074,7 +1106,7 @@ async def _seal_preview(query: CallbackQuery, text: str) -> None:
 
 async def _refresh_keyboard(
     query: CallbackQuery, work_item_id: int, *, claimed: bool, expanded: bool = False,
-    asked_from: str | None = None,
+    asked_from: str | None = None, department=None,
 ) -> None:
     """Rebuild the buttons after an action.
 
@@ -1083,12 +1115,16 @@ async def _refresh_keyboard(
     first tap on Claim or More would quietly rebuild the row with "Reply to
     client" in the middle - the button that must not be on this request at
     all - and nobody would see it change.
+
+    `department` is carried for the same reason and learned the same way:
+    Start FX belongs on a Finance request and nowhere else, so a rebuild that
+    forgot it would take the button off the moment anybody tapped More.
     """
     try:
         await query.message.edit_reply_markup(
             reply_markup=kb.work_item_actions(
                 work_item_id, claimed=claimed, expanded=expanded,
-                asked_from=asked_from,
+                asked_from=asked_from, department=department,
             )
         )
     except Exception:  # message unchanged, or too old to edit
