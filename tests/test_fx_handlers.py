@@ -290,18 +290,37 @@ def test_start_fx_is_offered_on_finance_and_nowhere_else() -> None:
         )
 
 
-def test_the_expanded_menu_survives_a_rebuild() -> None:
-    """Tapping More rebuilds the keyboard. A rebuild that forgot the department
-    would show Start FX once and then take it away again on the next tap -
-    which is how the Answer button was lost on asked-for requests."""
+def test_every_keyboard_rebuild_carries_what_the_buttons_depend_on() -> None:
+    """A rebuild that forgets either of these silently changes the buttons.
+
+    `department` decides whether Start FX is offered, so dropping it shows the
+    button once and takes it away on the next tap. `asked_from` decides whether
+    the middle button is Answer or Reply to Client - and dropping that offers a
+    route to the client on a request that must not have one. The second was
+    live for a week in the More branch, which is why this checks every call
+    site rather than the one I happened to be looking at.
+    """
     from app.bot.handlers import staff as staff_handlers
 
-    source = inspect.getsource(staff_handlers._apply)
-    more_branch = source[source.index('if action in ("more"'):]
-    more_branch = more_branch[:more_branch.index("return")]
+    tree = ast.parse(inspect.getsource(staff_handlers))
+    calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_refresh_keyboard"
+    ]
+    assert calls, "no keyboard rebuilds found at all"
 
-    assert "department=" in more_branch, "the rebuild drops the department"
-    assert "asked_from=" in more_branch, "the rebuild drops the origin reference"
+    for call in calls:
+        passed = {kw.arg for kw in call.keywords}
+        assert "department" in passed, (
+            f"a rebuild at line {call.lineno} drops the department, so Start FX "
+            f"would vanish on the next tap"
+        )
+        assert "asked_from" in passed, (
+            f"a rebuild at line {call.lineno} drops asked_from, so an asked-for "
+            f"request would be offered Reply to Client"
+        )
 
 
 def test_the_commands_are_claimed_by_the_fx_router() -> None:
