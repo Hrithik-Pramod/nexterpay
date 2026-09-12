@@ -25,6 +25,7 @@ from aiogram.types import Message
 from app.bot import commands as cmd
 from app.bot import deps
 from app.bot.handlers import admin, broadcast, client, outbound, staff
+from app.bot.handlers import fx as fx_handlers
 from app.bot.help import build as build_help
 from app.bot.registry import resolve_chat, resolve_staff
 from app.bot.roles import reference as role_reference
@@ -257,6 +258,12 @@ def build_dispatcher() -> Dispatcher:
     # topic catch-all - the same trap that hid the client-reply bug.
     dp.include_router(broadcast.router)
     dp.include_router(outbound.router)
+    # Before staff, for the same reason as broadcast: the FX figures are
+    # captured as replies, which in a forum carry a thread id and would
+    # otherwise be swallowed by the staff topic catch-all. And before client,
+    # because the Confirm buttons are tapped in a counterparty's own group -
+    # the client router's catch-all must not see them first.
+    dp.include_router(fx_handlers.router)
     dp.include_router(staff.router)
     dp.include_router(client.router)
 

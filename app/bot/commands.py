@@ -112,6 +112,15 @@ ROLE = _c("role")
 NEW_CLIENT = _c("newcl")
 NEW_SUPPLIER = _c("newsu")
 
+# FX orders, split the same way and for the same reason. NexterPay,
+# 12 September: "need two, so we know direct, supplier or client". Which side
+# you are creating for decides which figures you are about to type and which
+# group they are about to reach, so it belongs in the command rather than in a
+# picker you meet afterwards.
+ORDER_CLIENT = _c("ordercl")
+ORDER_SUPPLIER = _c("ordersu")
+FX_DEALS = _c("fx")
+
 # Anywhere
 START = "start"
 START_ALIAS = _c("start")
@@ -127,5 +136,6 @@ ALL = [
     WORKLOAD, SETCODE, ADDPARTY, BROADCAST,
     SETLEAD, LEADS, REMOVELEAD, SETUP, HELP, ROLE,
     NEW_CLIENT, NEW_SUPPLIER,
+    ORDER_CLIENT, ORDER_SUPPLIER, FX_DEALS,
     START, START_ALIAS, WHOAMI,
 ]

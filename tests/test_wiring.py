@@ -90,7 +90,9 @@ def test_routers_are_ordered_so_the_catch_all_is_last():
     """The client router ends in a catch-all for group messages. If it were
     registered before the staff router, staff commands would fall into it."""
     names = [r.name for r in dispatcher().sub_routers]
-    assert names == ["admin", "broadcast", "outbound", "staff", "client", "trace"]
+    assert names == [
+        "admin", "broadcast", "outbound", "fx", "staff", "client", "trace"
+    ]
     # "trace" logs anything no one else wanted, so it must stay behind the
     # client catch-all or it would log every ordinary message as unhandled.
     assert names[-1] == "trace"
@@ -99,6 +101,12 @@ def test_routers_are_ordered_so_the_catch_all_is_last():
     # thread id, so it must be offered the message before topic_message is.
     assert names.index("broadcast") < names.index("staff")
     assert names.index("outbound") < names.index("staff")
+    # FX captures its figures as replies, which carry a thread id for the same
+    # reason - and its Confirm buttons are tapped in a counterparty's own
+    # group, where the client router's catch-all sits. Both traps have caught
+    # this project before.
+    assert names.index("fx") < names.index("staff")
+    assert names.index("fx") < names.index("client")
 
 
 async def test_topic_maps_back_to_its_work_item(session, acme_support, support_ops):
@@ -266,12 +274,13 @@ def test_every_command_carries_the_np_prefix() -> None:
 
     from app.bot import commands
     from app.bot.handlers import admin, client, staff
+    from app.bot.handlers import fx as fx_handlers
 
     # The routers are module-level singletons and cannot be attached to a
     # second dispatcher, so they are inspected directly rather than through
     # build_dispatcher().
     registered = set()
-    for router in (admin.router, staff.router, client.router):
+    for router in (admin.router, staff.router, client.router, fx_handlers.router):
         for handler in router.message.handlers:
             for f in handler.filters or []:
                 if isinstance(f.callback, Command):
@@ -544,8 +553,30 @@ def test_no_keyboard_builds_a_button_nobody_answers() -> None:
         keyboards.role_menu(Department.SUPPORT),
     ]
 
+    # The FX keyboards live with their handler rather than in keyboards.py,
+    # because the side they carry is meaningless anywhere else. They belong in
+    # this check all the same: a dead Confirm button on an order is the worst
+    # shape this bug can take, since the counterparty taps it, sees nothing,
+    # and reasonably assumes the deal is agreed.
+    from app.bot.handlers import fx as fx_handlers
+    from app.domain.enums import FxSide
+
+    class _Deal:
+        id, display_reference = 7, "FXACME-SPEX-1000"
+
+        class status:
+            label = "Rate quoted"
+
+    every += [
+        fx_handlers.confirm_keyboard(7, FxSide.CLIENT),
+        fx_handlers.confirm_keyboard(7, FxSide.SUPPLIER),
+        fx_handlers.receipt_keyboard(7),
+        fx_handlers._send_keyboard(7, FxSide.CLIENT),
+        fx_handlers._deal_keyboard([_Deal()], FxSide.SUPPLIER),
+    ]
+
     # Every prefix some callback_query handler claims.
-    claimed = ("wi:", "ad:", "bc:", "ob:", "tk:", "raise:")
+    claimed = ("wi:", "ad:", "bc:", "ob:", "tk:", "raise:", "fx:")
     orphans = [
         button.callback_data
         for markup in every
