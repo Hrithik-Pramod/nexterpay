@@ -109,29 +109,64 @@ def parse_pair(text: str) -> tuple[Decimal, str]:
     return amount, currency
 
 
-def check_consistent(figures: Figures) -> str | None:
-    """Do the three numbers agree with each other?
+# Rates carry fees, rounding and spreads that a bare multiplication will not
+# reproduce, so the check has to allow some daylight. Two per cent is wide
+# enough for real pricing and nowhere near wide enough to hide a typo.
+CONSISTENCY_TOLERANCE = Decimal("0.02")
 
-    Returns a warning rather than raising. Rates in practice carry fees,
-    rounding and spreads that a bare multiplication will not reproduce, so
-    refusing a deal because the arithmetic is off by a little would block real
-    business. But an order that is out by a factor of ten is a typo, and the
-    person typing it is the last one who can catch it cheaply.
+
+def _agrees(actual: Decimal, expected: Decimal) -> bool:
+    if expected == 0:
+        return actual == 0
+    return abs(actual - expected) / expected <= CONSISTENCY_TOLERANCE
+
+
+def check_consistent(figures: Figures) -> str | None:
+    """Do the three numbers agree with each other, either way round?
+
+    Both orientations are accepted, and that is the whole point of this
+    function's shape. A rate is quoted against one of the two currencies, and
+    which side of the deal that currency sits on **swaps between the client
+    and the supplier**: the client sends 250,000 EUR and receives 291,050 USDT
+    at 1.1642, while the supplier sends 290,000 USDT and receives 250,000 EUR
+    at 1.16. Multiply what each of them sends by their rate and the client's
+    figures agree while the supplier's are out by a third.
+
+    This was live for one evening testing only the client's orientation, so it
+    warned on every correct supplier order - found by putting a real deal
+    through rather than by any test, because the tests only ever fed it a
+    client's figures. A warning that fires every time is worse than no warning
+    at all: people learn to click past it, and the one that matters is the
+    tenfold typo on the client's side.
+
+    Accepting both is also the honest thing to do while the rate convention is
+    still an open question with NexterPay. Committing this check to one
+    orientation would be asserting an answer nobody has given yet, and a
+    genuine typo misses both readings anyway.
+
+    Returns a warning rather than raising. An operator who knows the deal is
+    right must be able to carry on.
     """
     if figures.rate == 0:
         return None
-    expected = figures.pays * figures.rate
-    if expected == 0:
+
+    # The client's shape: what they send, at the rate, is what they receive.
+    forward = figures.pays * figures.rate
+    # The supplier's: what they receive, at the rate, is what they send.
+    reverse = figures.receives * figures.rate
+
+    if _agrees(figures.receives, forward) or _agrees(figures.pays, reverse):
         return None
-    drift = abs(figures.receives - expected) / expected
-    if drift > Decimal("0.02"):
-        return (
-            f"Check these: {fx.format_money(figures.pays)} at "
-            f"{fx.format_money(figures.rate)} comes to about "
-            f"{fx.format_money(expected)}, not "
-            f"{fx.format_money(figures.receives)}."
-        )
-    return None
+
+    # Neither reading works, so this is arithmetic rather than convention.
+    # Reported in the forward direction because that is the one somebody
+    # typing a client order is holding in their head.
+    return (
+        f"Check these: {fx.format_money(figures.pays)} at "
+        f"{fx.format_money(figures.rate)} comes to about "
+        f"{fx.format_money(forward)}, not "
+        f"{fx.format_money(figures.receives)}."
+    )
 
 
 def default_account_name(side: FxSide, client: Client, supplier: Client | None) -> str:

@@ -484,6 +484,72 @@ def test_a_real_looking_hash_survives_the_paste() -> None:
     assert fx.check_hash(raw) == raw.strip()
 
 
+# --------------------------------------------------------------------------
+# The consistency check, which had the supplier's figures backwards
+#
+# Found by putting a real deal through Telegram, not by a test - every test it
+# had fed it a client's figures, so the orientation it got wrong was the one
+# nothing exercised. These are the actual numbers from that deal.
+# --------------------------------------------------------------------------
+
+def _figures(pays, pays_ccy, rate, receives, receives_ccy):
+    return handlers.Figures(
+        pays=Decimal(pays), pays_currency=pays_ccy,
+        rate=Decimal(rate),
+        receives=Decimal(receives), receives_currency=receives_ccy,
+    )
+
+
+def test_a_correct_supplier_order_does_not_warn() -> None:
+    """The supplier sends 290,000 USDT and receives 250,000 EUR at 1.16.
+
+    Correct, and it warned: "290,000 at 1.16 comes to about 336,400, not
+    250,000". It would have done that on every supplier order ever entered.
+    """
+    assert handlers.check_consistent(
+        _figures("290000", "USDT", "1.16", "250000", "EUR")
+    ) is None
+
+
+def test_a_correct_client_order_still_does_not_warn() -> None:
+    """The other half of the same deal, which was always fine."""
+    assert handlers.check_consistent(
+        _figures("250000", "EUR", "1.1642", "291050", "USDT")
+    ) is None
+
+
+def test_a_tenfold_typo_fails_both_readings() -> None:
+    """The check this exists for, and the thing accepting two orientations
+    could have cost. It does not: a missing zero misses both."""
+    warning = handlers.check_consistent(
+        _figures("250000", "EUR", "1.1642", "29105", "USDT")
+    )
+    assert warning is not None
+    assert "291,050" in warning
+
+
+def test_the_second_orientation_is_doing_real_work() -> None:
+    """Proving the fix is not vacuous.
+
+    If `_agrees` were simply loose enough to pass everything, these tests would
+    all pass while checking nothing. So: figures that only the reverse reading
+    accepts must pass, and the forward reading alone must reject them.
+    """
+    supplier = _figures("290000", "USDT", "1.16", "250000", "EUR")
+    forward_only = supplier.pays * supplier.rate
+    assert not handlers._agrees(supplier.receives, forward_only), (
+        "the supplier's figures agree forwards, so this test proves nothing"
+    )
+    assert handlers.check_consistent(supplier) is None
+
+
+def test_the_tolerance_is_wide_enough_for_real_pricing() -> None:
+    """Fees and spreads move the last digits. Refusing those blocks business."""
+    assert handlers.check_consistent(
+        _figures("250000", "EUR", "1.1642", "290500", "USDT")
+    ) is None
+
+
 def test_the_help_lists_the_route_for_finance_only() -> None:
     """A command nobody can find is not far off a command that does not exist,
     which is roughly what the last two hours were about."""
