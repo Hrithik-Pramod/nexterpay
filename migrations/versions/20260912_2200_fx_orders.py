@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 revision = 'e4b81f26aa07'
 down_revision = 'c7e2a9b41d63'
@@ -33,9 +34,7 @@ branch_labels = None
 depends_on = None
 
 
-# Named explicitly so the type exists on Postgres before the table that uses
-# it, and so the downgrade has something to drop.
-FX_ORDER_STATUS = sa.Enum(
+FX_STATUS_VALUES = (
     "rate_requested",
     "rate_quoted",
     "rate_rejected",
@@ -44,8 +43,31 @@ FX_ORDER_STATUS = sa.Enum(
     "awaiting_settlement",
     "awaiting_receipt",
     "closed",
-    name="fx_order_status",
 )
+
+
+def _status_type(is_postgres: bool):
+    """The column type for `status`, which differs by dialect for one reason.
+
+    On Postgres an enum is a real type that has to exist before the table that
+    uses it. Creating it explicitly and *also* passing a plain `sa.Enum` to
+    `create_table` means SQLAlchemy emits a second CREATE TYPE for the same
+    name, and the migration dies with DuplicateObjectError - which is exactly
+    how this one failed the first time it met a real database.
+
+    `create_type=False` says "this type already exists, just reference it", so
+    only the explicit create runs.
+
+    On SQLite there is no enum type at all; it becomes a VARCHAR with a check
+    constraint and nothing is created separately. Which is also why the whole
+    test suite passed while this was broken: the tests run on SQLite and never
+    execute the branch that failed.
+    """
+    if is_postgres:
+        return postgresql.ENUM(
+            *FX_STATUS_VALUES, name="fx_order_status", create_type=False
+        )
+    return sa.Enum(*FX_STATUS_VALUES, name="fx_order_status")
 
 # The new event types. Separate from STATUS_CHANGED because these carry money:
 # "the rate was set to 1.1642 by Gavin" is the line somebody reads back six
@@ -70,7 +92,11 @@ def upgrade() -> None:
     is_postgres = bind.dialect.name == "postgresql"
 
     if is_postgres:
-        FX_ORDER_STATUS.create(bind, checkfirst=True)
+        # checkfirst so a re-run after a partial failure does not trip on a
+        # type that is already there.
+        postgresql.ENUM(*FX_STATUS_VALUES, name="fx_order_status").create(
+            bind, checkfirst=True
+        )
 
     op.create_table(
         "fx_orders",
@@ -84,7 +110,7 @@ def upgrade() -> None:
         sa.Column("supplier_work_item_id", sa.Integer(), nullable=True),
         sa.Column(
             "status",
-            FX_ORDER_STATUS,
+            _status_type(is_postgres),
             nullable=False,
             server_default="rate_requested",
         ),
@@ -164,7 +190,9 @@ def downgrade() -> None:
     op.drop_table("fx_orders")
 
     if op.get_bind().dialect.name == "postgresql":
-        FX_ORDER_STATUS.drop(op.get_bind(), checkfirst=True)
+        postgresql.ENUM(*FX_STATUS_VALUES, name="fx_order_status").drop(
+            op.get_bind(), checkfirst=True
+        )
 
     # The event_type values are deliberately left in place. Postgres cannot
     # drop a value from an enum, and any events already written with one would
