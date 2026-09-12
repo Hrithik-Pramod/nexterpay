@@ -173,10 +173,15 @@ class OrderView:
 def view_for(order: FxOrder, side: FxSide) -> OrderView:
     """The one way figures leave NexterPay.
 
-    The reference matters as much as the numbers. A client is shown
-    `client_reference`, which never carries the supplier code - a client who
-    can see which supplier their deal sits with can work out who NexterPay buy
-    from, which is the first step to working out the margin.
+    The reference matters as much as the numbers, in both directions. A client
+    is shown `client_reference`, which never carries the supplier code - a
+    client who can see which supplier their deal sits with can work out who
+    NexterPay buy from. A supplier is shown `supplier_reference`, which never
+    carries the client's, for the mirror reason: a supplier who knows the
+    client and the volume can work out most of the margin.
+
+    `display_reference` - FXACME-SPEX-1042 - belongs to the Operations topic
+    and appears here for neither side.
     """
     if side is FxSide.CLIENT:
         return OrderView(
@@ -189,7 +194,7 @@ def view_for(order: FxOrder, side: FxSide) -> OrderView:
             receives_currency=order.client_receives_currency,
         )
     return OrderView(
-        reference=order.display_reference,
+        reference=order.supplier_reference,
         account_name=order.supplier_account_name,
         rate=order.supplier_rate,
         pays=order.supplier_pays,
@@ -403,8 +408,8 @@ async def quote_client(
         # Not forbidden - there are reasons to quote at or under cost - but it
         # should be a decision rather than a typo, and a typo is far likelier.
         raise FxError(
-            f"That quote is below the supplier's rate, so the deal would lose "
-            f"money. If that is deliberate, say so in the topic first."
+            "That quote is below the supplier's rate, so the deal would lose "
+            "money. If that is deliberate, say so in the topic first."
         )
     order.client_rate = rate
     if order.status is not FxOrderStatus.RATE_QUOTED:

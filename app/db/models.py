@@ -532,6 +532,21 @@ class FxOrder(Base, TimestampMixin):
         return f"FX#{self.reference}"
 
     @property
+    def supplier_reference(self) -> str:
+        """What the supplier is shown. Never carries the client's code.
+
+        The mirror of `client_reference`, and it exists for the same reason
+        pointing the other way. `display_reference` reads FXACME-SPEX-1042,
+        which is right for the topic and wrong for the supplier's group: a
+        supplier who can see the client code learns who they are quoting for,
+        and a supplier who knows the client and the volume can work out most of
+        what NexterPay make on them.
+        """
+        if self.supplier_code:
+            return f"FX{self.supplier_code}-{self.reference}"
+        return f"FX#{self.reference}"
+
+    @property
     def margin(self) -> Decimal | None:
         """What NexterPay make. Internal, and never rendered to either side."""
         if self.client_rate is None or self.supplier_rate is None:

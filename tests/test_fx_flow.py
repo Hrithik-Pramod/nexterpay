@@ -346,8 +346,7 @@ async def test_the_history_lives_on_the_client_request(
     session, acme_support, support_ops, operator
 ):
     """So /nphistory shows the whole deal rather than half of it."""
-    actor = Actor.of(operator)
-    item, _, order = await _deal(session, acme_support, operator)
+    item, _, _ = await _deal(session, acme_support, operator)
 
     from app.domain.history import load_events
 

@@ -64,6 +64,10 @@ class _Order:
         return f"FX{self.client_code}-{self.reference}"
 
     @property
+    def supplier_reference(self) -> str:
+        return f"FX{self.supplier_code}-{self.reference}"
+
+    @property
     def margin(self):
         return self.client_rate - self.supplier_rate
 
@@ -138,6 +142,18 @@ def test_the_supplier_view_does_not_carry_our_rate() -> None:
 
     assert "1.1642" not in rendered
     assert "291,050" not in rendered
+
+
+def test_the_supplier_reference_never_carries_the_client_code() -> None:
+    """The mirror of the rule pointing the other way, and the one that was
+    wrong first time: `display_reference` reads FXACME-SPEX-1042, which is
+    right for the topic and would have told the supplier exactly who they were
+    quoting for.
+    """
+    view = fx.view_for(_Order(), FxSide.SUPPLIER)
+    assert "ACME" not in view.reference
+    assert view.reference == "FXSPEX-1042"
+    assert "ACME" not in " ".join(view.lines())
 
 
 # --------------------------------------------------------------------------
