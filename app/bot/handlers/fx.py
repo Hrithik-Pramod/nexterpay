@@ -38,7 +38,7 @@ from app.bot.deps import explain, gateway, prompt_for, refusal_reason, staff_con
 from app.db.base import session_scope
 from app.db.models import Chat, Client, FxOrder, WorkItem
 from app.domain import fx
-from app.domain.enums import ChatKind, FxOrderStatus, FxSide
+from app.domain.enums import ChatKind, FxOrderStatus, FxSide, WorkItemStatus
 from app.domain.work_items import Actor
 from app.services import fx_relay
 
@@ -51,6 +51,28 @@ class FxCompose(StatesGroup):
     awaiting_rate = State()
     awaiting_receives = State()
     awaiting_name = State()
+
+
+class FxQuote(StatesGroup):
+    """Recording what the supplier quoted us, and what we are quoting the client.
+
+    Two rates in one flow rather than two commands, because they are decided
+    together: our price is the supplier's plus the margin, and a desk that has
+    just been given one is thinking about the other. Splitting them would also
+    leave a deal sitting with a supplier rate and no client rate, which is a
+    state nobody can act on and everybody would have to explain.
+    """
+
+    awaiting_supplier_rate = State()
+    awaiting_client_rate = State()
+
+
+class FxHash(StatesGroup):
+    awaiting_hash = State()
+
+
+class FxReject(StatesGroup):
+    awaiting_reason = State()
 
 
 # --------------------------------------------------------------------------
@@ -179,15 +201,153 @@ def _send_keyboard(order_id: int, side: FxSide) -> InlineKeyboardMarkup:
 
 
 # --------------------------------------------------------------------------
+# The rate decisions
+#
+# Steps 3 and 4 of the route, which had no door at all until now. The order
+# commands were built first and each of them refuses a deal that has not been
+# quoted, so the flow ended one step after it began: the state machine was
+# right and there was no way to satisfy it. Pulled out here for the same reason
+# as everything else in this section - a test can call a function and cannot
+# call an FSM handler.
+# --------------------------------------------------------------------------
+
+# Where a rate can still be entered. Not simply "not closed": once a client has
+# confirmed figures, the price is fixed, and re-quoting from there would change
+# a deal somebody has already agreed to.
+QUOTABLE = (
+    FxOrderStatus.RATE_REQUESTED,
+    FxOrderStatus.RATE_QUOTED,
+    FxOrderStatus.RATE_REJECTED,
+)
+
+# A margin wider than this is reported to the desk before anything is saved.
+# Not refused - NexterPay set the prices, not this bot - but 1.1642 typed as
+# 11.642 is a tenfold error that looks exactly like a good day until somebody
+# sends it to a client, and a decimal point is the easiest key on the board to
+# miss.
+MARGIN_WARNING = Decimal("0.10")
+
+
+def check_margin(supplier_rate: Decimal | None, client_rate: Decimal) -> str | None:
+    """Does the pair of rates look like a price, or like a typo?
+
+    Returns a warning, never an exception. `fx.quote_client` already refuses a
+    client rate below the supplier's, which is the case that loses money; this
+    catches the opposite mistake, which loses a client.
+    """
+    if supplier_rate is None or supplier_rate <= 0:
+        return None
+    if client_rate < supplier_rate:
+        return (
+            f"That is below the supplier's {fx.format_money(supplier_rate)}, so "
+            f"the deal would lose money."
+        )
+    spread = (client_rate - supplier_rate) / supplier_rate
+    if spread > MARGIN_WARNING:
+        percent = (spread * 100).quantize(Decimal("0.1"))
+        return (
+            f"That is {percent}% over the supplier's "
+            f"{fx.format_money(supplier_rate)}. Check the decimal point."
+        )
+    return None
+
+
+def quote_preview(
+    reference: str,
+    supplier_name: str,
+    supplier_rate: Decimal | None,
+    client_rate: Decimal,
+) -> str:
+    """What the desk reads before the two rates are saved.
+
+    Shows both, and the margin between them, which is the one number on this
+    platform that must never leave the Operations Group. It is safe here
+    because this message is composed for a staff topic and is never passed to
+    `fx_relay` - the three functions that write to a counterparty all compose
+    through `fx.view_for`, and none of them can reach this text.
+    """
+    lines = [f"{reference} — rates, not yet saved", ""]
+    if supplier_rate is None:
+        # Revising our own price on a deal already quoted. The supplier's rate
+        # is on the deal but was not entered in this flow, and showing a figure
+        # this screen did not collect would invite somebody to correct it here.
+        lines.append(f"We quote the client: {fx.format_money(client_rate)}")
+    else:
+        lines += [
+            f"{supplier_name} quoted us: {fx.format_money(supplier_rate)}",
+            f"We quote the client:   {fx.format_money(client_rate)}",
+            f"Margin:                {fx.format_money(client_rate - supplier_rate)}",
+        ]
+    lines += [
+        "",
+        "Saving this records the rate and moves the deal to Rate Quoted.",
+        "Nothing is sent to either party.",
+    ]
+    return "\n".join(lines)
+
+
+def rejectable_sides(order: FxOrder) -> list[FxSide]:
+    """Which rejection is available on a deal, given where it is.
+
+    Both exist - NexterPay described them as separate return paths on
+    12 September - but never at the same moment. A supplier's rate can be
+    turned down while we are still shopping for a price; ours can be turned
+    down only once the client has been given it. Offering both always would
+    mean offering one that the domain will refuse, which is a button that
+    exists to produce an error message.
+    """
+    sides: list[FxSide] = []
+    if (
+        order.status in (FxOrderStatus.RATE_REQUESTED, FxOrderStatus.RATE_REJECTED)
+        and order.supplier_rate is not None
+    ):
+        sides.append(FxSide.SUPPLIER)
+    if order.status in (
+        FxOrderStatus.RATE_QUOTED,
+        FxOrderStatus.AWAITING_CLIENT_CONFIRMATION,
+    ):
+        sides.append(FxSide.CLIENT)
+    return sides
+
+
+def reject_prompt(side: FxSide) -> str:
+    """Two different questions, because they lead to two different next moves.
+
+    A supplier's price being no good is our judgement and the reason is ours.
+    A client turning our price down is their words, and "too high" and "we have
+    a better price elsewhere" are not the same conversation afterwards - which
+    is why `fx.reject_client_rate` keeps the reason verbatim.
+    """
+    if side is FxSide.SUPPLIER:
+        return (
+            "Why is that rate no good? This is recorded against the deal. The "
+            "supplier is told only that we cannot work with it — never the "
+            "reason, and never the rate we went with instead."
+        )
+    return (
+        "What did the client say? Their own words are worth more than a "
+        "summary here — “too high” and “we have a better price elsewhere” "
+        "lead to different conversations."
+    )
+
+
+# --------------------------------------------------------------------------
 # Picking the deal
 # --------------------------------------------------------------------------
 
-async def _open_deals(session) -> list[FxOrder]:
-    result = await session.execute(
-        select(FxOrder)
-        .where(FxOrder.status != FxOrderStatus.CLOSED)
-        .order_by(FxOrder.reference)
-    )
+async def _open_deals(
+    session, *, allowed: tuple[FxOrderStatus, ...] | None = None
+) -> list[FxOrder]:
+    """Every live deal, or only those a particular step can act on.
+
+    Filtering in the query rather than listing everything and refusing later.
+    A picker that offers a deal and then says no is how somebody learns the
+    state machine by trial and error in front of a client.
+    """
+    query = select(FxOrder).where(FxOrder.status != FxOrderStatus.CLOSED)
+    if allowed is not None:
+        query = query.where(FxOrder.status.in_(allowed))
+    result = await session.execute(query.order_by(FxOrder.reference))
     return list(result.scalars().all())
 
 
@@ -579,6 +739,704 @@ async def _group_for_side(session, order: FxOrder, side: FxSide) -> int | None:
 
 
 # --------------------------------------------------------------------------
+# `/npquote` - steps 3 and 4
+# --------------------------------------------------------------------------
+
+def _pick_keyboard(orders: list[FxOrder], verb: str) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(
+            text=f"{o.display_reference} · {o.status.label}"[:60],
+            callback_data=f"fx:{verb}:{o.id}",
+        )]
+        for o in orders
+    ]
+    rows.append([InlineKeyboardButton(text="Cancel", callback_data="fx:cancel:0")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _action_keyboard(label: str, data: str) -> InlineKeyboardMarkup:
+    """One thing to do, and a way out of doing it.
+
+    A function rather than four copies of the same two rows, and not for
+    tidiness: a keyboard built inline inside a handler is invisible to the test
+    that checks every button reaches a handler, because that test can only
+    inspect keyboards it can construct. Two of this project's bugs were dead
+    or missing buttons, and both were in code no test could call.
+    """
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=label, callback_data=data)],
+        [InlineKeyboardButton(text="Cancel", callback_data="fx:cancel:0")],
+    ])
+
+
+def _supplier_keyboard(order_id: int, requests) -> InlineKeyboardMarkup:
+    """Which supplier request this deal is priced against.
+
+    `requests` is a list of (work item, supplier) as `_supplier_requests`
+    returns it. The subject is on the button because a supplier with three open
+    requests is ordinary, and the reference alone does not say which of them
+    asked for a price.
+    """
+    rows = [
+        [InlineKeyboardButton(
+            text=f"{item.display_reference} · {client.name} · {item.subject}"[:60],
+            callback_data=f"fx:qsup:{order_id}:{item.id}",
+        )]
+        for item, client in requests
+    ]
+    rows.append([InlineKeyboardButton(text="Cancel", callback_data="fx:cancel:0")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _side_keyboard(order_id: int, sides: list[FxSide]) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(
+            text=(
+                "The supplier's rate is no good" if side is FxSide.SUPPLIER
+                else "The client turned our rate down"
+            ),
+            callback_data=f"fx:rside:{order_id}:{side.value}",
+        )]
+        for side in sides
+    ]
+    rows.append([InlineKeyboardButton(text="Cancel", callback_data="fx:cancel:0")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _supplier_requests(session, department) -> list[tuple[WorkItem, Client]]:
+    """Open requests sitting in supplier groups for this department.
+
+    This is how a deal learns which supplier it belongs to, and it is
+    deliberately not a list of suppliers. The supplier half of an FX deal is
+    conducted on a real request in their group - the one raised with
+    `/npnewsu` asking for a price - and pointing the deal at that request is
+    what later lets the order reach them at all: `fx_relay` resolves the
+    group through the work item, so a deal with no supplier request has
+    nowhere to send anything.
+
+    Scoped to the department for the same reason `/npnewsu` is: a Finance desk
+    has no business pricing a deal against a Support supplier's request.
+    """
+    query = (
+        select(WorkItem, Client)
+        .join(Chat, WorkItem.source_chat_id == Chat.id)
+        .join(Client, WorkItem.client_id == Client.id)
+        .where(
+            Chat.is_supplier.is_(True),
+            Chat.is_active.is_(True),
+            WorkItem.department == department,
+            WorkItem.status.notin_(
+                [WorkItemStatus.COMPLETED, WorkItemStatus.CLOSED]
+            ),
+        )
+        .order_by(WorkItem.reference.desc())
+        .limit(30)
+    )
+    result = await session.execute(query)
+    return [(item, client) for item, client in result.all()]
+
+
+@router.message(cmd.any_case(cmd.QUOTE))
+async def quote(message: Message, state: FSMContext) -> None:
+    """`/npquote` - what the supplier quoted us, and what we quote the client.
+
+    The step that was missing. Both order commands refuse a deal that has not
+    been quoted, and nothing could quote one, so every deal stopped at Rate
+    Requested with a correct refusal and no way past it.
+    """
+    user = message.from_user
+    async with session_scope() as session:
+        ctx = await staff_context(session, message.chat.id, user.id if user else None)
+        if ctx is None:
+            await message.reply(
+                await refusal_reason(
+                    user.id if user else None, session, message.chat.id
+                )
+            )
+            return
+        deals = await _open_deals(session, allowed=QUOTABLE)
+        markup = _pick_keyboard(deals, "qdeal") if deals else None
+
+    if not deals:
+        await message.reply(
+            "No deal is waiting on a rate. A deal starts from the client's "
+            "request — open it in this group and use More → Start FX deal."
+        )
+        return
+
+    await state.clear()
+    await message.reply("Which deal are you pricing?", reply_markup=markup)
+
+
+@router.callback_query(F.data.startswith("fx:qdeal:"))
+async def quote_pick_deal(query: CallbackQuery, state: FSMContext) -> None:
+    """Where the flow forks.
+
+    A deal that has never been priced needs a supplier before it needs a rate,
+    because the supplier's request is where the order will eventually be sent.
+    A deal already at Rate Quoted has one, and the domain will not accept a
+    second supplier rate at that point - so this is a revision of our own price
+    and asking for theirs again would be asking for something unusable.
+    """
+    order_id = int((query.data or "").split(":")[2])
+
+    async with session_scope() as session:
+        ctx = await staff_context(
+            session, query.message.chat.id,
+            query.from_user.id if query.from_user else None,
+        )
+        if ctx is None:
+            await query.answer("You are not registered as staff.", show_alert=True)
+            return
+        ops_chat, _ = ctx
+        order = await session.get(FxOrder, order_id)
+        if order is None:
+            await query.answer("That deal no longer exists.", show_alert=True)
+            return
+        reference = order.display_reference
+        already_quoted = order.status is FxOrderStatus.RATE_QUOTED
+        supplier_rate = order.supplier_rate
+        requests = [] if already_quoted else await _supplier_requests(
+            session, ops_chat.department
+        )
+        markup = _supplier_keyboard(order_id, requests) if requests else None
+
+    await query.answer()
+
+    if already_quoted:
+        # Our price only. Said plainly rather than silently skipping a step,
+        # because a desk that expected to be asked for the supplier's rate
+        # should know why it was not.
+        await state.set_state(FxQuote.awaiting_client_rate)
+        await state.update_data(
+            order_id=order_id,
+            supplier_work_item_id=None,
+            supplier_rate=str(supplier_rate) if supplier_rate is not None else None,
+        )
+        text, markup, mode = prompt_for(
+            query.from_user,
+            f"{reference} already has the supplier's rate recorded "
+            f"({fx.format_money(supplier_rate)}), so this changes our price to "
+            f"the client only. What are we quoting?",
+            placeholder="Our rate",
+        )
+        await query.message.answer(text, reply_markup=markup, parse_mode=mode)
+        return
+
+    if markup is None:
+        await query.message.answer(
+            f"{reference} has no supplier request to price against. Raise one "
+            f"with /{cmd.NEW_SUPPLIER} first — that is the message asking them "
+            f"for a rate, and the deal is priced against it."
+        )
+        return
+
+    await state.clear()
+    await query.message.answer(
+        f"{reference} — which supplier request is this price against?",
+        reply_markup=markup,
+    )
+
+
+@router.callback_query(F.data.startswith("fx:qsup:"))
+async def quote_pick_supplier(query: CallbackQuery, state: FSMContext) -> None:
+    _, _, order_id, work_item_id = (query.data or "").split(":")
+
+    async with session_scope() as session:
+        ctx = await staff_context(
+            session, query.message.chat.id,
+            query.from_user.id if query.from_user else None,
+        )
+        if ctx is None:
+            await query.answer("You are not registered as staff.", show_alert=True)
+            return
+        ops_chat, _ = ctx
+        # Re-resolved against the department rather than trusted. A callback
+        # carries whatever id it was built with, and this one decides which
+        # group an order will later be sent to.
+        allowed = await _supplier_requests(session, ops_chat.department)
+        chosen = next(
+            ((i, c) for i, c in allowed if i.id == int(work_item_id)), None
+        )
+        if chosen is None:
+            await query.answer(
+                "That request is not one this department can price against.",
+                show_alert=True,
+            )
+            return
+        item, supplier = chosen
+        supplier_name = supplier.name
+
+    await state.set_state(FxQuote.awaiting_supplier_rate)
+    await state.update_data(
+        order_id=int(order_id),
+        supplier_work_item_id=item.id,
+        supplier_name=supplier_name,
+    )
+    text, markup, mode = prompt_for(
+        query.from_user,
+        f"What rate did {supplier_name} quote us?",
+        placeholder="Their rate",
+    )
+    await query.message.answer(text, reply_markup=markup, parse_mode=mode)
+    await query.answer()
+
+
+@router.message(FxQuote.awaiting_supplier_rate)
+async def capture_supplier_rate(message: Message, state: FSMContext) -> None:
+    try:
+        rate = fx.parse_rate(message.text or "")
+    except fx.FxError as exc:
+        await message.reply(str(exc))
+        return
+
+    await state.update_data(supplier_rate=str(rate))
+    await state.set_state(FxQuote.awaiting_client_rate)
+    text, markup, mode = prompt_for(
+        message.from_user,
+        "And what are we quoting the client?",
+        placeholder="Our rate",
+    )
+    await message.answer(text, reply_markup=markup, parse_mode=mode)
+
+
+@router.message(FxQuote.awaiting_client_rate)
+async def capture_client_rate(message: Message, state: FSMContext) -> None:
+    try:
+        client_rate = fx.parse_rate(message.text or "")
+    except fx.FxError as exc:
+        await message.reply(str(exc))
+        return
+
+    data = await state.get_data()
+    raw = data.get("supplier_rate")
+    supplier_rate = Decimal(raw) if raw is not None else None
+    warning = check_margin(supplier_rate, client_rate)
+
+    await state.update_data(client_rate=str(client_rate))
+
+    async with session_scope() as session:
+        order = await session.get(FxOrder, data["order_id"])
+        if order is None:
+            await state.clear()
+            await message.reply("That deal no longer exists.")
+            return
+        reference = order.display_reference
+
+    if warning:
+        await message.answer(f"⚠ {warning}")
+
+    await message.answer(
+        quote_preview(
+            reference,
+            data.get("supplier_name") or "The supplier",
+            supplier_rate if data.get("supplier_work_item_id") else None,
+            client_rate,
+        ),
+        reply_markup=_action_keyboard(
+            "✅ Save these rates", f"fx:qsave:{data['order_id']}"
+        ),
+    )
+
+
+@router.callback_query(F.data.startswith("fx:qsave:"))
+async def quote_save(query: CallbackQuery, state: FSMContext) -> None:
+    """Both rates, in one transaction.
+
+    In that order, and together. The supplier's rate has to be on the deal
+    before ours is checked against it, and `fx.quote_client` refuses a price
+    below cost - a check worth nothing if the two were saved separately and
+    somebody stopped halfway.
+    """
+    order_id = int((query.data or "").split(":")[2])
+    data = await state.get_data()
+    await query.answer()
+
+    if data.get("order_id") != order_id or "client_rate" not in data:
+        await state.clear()
+        await query.message.answer("That draft has already been saved, or it expired.")
+        return
+
+    async with session_scope() as session:
+        ctx = await staff_context(
+            session, query.message.chat.id,
+            query.from_user.id if query.from_user else None,
+        )
+        if ctx is None:
+            await query.message.answer("You are not registered as staff.")
+            return
+        _, actor = ctx
+        order = await session.get(FxOrder, order_id)
+        if order is None:
+            await state.clear()
+            await query.message.answer("That deal no longer exists.")
+            return
+
+        try:
+            work_item_id = data.get("supplier_work_item_id")
+            if work_item_id is not None:
+                supplier_item = await session.get(WorkItem, work_item_id)
+                supplier = await session.get(Client, supplier_item.client_id)
+                await fx.record_supplier_quote(
+                    session, order,
+                    supplier=supplier,
+                    supplier_work_item=supplier_item,
+                    rate=Decimal(data["supplier_rate"]),
+                    actor=actor,
+                )
+            await fx.quote_client(
+                session, order, rate=Decimal(data["client_rate"]), actor=actor
+            )
+            reference, status = order.display_reference, order.status
+        except Exception as exc:
+            logger.exception("FX quote failed for %s", order_id)
+            await query.message.answer(explain(exc))
+            return
+
+    await state.clear()
+    await query.message.answer(
+        f"{reference} is now {status.label}.\n\n"
+        f"Tell the client the rate in their group, then use /{cmd.ORDER_CLIENT} "
+        f"to create their order."
+    )
+
+
+# --------------------------------------------------------------------------
+# `/nphash` - step 10
+# --------------------------------------------------------------------------
+
+@router.message(cmd.any_case(cmd.HASH))
+async def settle(message: Message, state: FSMContext) -> None:
+    """`/nphash` - the supplier has sent the money, and here is the proof."""
+    user = message.from_user
+    async with session_scope() as session:
+        ctx = await staff_context(session, message.chat.id, user.id if user else None)
+        if ctx is None:
+            await message.reply(
+                await refusal_reason(
+                    user.id if user else None, session, message.chat.id
+                )
+            )
+            return
+        deals = await _open_deals(session, allowed=(FxOrderStatus.AWAITING_SETTLEMENT,))
+        markup = _pick_keyboard(deals, "hdeal") if deals else None
+
+    if not deals:
+        await message.reply(
+            "No deal is waiting on settlement. A deal reaches that point once "
+            "the supplier has accepted their order."
+        )
+        return
+
+    await state.clear()
+    await message.reply("Which deal has settled?", reply_markup=markup)
+
+
+@router.callback_query(F.data.startswith("fx:hdeal:"))
+async def settle_pick_deal(query: CallbackQuery, state: FSMContext) -> None:
+    order_id = int((query.data or "").split(":")[2])
+
+    async with session_scope() as session:
+        ctx = await staff_context(
+            session, query.message.chat.id,
+            query.from_user.id if query.from_user else None,
+        )
+        if ctx is None:
+            await query.answer("You are not registered as staff.", show_alert=True)
+            return
+        order = await session.get(FxOrder, order_id)
+        if order is None:
+            await query.answer("That deal no longer exists.", show_alert=True)
+            return
+        reference = order.display_reference
+
+    await state.set_state(FxHash.awaiting_hash)
+    await state.update_data(order_id=order_id)
+    text, markup, mode = prompt_for(
+        query.from_user,
+        f"{reference} — paste the transaction hash. It goes to the client as "
+        f"proof, so paste it rather than typing it.",
+        placeholder="Transaction hash",
+    )
+    await query.message.answer(text, reply_markup=markup, parse_mode=mode)
+    await query.answer()
+
+
+@router.message(FxHash.awaiting_hash)
+async def capture_hash(message: Message, state: FSMContext) -> None:
+    """Checked here with the same function the domain uses to check it.
+
+    Not a second implementation of "does this look like a hash". The point of
+    checking early is to catch a truncated paste while the person still has the
+    real one on their clipboard, and a check that disagreed with the one at the
+    end would be worse than no check at all.
+    """
+    try:
+        tx_hash = fx.check_hash(message.text or "")
+    except fx.FxError as exc:
+        await message.reply(str(exc))
+        return
+
+    data = await state.get_data()
+    async with session_scope() as session:
+        order = await session.get(FxOrder, data["order_id"])
+        if order is None:
+            await state.clear()
+            await message.reply("That deal no longer exists.")
+            return
+        reference, chain = order.display_reference, order.chain
+
+    await state.update_data(tx_hash=tx_hash)
+    link = fx.explorer_link(chain, tx_hash)
+    lines = [
+        f"{reference} — settlement, not yet sent",
+        "",
+        tx_hash,
+    ]
+    if link:
+        lines.append(link)
+    lines += [
+        "",
+        "Sending this passes it to the client with the amount they receive, "
+        "and asks them to confirm the funds have arrived. The supplier's side "
+        "of the deal is not mentioned.",
+    ]
+
+    await message.answer(
+        "\n".join(lines),
+        reply_markup=_action_keyboard(
+            "✉ Send to the client", f"fx:hsend:{data['order_id']}"
+        ),
+    )
+
+
+@router.callback_query(F.data.startswith("fx:hsend:"))
+async def settle_send(query: CallbackQuery, state: FSMContext) -> None:
+    order_id = int((query.data or "").split(":")[2])
+    data = await state.get_data()
+    await query.answer()
+
+    if data.get("order_id") != order_id or "tx_hash" not in data:
+        await state.clear()
+        await query.message.answer("That draft has already been sent, or it expired.")
+        return
+
+    async with session_scope() as session:
+        ctx = await staff_context(
+            session, query.message.chat.id,
+            query.from_user.id if query.from_user else None,
+        )
+        if ctx is None:
+            await query.message.answer("You are not registered as staff.")
+            return
+        _, actor = ctx
+        order = await session.get(FxOrder, order_id)
+        if order is None:
+            await state.clear()
+            await query.message.answer("That deal no longer exists.")
+            return
+
+        try:
+            await fx.record_hash(session, order, tx_hash=data["tx_hash"], actor=actor)
+            await fx_relay.send_settlement(
+                session, gateway(), order, actor=actor,
+                keyboard=receipt_keyboard(order.id),
+            )
+        except Exception as exc:
+            logger.exception("FX settlement send failed for %s", order_id)
+            await query.message.answer(explain(exc))
+            return
+
+    await state.clear()
+    await query.message.answer("Sent to the client, with a button to confirm receipt.")
+
+
+# --------------------------------------------------------------------------
+# `/npreject` - the two return paths
+# --------------------------------------------------------------------------
+
+@router.message(cmd.any_case(cmd.REJECT))
+async def reject(message: Message, state: FSMContext) -> None:
+    """`/npreject` - a rate turned down, by us or by the client.
+
+    One command for both, unlike the order commands, and for the opposite
+    reason: which side is being rejected is decided by where the deal already
+    is rather than by what the desk intends, so asking would be asking a
+    question the bot can already answer.
+    """
+    user = message.from_user
+    async with session_scope() as session:
+        ctx = await staff_context(session, message.chat.id, user.id if user else None)
+        if ctx is None:
+            await message.reply(
+                await refusal_reason(
+                    user.id if user else None, session, message.chat.id
+                )
+            )
+            return
+        deals = [d for d in await _open_deals(session) if rejectable_sides(d)]
+        markup = _pick_keyboard(deals, "rdeal") if deals else None
+
+    if not deals:
+        await message.reply(
+            "No deal has a rate that can be turned down. There has to be a "
+            "price on the table first."
+        )
+        return
+
+    await state.clear()
+    await message.reply("Which deal?", reply_markup=markup)
+
+
+@router.callback_query(F.data.startswith("fx:rdeal:"))
+async def reject_pick_deal(query: CallbackQuery, state: FSMContext) -> None:
+    order_id = int((query.data or "").split(":")[2])
+
+    async with session_scope() as session:
+        ctx = await staff_context(
+            session, query.message.chat.id,
+            query.from_user.id if query.from_user else None,
+        )
+        if ctx is None:
+            await query.answer("You are not registered as staff.", show_alert=True)
+            return
+        order = await session.get(FxOrder, order_id)
+        if order is None:
+            await query.answer("That deal no longer exists.", show_alert=True)
+            return
+        sides = rejectable_sides(order)
+        reference = order.display_reference
+
+    await query.answer()
+
+    if not sides:
+        await query.message.answer(
+            f"{reference} has moved on and no longer has a rate to turn down."
+        )
+        return
+
+    if len(sides) == 1:
+        await _ask_reason(query, state, order_id, sides[0])
+        return
+
+    await query.message.answer(
+        f"{reference} — which way round?",
+        reply_markup=_side_keyboard(order_id, sides),
+    )
+
+
+@router.callback_query(F.data.startswith("fx:rside:"))
+async def reject_pick_side(query: CallbackQuery, state: FSMContext) -> None:
+    _, _, order_id, side_value = (query.data or "").split(":")
+    await query.answer()
+    await _ask_reason(query, state, int(order_id), FxSide(side_value))
+
+
+async def _ask_reason(
+    query: CallbackQuery, state: FSMContext, order_id: int, side: FxSide
+) -> None:
+    await state.set_state(FxReject.awaiting_reason)
+    await state.update_data(order_id=order_id, side=side.value)
+    text, markup, mode = prompt_for(
+        query.from_user, reject_prompt(side), placeholder="The reason",
+    )
+    await query.message.answer(text, reply_markup=markup, parse_mode=mode)
+
+
+@router.message(FxReject.awaiting_reason)
+async def capture_reason(message: Message, state: FSMContext) -> None:
+    reason = (message.text or "").strip()
+    if not reason:
+        await message.reply("Give me a reason — it is what the history will show.")
+        return
+
+    data = await state.get_data()
+    side = FxSide(data["side"])
+    await state.update_data(reason=reason)
+
+    async with session_scope() as session:
+        order = await session.get(FxOrder, data["order_id"])
+        if order is None:
+            await state.clear()
+            await message.reply("That deal no longer exists.")
+            return
+        reference = order.display_reference
+
+    if side is FxSide.SUPPLIER:
+        consequence = (
+            "The supplier is told we cannot work with that rate, and nothing "
+            "else — not the reason, and not the rate we go with instead. The "
+            "deal stays open for another price."
+        )
+    else:
+        consequence = (
+            "Recorded against the deal, and the deal goes back to being "
+            "unpriced. Nothing is sent to anybody."
+        )
+
+    await message.answer(
+        f"{reference} — not yet recorded\n\n{reason}\n\n{consequence}",
+        reply_markup=_action_keyboard(
+            "✅ Record it", f"fx:rsave:{data['order_id']}:{side.value}"
+        ),
+    )
+
+
+@router.callback_query(F.data.startswith("fx:rsave:"))
+async def reject_save(query: CallbackQuery, state: FSMContext) -> None:
+    _, _, order_id, side_value = (query.data or "").split(":")
+    side = FxSide(side_value)
+    data = await state.get_data()
+    await query.answer()
+
+    if data.get("order_id") != int(order_id) or "reason" not in data:
+        await state.clear()
+        await query.message.answer("That draft has already been recorded, or it expired.")
+        return
+
+    async with session_scope() as session:
+        ctx = await staff_context(
+            session, query.message.chat.id,
+            query.from_user.id if query.from_user else None,
+        )
+        if ctx is None:
+            await query.message.answer("You are not registered as staff.")
+            return
+        _, actor = ctx
+        order = await session.get(FxOrder, int(order_id))
+        if order is None:
+            await state.clear()
+            await query.message.answer("That deal no longer exists.")
+            return
+
+        try:
+            if side is FxSide.SUPPLIER:
+                await fx.reject_supplier_rate(
+                    session, order, reason=data["reason"], actor=actor
+                )
+                await fx_relay.notify_rejected(
+                    session, gateway(), order, actor=actor, reason=data["reason"]
+                )
+                outcome = "Told the supplier, and the deal is open for another price."
+            else:
+                await fx.reject_client_rate(
+                    session, order, reason=data["reason"], actor=actor
+                )
+                outcome = (
+                    f"Recorded. {order.display_reference} is now "
+                    f"{order.status.label} — go back to the supplier, then "
+                    f"/{cmd.QUOTE} again."
+                )
+        except Exception as exc:
+            logger.exception("FX rejection failed for %s", order_id)
+            await query.message.answer(explain(exc))
+            return
+
+    await state.clear()
+    await query.message.answer(outcome)
+
+
+# --------------------------------------------------------------------------
 # Looking at the book
 # --------------------------------------------------------------------------
 
@@ -632,13 +1490,18 @@ async def start_deal(session, item: WorkItem, actor: Actor) -> FxOrder:
 
 
 __all__ = [
+    "QUOTABLE",
     "Figures",
     "check_consistent",
+    "check_margin",
     "confirm_keyboard",
     "default_account_name",
     "parse_pair",
     "preview_text",
+    "quote_preview",
     "receipt_keyboard",
+    "reject_prompt",
+    "rejectable_sides",
     "router",
     "start_deal",
 ]

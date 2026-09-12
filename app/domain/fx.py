@@ -126,6 +126,30 @@ def format_money(value: Decimal | None) -> str:
     return text
 
 
+def check_hash(text: str) -> str:
+    """A transaction hash, or a clear refusal.
+
+    Pulled out of `record_hash` so the same check can run the moment somebody
+    pastes one, while the real hash is still on their clipboard. A truncated
+    paste caught at the end of a flow means finding it again; caught on entry
+    it means pressing ctrl+v twice.
+
+    Deliberately shallow - length and no whitespace. Tron and Ethereum hashes
+    differ in shape, chains get added, and a strict pattern would start
+    refusing valid hashes the first time NexterPay settle somewhere new. What
+    it catches is the mistake that actually happens: half a hash.
+    """
+    cleaned = (text or "").strip()
+    if not cleaned:
+        raise FxError("A settlement needs a hash.")
+    if len(cleaned) < 16 or " " in cleaned:
+        raise FxError(
+            f"“{cleaned}” does not look like a transaction hash. It goes to the "
+            f"client as proof, so it is worth pasting again."
+        )
+    return cleaned
+
+
 def explorer_link(chain: str, tx_hash: str) -> str | None:
     template = EXPLORERS.get((chain or "").lower())
     return template.format(hash=tx_hash) if template else None
@@ -557,14 +581,7 @@ async def record_hash(
     """
     actor.require(ROLE_REQUIRED_TO_RECORD_HASH)
     _require_state(order, FxOrderStatus.AWAITING_SETTLEMENT)
-    cleaned = (tx_hash or "").strip()
-    if not cleaned:
-        raise FxError("A settlement needs a hash.")
-    if len(cleaned) < 16 or " " in cleaned:
-        raise FxError(
-            f"“{cleaned}” does not look like a transaction hash. It goes to the "
-            f"client as proof, so it is worth pasting again."
-        )
+    cleaned = check_hash(tx_hash)
     order.tx_hash = cleaned
     order.settled_at = utcnow()
     _move(order, FxOrderStatus.AWAITING_RECEIPT)

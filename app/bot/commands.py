@@ -121,6 +121,19 @@ ORDER_CLIENT = _c("ordercl")
 ORDER_SUPPLIER = _c("ordersu")
 FX_DEALS = _c("fx")
 
+# The rest of the FX route. These three exist because the twelve steps
+# NexterPay described are not all order creation: a deal spends most of its
+# life between the rate being asked for and the money arriving, and every one
+# of those moves has to be recordable or the book is fiction.
+#
+# `/npquote` carries both rates - the supplier's to us and ours to the client -
+# because they are entered in the same breath and the second is only meaningful
+# beside the first. `/nphash` closes the settlement. `/npreject` is the return
+# path, which exists on both sides.
+QUOTE = _c("quote")
+HASH = _c("hash")
+REJECT = _c("reject")
+
 # Anywhere
 START = "start"
 START_ALIAS = _c("start")
@@ -136,6 +149,6 @@ ALL = [
     WORKLOAD, SETCODE, ADDPARTY, BROADCAST,
     SETLEAD, LEADS, REMOVELEAD, SETUP, HELP, ROLE,
     NEW_CLIENT, NEW_SUPPLIER,
-    ORDER_CLIENT, ORDER_SUPPLIER, FX_DEALS,
+    ORDER_CLIENT, ORDER_SUPPLIER, FX_DEALS, QUOTE, HASH, REJECT,
     START, START_ALIAS, WHOAMI,
 ]

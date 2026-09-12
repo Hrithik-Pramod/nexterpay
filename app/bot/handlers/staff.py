@@ -974,8 +974,10 @@ async def _apply(
         await query.message.reply(
             f"FX deal {order.display_reference} opened against "
             f"{item.display_reference}.\n\n"
-            f"Ask the supplier for a rate, then use /{cmd.ORDER_CLIENT} to "
-            f"create the client's order and /{cmd.ORDER_SUPPLIER} for theirs."
+            f"Next: /{cmd.NEW_SUPPLIER} to ask a supplier for a rate, then "
+            f"/{cmd.QUOTE} to record what they quoted and what we are quoting "
+            f"the client. /{cmd.ORDER_CLIENT} and /{cmd.ORDER_SUPPLIER} create "
+            f"the two orders after that."
         )
         return f"Opened {order.display_reference}"
 

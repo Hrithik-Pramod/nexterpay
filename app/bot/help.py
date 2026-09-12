@@ -91,6 +91,24 @@ _STAFF: list[tuple[str, str, StaffRole]] = [
      StaffRole.MANAGER),
 ]
 
+# The FX route, Finance only. Listed in the order a deal actually moves rather
+# than by how often each is reached, which is the opposite of the rule above
+# and deliberately so: these six are one sequence, and the question somebody
+# sends /nphelp to answer is "what comes next", not "what was it called".
+_FX: list[tuple[str, str, StaffRole]] = [
+    (cmd.QUOTE, "record what the supplier quoted, and what we quote the client",
+     StaffRole.OPERATOR),
+    (cmd.ORDER_CLIENT, "create the client's order, for them to confirm",
+     StaffRole.OPERATOR),
+    (cmd.ORDER_SUPPLIER, "create the supplier's order, for them to accept",
+     StaffRole.OPERATOR),
+    (cmd.HASH, "the settlement hash, passed to the client as proof",
+     StaffRole.OPERATOR),
+    (cmd.REJECT, "a rate turned down - theirs by us, or ours by the client",
+     StaffRole.OPERATOR),
+    (cmd.FX_DEALS, "every open deal, and whose move it is", StaffRole.OPERATOR),
+]
+
 _ADMIN: list[tuple[str, str]] = [
     (cmd.SETUP, "register a group, or add a person - as buttons"),
     (cmd.ADDUSER + " <role> <department>", "add somebody, as a reply to them"),
@@ -152,6 +170,22 @@ def for_operations_group(
                 for name, needed in withheld
             )
             + ".",
+        ]
+
+    if department is Department.FINANCE:
+        # Only Finance. The Start FX deal button is offered on Finance requests
+        # alone, so listing the rest of the route on another desk would be
+        # listing commands whose first step is not available there.
+        lines += [
+            "",
+            "An FX deal, in the order it moves. It starts from a client's "
+            f"request — open it and use More → Start FX deal, then /{cmd.NEW_SUPPLIER} "
+            "to ask a supplier for a rate.",
+        ]
+        lines += [
+            "  " + _line(name, what)
+            for name, what, needed in _FX
+            if effective.at_least(needed)
         ]
 
     if is_administrator:
