@@ -25,7 +25,6 @@ from app.db.models import Client
 from app.domain import fx
 from app.domain.enums import FxSide
 
-
 # --------------------------------------------------------------------------
 # Reading what somebody typed
 # --------------------------------------------------------------------------
