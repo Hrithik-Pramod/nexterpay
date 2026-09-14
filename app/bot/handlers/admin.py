@@ -25,6 +25,7 @@ from app.bot.deps import prompt_for
 from app.bot.registry import (
     deactivate_staff,
     leads_for,
+    register_archive_chat,
     register_client_chat,
     register_operations_chat,
     remove_group_lead,
@@ -204,6 +205,51 @@ async def cmd_register_ops(message: Message, command: CommandObject) -> None:
     await message.reply(
         f"Registered this group as {department.label} Operations.\n"
         f"Make sure topics are enabled and the bot can manage them."
+    )
+
+
+@router.message(cmd.any_case(cmd.REGISTER_ARCHIVE))
+async def cmd_register_archive(message: Message, command: CommandObject) -> None:
+    """`/npregisterarchive <department>` - run inside the archive group itself.
+
+    A second forum group per desk, where closed work is moved 24 hours after
+    it is closed. The bot needs the same topic rights here as in the Operations
+    Group, plus the right to delete messages - deleting the original topic is a
+    separate permission from creating one, and a bot that has been happily
+    opening tickets for weeks can still be unable to remove them.
+    """
+    async with session_scope() as session:
+        if not await _admin_or_refuse(session, message):
+            return
+        department = _department(command.args or "")
+        if department is None:
+            await message.reply(
+                f"Usage: /{cmd.REGISTER_ARCHIVE} <department>\n\n"
+                f"Departments: {Department.usage()}.\n"
+                f"Send this inside the archive group itself, with Topics "
+                f"switched on."
+            )
+            return
+        try:
+            await register_archive_chat(
+                session,
+                telegram_chat_id=message.chat.id,
+                department=department,
+                title=message.chat.title,
+            )
+        except ValueError as exc:
+            await message.reply(str(exc))
+            return
+        logger.info(
+            "Registered archive group %s as %s", message.chat.id, department.value
+        )
+
+    await message.reply(
+        f"Registered this group as the {department.label} archive.\n\n"
+        f"Closed requests move here 24 hours after they are closed, with the "
+        f"conversation forwarded so it keeps who said what. The original topic "
+        f"is removed once the copy exists.\n\n"
+        f"The bot needs Manage Topics and Delete Messages here."
     )
 
 

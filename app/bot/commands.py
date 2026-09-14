@@ -76,6 +76,10 @@ UNLINK = _c("unlink")
 REGISTER_OPS = _c("registerops")
 REGISTER_CLIENT = _c("registerclient")
 REGISTER_SUPPLIER = _c("registersupplier")
+# The group closed work moves into, one per desk. NexterPay, 9 September:
+# two forum groups, Active and Closed, because a topic list with six months
+# of finished tickets in it is where triage stops working.
+REGISTER_ARCHIVE = _c("registerarchive")
 ADDUSER = _c("adduser")
 REMOVEUSER = _c("removeuser")
 WORKLOAD = _c("workload")
@@ -145,7 +149,8 @@ ALL = [
     FRONT_DOOR,
     RAISE, REQUEST, ENQUIRY, TICKETS,
     REPLY, NOTE, HISTORY, ASSIGN, LINK, UNLINK,
-    REGISTER_OPS, REGISTER_CLIENT, REGISTER_SUPPLIER, ADDUSER, REMOVEUSER,
+    REGISTER_OPS, REGISTER_CLIENT, REGISTER_SUPPLIER, REGISTER_ARCHIVE,
+    ADDUSER, REMOVEUSER,
     WORKLOAD, SETCODE, ADDPARTY, BROADCAST,
     SETLEAD, LEADS, REMOVELEAD, SETUP, HELP, ROLE,
     NEW_CLIENT, NEW_SUPPLIER,

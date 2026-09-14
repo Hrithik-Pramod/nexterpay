@@ -7,8 +7,10 @@ then everything else is ordinary Telegram conversation.
 from __future__ import annotations
 
 import logging
+import re
 
 from aiogram import F, Router
+from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.filters import CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -321,6 +323,104 @@ async def open_one_request(query: CallbackQuery) -> None:
         await relay.post_anchor(session, gateway(), item)
 
     await query.answer()
+
+
+# --------------------------------------------------------------------------
+# A transaction reference pasted on its own
+# --------------------------------------------------------------------------
+
+# NexterPay, 14 September: clients paste a reference and wait, and Gavin ends
+# up running the lookup for them.
+#
+# The bot answers with the format rather than with the answer, and that is
+# deliberate - it has no access to NexterPay's order data. A bot that appears
+# to look something up and returns nothing is worse than one that says plainly
+# how to ask.
+#
+# Two shapes, both theirs: a 36-character UUID with hyphens, or 32 hexadecimal
+# characters without. The word boundaries are load-bearing. A settlement hash
+# is 64 hex characters, and FX tickets are now full of them - without the
+# boundary the first 32 of every hash would read as a transaction reference
+# and the bot would correct a client who had done nothing wrong.
+TRANSACTION_ID = re.compile(
+    r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
+    r"|\b[0-9a-fA-F]{32}\b"
+)
+
+# NexterPay's command, not one of ours - it is answered on their side, which
+# is why it carries no np prefix and why nothing in this file implements it.
+LOOKUP_COMMAND = "/orderstatus"
+
+# Their wording, quoted rather than rephrased.
+NUDGE = (
+    f"Please resubmit using the correct search format - "
+    f"{LOOKUP_COMMAND} <transaction ID>"
+)
+
+
+def transaction_ids(text: str | None) -> list[str]:
+    """Every reference in a message, in the two formats NexterPay use."""
+    return TRANSACTION_ID.findall(text or "")
+
+
+def should_nudge(text: str | None, *, is_reply: bool) -> bool:
+    """Whether a pasted reference should be answered with the format.
+
+    Three conditions, and the last two exist to keep the bot quiet.
+
+    Not if they already used the command: that is the request working as
+    intended, and answering would mean correcting somebody who got it right.
+
+    Not on a reply. A reply in a counterparty group is traffic on an existing
+    request, and a reference quoted inside a live conversation about that
+    request is ordinary rather than a question. Nudging there would interrupt
+    the very conversation this is meant to save.
+
+    That second rule is mine rather than NexterPay's - they specified "sent
+    without /orderstatus" and said nothing about replies - so it is written
+    here where it can be found and argued with.
+    """
+    if not text:
+        return False
+    if LOOKUP_COMMAND in text.lower():
+        return False
+    if is_reply:
+        return False
+    return bool(transaction_ids(text))
+
+
+@router.message(F.chat.type.in_({"group", "supergroup"}))
+async def offer_lookup_format(message: Message) -> None:
+    """A reference pasted with no command, in a counterparty group.
+
+    Registered ahead of the catch-all below, which would otherwise resolve the
+    message to nothing and say nothing - right for ordinary chatter, wrong for
+    somebody who has plainly asked a question.
+
+    Only reaches the bot where the bot is an administrator. Under privacy mode
+    Telegram never delivers a plain message to a bot, so in any group that has
+    not been promoted this is quiet rather than broken - and quiet in a way
+    nobody will notice, which is worth saying out loud.
+
+    Skips rather than returns on every path that does not nudge, so the
+    ordinary routing below still runs. Returning would swallow the message and
+    reintroduce the failure `unrouted_notice` exists to prevent.
+    """
+    if not should_nudge(
+        message.text or message.caption,
+        is_reply=message.reply_to_message is not None,
+    ):
+        raise SkipHandler
+
+    async with session_scope() as session:
+        chat = await client_context(session, message.chat.id)
+        if chat is None:
+            raise SkipHandler
+
+    logger.info(
+        "Transaction reference with no command in chat %s", message.chat.id
+    )
+    await message.reply(NUDGE)
 
 
 @router.message(F.chat.type.in_({"group", "supergroup"}))

@@ -91,6 +91,59 @@ async def register_operations_chat(
     return chat
 
 
+async def register_archive_chat(
+    session: AsyncSession,
+    *,
+    telegram_chat_id: int,
+    department: Department,
+    title: str | None = None,
+) -> Chat:
+    """The group closed work is moved into, one per desk.
+
+    Registered exactly like an Operations Group and deliberately so - it is
+    another NexterPay-owned forum, not a counterparty room, and must never be
+    a broadcast recipient either.
+
+    Nothing is ever raised here and nobody is assigned here. It exists so the
+    live topic list stays short, which is the whole of NexterPay's reasoning
+    on 9 September.
+    """
+    # One per desk, checked here rather than by a unique index. A partial index
+    # on a newly added enum value cannot be created in the migration that adds
+    # the value, and the check is more useful here anyway: it can name the
+    # group that already holds the job.
+    existing = await session.execute(
+        select(Chat).where(
+            Chat.kind == ChatKind.ARCHIVE,
+            Chat.department == department,
+            Chat.is_active.is_(True),
+            Chat.telegram_chat_id != telegram_chat_id,
+        )
+    )
+    clash = existing.scalar_one_or_none()
+    if clash is not None:
+        raise ValueError(
+            f"{department.label} already archives to "
+            f"“{clash.title or clash.telegram_chat_id}”. A desk can only have "
+            f"one archive, or its history ends up split across two groups with "
+            f"nothing to make the mistake visible."
+        )
+
+    chat = await resolve_chat(session, telegram_chat_id)
+    if chat is None:
+        chat = Chat(telegram_chat_id=telegram_chat_id, kind=ChatKind.ARCHIVE)
+        session.add(chat)
+
+    chat.kind = ChatKind.ARCHIVE
+    chat.client_id = None
+    chat.department = department
+    chat.title = title
+    chat.is_supplier = False
+    chat.is_active = True
+    await session.flush()
+    return chat
+
+
 async def upsert_staff(
     session: AsyncSession,
     *,

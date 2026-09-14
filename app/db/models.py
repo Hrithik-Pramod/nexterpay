@@ -126,6 +126,18 @@ class Chat(Base, TimestampMixin):
             sqlite_where=(kind == ChatKind.OPERATIONS),
             postgresql_where=(kind == ChatKind.OPERATIONS),
         ),
+        # There is deliberately no matching index for the archive.
+        #
+        # One would be natural, and it is a trap. Postgres will not let a
+        # newly added enum value be *used* in the transaction that adds it, so
+        # a partial index whose WHERE clause names 'archive' fails in the same
+        # migration that creates the value - the exact shape of the failure
+        # that took the bot down on 12 September, and invisible to the tests
+        # because they run on SQLite where enums are plain strings.
+        #
+        # "One archive per desk" is enforced in `register_archive_chat`
+        # instead, where it can also say something useful to whoever is
+        # registering the second one.
     )
 
     def __repr__(self) -> str:
@@ -358,6 +370,17 @@ class WorkItem(Base, TimestampMixin):
     )
     owner_staff_id: Mapped[int | None] = mapped_column(ForeignKey("staff.id"), nullable=True)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Where the finished ticket was copied to, and when.
+    #
+    # `archived_at` is what stops a ticket being archived twice: the sweep that
+    # moves closed work runs on a timer, and a timer that crashes halfway will
+    # run again. Both are null for everything still open, which is also how the
+    # sweep finds its work - closed, and not yet moved.
+    archive_topic_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    archived_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Both point at `clients`, so the join has to be spelled out.
     client: Mapped[Client] = relationship(foreign_keys=[client_id])

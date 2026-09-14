@@ -58,7 +58,8 @@ ACTIONS: list[tuple[str, StaffRole]] = [
 # end of the reply.
 ADMIN_ACTIONS: list[str] = [
     f"Register a group — /{cmd.SETUP}, or /{cmd.REGISTER_OPS}, "
-    f"/{cmd.REGISTER_CLIENT}, /{cmd.REGISTER_SUPPLIER}",
+    f"/{cmd.REGISTER_CLIENT}, /{cmd.REGISTER_SUPPLIER}, "
+    f"/{cmd.REGISTER_ARCHIVE}",
     f"Add and remove staff, and set their level — /{cmd.ADDUSER}, /{cmd.REMOVEUSER}",
     f"Set a counterparty's four-letter code — /{cmd.SETCODE}",
     f"Add a counterparty with no group — /{cmd.ADDPARTY}",

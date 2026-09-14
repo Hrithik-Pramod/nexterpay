@@ -38,11 +38,25 @@ class Department(str, enum.Enum):
 
 
 class ChatKind(str, enum.Enum):
-    """A registered Telegram group is either a client group or an internal
-    Operations Group. The bot behaves very differently in each."""
+    """A registered Telegram group is a client group, an internal Operations
+    Group, or the archive that sits behind one. The bot behaves very
+    differently in each."""
 
     CLIENT = "client"
     OPERATIONS = "operations"
+
+    # Where closed work goes to be kept. NexterPay, 9 September: two forum
+    # groups, Active and Closed, because a desk's topic list becomes unusable
+    # once a few hundred finished tickets are sitting in it.
+    #
+    # A third kind rather than a flag on the Operations Group, which is the
+    # opposite of the call made for suppliers. A supplier group behaves exactly
+    # like a client group, so a flag was right there. An archive behaves like
+    # neither: nothing is raised in it, nobody is assigned in it, and every
+    # topic in it is read-only by design. A flag would mean every check that
+    # asks "is this an Operations Group" silently starting to say yes to a
+    # room where none of those actions make sense.
+    ARCHIVE = "archive"
 
 
 class WorkItemStatus(str, enum.Enum):

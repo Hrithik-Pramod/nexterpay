@@ -132,6 +132,29 @@ LIGHT_WORKING = "🟠"
 LIGHT_DONE = "🟢"
 
 
+# The stage symbol, beside the light.
+#
+# NexterPay, 14 September, having mocked up coloured bubbles with symbols in
+# them. Telegram gives a topic either a coloured bubble or a custom emoji icon
+# and not both, and the colour is fixed at creation and cannot be edited - so
+# the bubble could carry the symbol only by giving up the blue. They asked for
+# both, which means the symbol goes on the name, where the light already is.
+#
+# The two say different things and that is why both are here. The light answers
+# "is anybody on this", which is the triage question. Amber then covers
+# claimed, in progress, waiting on three different parties and escalated
+# alike - so the symbol answers "how far has it got", which amber cannot.
+#
+# All four exist in Telegram's own topic-icon set, checked against
+# getForumTopicIconStickers on 14 September. That is deliberate: if NexterPay
+# ever prefer the symbol as the bubble after all, the vocabulary already
+# transfers and only the placement changes.
+SYMBOL_UNCLAIMED = "📝"
+SYMBOL_WORKING = "👀"
+SYMBOL_RESOLVED = "✅"
+SYMBOL_CLOSED = "🏁"
+
+
 # Urgent priority, marked rather than coloured.
 #
 # NexterPay asked for High priority in red font. Telegram has no font colour:
@@ -165,6 +188,24 @@ def traffic_light(item: WorkItem) -> str:
     return LIGHT_WORKING
 
 
+def status_symbol(item: WorkItem) -> str:
+    """How far along it is, which the light deliberately does not say.
+
+    Resolved and closed are kept apart here even though the light calls them
+    amber and green. NexterPay were asked directly whether work-finished-but-
+    not-archived counts as green and said no - but "we have fixed it" and "this
+    is over" are still different things to a person scanning the list, and the
+    symbol is where that difference now lives.
+    """
+    if item.status is WorkItemStatus.CLOSED:
+        return SYMBOL_CLOSED
+    if item.status is WorkItemStatus.COMPLETED:
+        return SYMBOL_RESOLVED
+    if item.status is WorkItemStatus.OPEN and item.owner_staff_id is None:
+        return SYMBOL_UNCLAIMED
+    return SYMBOL_WORKING
+
+
 def topic_name(item: WorkItem, client_name: str) -> str:
     """What the topic is called in the list, which is where triage happens.
 
@@ -194,9 +235,13 @@ def topic_name(item: WorkItem, client_name: str) -> str:
     # `client_name` is kept in the signature: it is what the caller has to
     # hand, and dropping it would make restoring this a change at every call
     # site rather than a change here.
+    # Light, then symbol, then the priority mark. The light is first because
+    # the list truncates from the right and "is anyone on this" is the question
+    # that must survive; the mark is last because only two priorities in five
+    # carry one, and leading with it would ragged the list.
     return (
-        f"{traffic_light(item)}{mark or ''} {item.display_reference} · "
-        f"{item.subject}"
+        f"{traffic_light(item)} {status_symbol(item)}{mark or ''} "
+        f"{item.display_reference} · {item.subject}"
     )[:128]
 
 

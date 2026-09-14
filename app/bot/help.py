@@ -32,6 +32,26 @@ def _line(name: str, what: str) -> str:
     return f"/{name} — {what}"
 
 
+def for_archive_group(department: Department) -> str:
+    """An archive is a NexterPay room where nothing is done.
+
+    Without this it fell through to the counterparty help and told staff they
+    were in a client group, listing commands that do nothing here - which is
+    the sort of small wrongness that makes people doubt everything else the bot
+    tells them.
+    """
+    return "\n".join([
+        f"This is the {department.label} archive.",
+        "",
+        "Closed requests are moved here 24 hours after they are closed, with "
+        "the conversation forwarded so it keeps who said what. Each one "
+        "becomes a read-only topic.",
+        "",
+        "Nothing is raised or worked on here. The live desk is the "
+        f"{department.label} Operations Group.",
+    ])
+
+
 def unregistered_group() -> str:
     return (
         "This group is not registered, so the bot does nothing here yet.\n\n"
@@ -39,11 +59,43 @@ def unregistered_group() -> str:
     )
 
 
+# What each channel is for, in NexterPay's own words.
+#
+# Approved by NexterPay on 13 September, and quoted rather than paraphrased.
+# The point of these is to stop a client raising a settlement query in Support
+# and waiting two days for the right desk to see it - so the wording belongs to
+# the people who answer them, not to this file.
+#
+# Compliance is the one they kept as drafted; the other four are theirs.
+CHANNEL_PURPOSE: dict[Department, str] = {
+    Department.SUPPORT:
+        "This channel is for day-to-day operational issues, including failed "
+        "or delayed payments, technical faults, and anything that needs "
+        "investigating.",
+    Department.FINANCE:
+        "This channel is for settlement and reconciliation, including "
+        "balances, statements, invoices and payment confirmations.",
+    Department.BUSINESS:
+        "This channel is for commercial discussion, including pricing, new "
+        "corridors, contracts and anything you would like to explore with us.",
+    Department.DEVELOPMENT:
+        "This channel is for technical integration, including API access, "
+        "testing, callbacks and change requests.",
+    Department.COMPLIANCE:
+        "This channel is reserved for ongoing compliance matters, including "
+        "KYC requests, chargebacks and documentation requests.",
+}
+
+
 def for_client_group(department: Department, *, is_supplier: bool) -> str:
     """What a client or supplier can do. Deliberately short.
 
     Everything a counterparty needs is two ideas: start with /np, and reply to
     us to add to something. The rest is detail they should never need.
+
+    The channel's purpose leads, because the commonest mistake a counterparty
+    makes is not getting a command wrong - it is raising the right question in
+    the wrong group.
     """
     raise_label = (
         "Commercial Enquiry" if department is Department.BUSINESS else "Raise Request"
@@ -52,10 +104,11 @@ def for_client_group(department: Department, *, is_supplier: bool) -> str:
     return "\n".join([
         f"You are in a {side} group for {department.label}.",
         "",
+        CHANNEL_PURPOSE[department],
+        "",
         "The one thing to remember: start with /np.",
         "",
         _line(cmd.FRONT_DOOR, f"the menu. Tap {raise_label}, or My Requests."),
-        _line(f"{cmd.RAISE} <details>", "raise something in one go, without the menu"),
         _line(cmd.TICKETS, "everything open, plus anything resolved in the last "
                            "four weeks"),
         "",
@@ -111,6 +164,8 @@ _FX: list[tuple[str, str, StaffRole]] = [
 
 _ADMIN: list[tuple[str, str]] = [
     (cmd.SETUP, "register a group, or add a person - as buttons"),
+    (cmd.REGISTER_ARCHIVE + " <department>",
+     "make this group a desk's archive - closed work moves here after 24 hours"),
     (cmd.ADDUSER + " <role> <department>", "add somebody, as a reply to them"),
     (cmd.REMOVEUSER + " [department]", "take one desk off somebody, or all of them"),
     (cmd.SETCODE + " <CODE>", "a counterparty's four letters - in their group"),
@@ -210,4 +265,6 @@ def build(chat, role: StaffRole | None, *, is_administrator: bool = False) -> st
         return for_operations_group(
             chat.department, role, is_administrator=is_administrator
         )
+    if chat.kind is ChatKind.ARCHIVE:
+        return for_archive_group(chat.department)
     return for_client_group(chat.department, is_supplier=bool(chat.is_supplier))

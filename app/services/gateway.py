@@ -84,6 +84,13 @@ class TelegramGateway(Protocol):
 
     async def reopen_topic(self, chat_id: int, thread_id: int) -> None: ...
 
+    async def delete_topic(self, chat_id: int, thread_id: int) -> None: ...
+
+    async def forward_message(
+        self, chat_id: int, from_chat_id: int, message_id: int,
+        *, thread_id: int | None = None,
+    ) -> None: ...
+
     async def delete_message(self, chat_id: int, message_id: int) -> None: ...
 
     async def edit_reply_markup(
@@ -196,6 +203,57 @@ class AiogramGateway:
                 raise
             logger.info("Topic %s in %s was already closed", thread_id, chat_id)
 
+    async def delete_topic(self, chat_id: int, thread_id: int) -> None:
+        """Remove a topic and everything in it.
+
+        Needs `can_delete_messages`, which is a separate right from the one
+        that lets the bot create topics - so a bot that has been happily
+        opening tickets for weeks can still fail here, and the first anyone
+        would know is a topic that never disappears.
+
+        A topic already gone is not an error. The sweep that calls this runs on
+        a timer and a timer that failed halfway will run again, so arriving to
+        find the work already done is the ordinary case, not a fault.
+        """
+        try:
+            await self._bot.delete_forum_topic(
+                chat_id=chat_id, message_thread_id=thread_id
+            )
+        except TelegramBadRequest as exc:
+            if "TOPIC_DELETED" not in str(exc) and "not found" not in str(exc).lower():
+                raise
+            logger.info("Topic %s in %s was already gone", thread_id, chat_id)
+
+    async def forward_message(
+        self, chat_id: int, from_chat_id: int, message_id: int,
+        *, thread_id: int | None = None,
+    ) -> None:
+        """Move a message into the archive, keeping who said it.
+
+        Forwarded rather than copied, which NexterPay chose on 12 September.
+        A copy is the bot saying somebody else's words; a forward carries the
+        original author and timestamp, which is the whole point of keeping the
+        thing. An archive that attributes every message to the bot answers
+        "what was said" and not "who said it", and the second question is the
+        one that gets asked six weeks later.
+
+        A message the author has since deleted cannot be forwarded. That is
+        logged and skipped rather than raised - one missing line is worth far
+        less than the rest of the ticket.
+        """
+        try:
+            await self._bot.forward_message(
+                chat_id=chat_id,
+                from_chat_id=from_chat_id,
+                message_id=message_id,
+                message_thread_id=thread_id,
+            )
+        except TelegramBadRequest as exc:
+            logger.info(
+                "Could not forward message %s from %s: %s",
+                message_id, from_chat_id, exc,
+            )
+
     async def edit_reply_markup(
         self, chat_id: int, message_id: int, reply_markup: Any | None
     ) -> None:
@@ -240,6 +298,11 @@ class FakeGateway:
         self.reopened_topics: list[tuple[int, int]] = []
         self.deleted: list[tuple[int, int]] = []
         self.closed_topics: list[tuple[int, int]] = []
+        self.deleted_topics: list[tuple[int, int]] = []
+        # (to chat, from chat, message id, thread). The archive tests assert on
+        # this: a forwarded message keeps its author, and a copied one does not,
+        # so which of the two happened is the whole question.
+        self.forwarded: list[tuple[int, int, int, int | None]] = []
         self.edits: dict[int, list[str]] = {}
         # What buttons each message currently carries. Kept as state rather
         # than only as a call log, because the question a test needs to ask is
@@ -354,6 +417,25 @@ class FakeGateway:
         self._maybe_fail()
         self.closed_topics.append((chat_id, thread_id))
         self.calls.append(Call("close_topic", chat_id, {"thread_id": thread_id}))
+
+    async def delete_topic(self, chat_id: int, thread_id: int) -> None:
+        self._maybe_fail()
+        self.deleted_topics.append((chat_id, thread_id))
+        self.calls.append(Call("delete_topic", chat_id, {"thread_id": thread_id}))
+
+    async def forward_message(
+        self, chat_id: int, from_chat_id: int, message_id: int,
+        *, thread_id: int | None = None,
+    ) -> None:
+        self._maybe_fail()
+        self.forwarded.append((chat_id, from_chat_id, message_id, thread_id))
+        self.calls.append(
+            Call("forward_message", chat_id, {
+                "from_chat_id": from_chat_id,
+                "message_id": message_id,
+                "thread_id": thread_id,
+            })
+        )
 
     async def edit_reply_markup(
         self, chat_id: int, message_id: int, reply_markup: Any | None

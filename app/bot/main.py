@@ -33,10 +33,48 @@ from app.bot.routing import build_strategy
 from app.config import get_settings
 from app.db.base import init_engine, session_scope
 from app.domain.enums import ChatKind, StaffRole
+from app.services import archive
 from app.services.gateway import AiogramGateway
 from app.services.throttle import ThrottledGateway
 
 logger = logging.getLogger(__name__)
+
+
+# How often closed work is swept into the archive.
+#
+# Fifteen minutes against a twenty-four hour delay. The exact minute a ticket
+# moves does not matter to anybody, and a frequent sweep is cheap: it is one
+# indexed query that almost always returns nothing.
+SWEEP_INTERVAL_SECONDS = 15 * 60
+
+
+async def _archive_sweeper(gateway) -> None:
+    """Move closed work into the archive, on a timer.
+
+    The first thing this platform does without somebody having sent a message,
+    which is the whole reason it is wrapped this carefully. Housekeeping must
+    never be why the bot stops answering people.
+
+    So: every pass is inside its own try, a failure is logged and the loop
+    carries on, and a ticket that failed is picked up again next time because
+    `archived_at` is only written once the copy exists. The worst outcome of a
+    bad pass is that nothing moved.
+
+    Sleeps before its first pass. A restart is the worst possible moment to
+    begin forwarding several hundred messages, and a job measured in hours
+    loses nothing by waiting fifteen minutes.
+    """
+    while True:
+        await asyncio.sleep(SWEEP_INTERVAL_SECONDS)
+        try:
+            async with session_scope() as session:
+                moved = await archive.sweep(session, gateway)
+            if moved:
+                logger.info("Archived %d closed request(s)", moved)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Archive sweep failed; it will run again")
 
 
 # What each role adds to the one below it. Written as what a person gains,
@@ -327,7 +365,16 @@ async def main() -> None:
     logger.info("Starting as @%s", me.username)
 
     dp = build_dispatcher()
-    await dp.start_polling(bot)
+
+    # Started alongside polling rather than inside it. aiogram has startup
+    # hooks, but a task owned here is a task that can be cancelled here - and
+    # on shutdown a half-finished archive should stop where it is rather than
+    # be killed mid-forward.
+    sweeper = asyncio.create_task(_archive_sweeper(deps.gateway()))
+    try:
+        await dp.start_polling(bot)
+    finally:
+        sweeper.cancel()
 
 
 if __name__ == "__main__":

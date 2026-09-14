@@ -173,6 +173,28 @@ class ThrottledGateway:
             chat_id, self._inner.reopen_topic, chat_id, thread_id
         )
 
+    async def delete_topic(self, chat_id: int, thread_id: int) -> None:
+        return await self._guarded(
+            chat_id, self._inner.delete_topic, chat_id, thread_id
+        )
+
+    async def forward_message(
+        self, chat_id: int, from_chat_id: int, message_id: int,
+        *, thread_id: int | None = None,
+    ) -> None:
+        """Throttled on the destination, which is the whole reason this exists.
+
+        Archiving a ticket forwards every message it ever carried into one
+        chat, back to back. That is the single burstiest thing this platform
+        does - a long support thread is comfortably past Telegram's twenty a
+        minute - and it is the one place where being rate-limited would leave
+        half a ticket in the archive and the other half nowhere.
+        """
+        return await self._guarded(
+            chat_id, self._inner.forward_message, chat_id, from_chat_id,
+            message_id, thread_id=thread_id,
+        )
+
     async def edit_reply_markup(
         self, chat_id: int, message_id: int, reply_markup: Any | None
     ) -> None:
