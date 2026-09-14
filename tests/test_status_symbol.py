@@ -168,10 +168,23 @@ def test_the_topic_is_still_created_blue() -> None:
     """
     from app.services import gateway as gateway_module
 
-    source = inspect.getsource(gateway_module)
-    tree = ast.parse(source)
+    tree = ast.parse(inspect.getsource(gateway_module))
 
-    for node in ast.walk(tree):
+    # Scoped to the real implementation. Three classes declare `create_topic`
+    # — the Protocol, the aiogram one and the fake — and `ast.walk` does not
+    # promise source order, so an unscoped search found the Protocol's `...`
+    # and reported that topics were no longer coloured. The test was wrong, not
+    # the code, which is its own small lesson about structural guards.
+    implementation = next(
+        (
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.ClassDef) and node.name == "AiogramGateway"
+        ),
+        None,
+    )
+    assert implementation is not None, "AiogramGateway not found"
+
+    for node in implementation.body:
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "create_topic":
             call = ast.unparse(node)
             assert "icon_color" in call, "topics are no longer created coloured"
@@ -180,4 +193,4 @@ def test_the_topic_is_still_created_blue() -> None:
                 "NexterPay asked to keep"
             )
             return
-    raise AssertionError("create_topic not found")
+    raise AssertionError("AiogramGateway.create_topic not found")

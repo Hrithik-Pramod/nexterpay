@@ -47,6 +47,14 @@ class _Chat:
 WHERE = [
     (ChatKind.OPERATIONS, True),
     (ChatKind.CLIENT, False),
+    # An archive is NexterPay's own room, so answering here would leak nothing
+    # to anybody outside. It still does not answer, for a different reason:
+    # nothing is done in an archive. Nobody is claiming, replying or being
+    # refused in there, so there is no question this command would be answering
+    # - and "we could safely" is a weaker argument than "there is a reason to".
+    #
+    # The decision this table exists to force, and it went the quiet way.
+    (ChatKind.ARCHIVE, False),
 ]
 
 
