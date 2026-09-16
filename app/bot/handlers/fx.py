@@ -40,7 +40,7 @@ from app.db.models import Chat, Client, FxOrder, WorkItem
 from app.domain import fx
 from app.domain.enums import ChatKind, FxOrderStatus, FxSide, WorkItemStatus
 from app.domain.work_items import Actor
-from app.services import fx_relay
+from app.services import fx_relay, relay
 
 logger = logging.getLogger(__name__)
 router = Router(name="fx")
@@ -63,6 +63,7 @@ class FxQuote(StatesGroup):
     state nobody can act on and everybody would have to explain.
     """
 
+    awaiting_currency = State()
     awaiting_supplier_rate = State()
     awaiting_client_rate = State()
 
@@ -198,6 +199,27 @@ def confirm_keyboard(order_id: int, side: FxSide) -> InlineKeyboardMarkup:
     ]])
 
 
+def rate_decision_keyboard(order_id: int) -> InlineKeyboardMarkup:
+    """What the client taps on a rate. NexterPay, 16 September.
+
+    Two buttons here where an order has one, and the asymmetry is the point. An
+    order is a set of figures we have already agreed in words, so there is
+    nothing to say No to that is not a conversation. A rate is an offer, and
+    turning an offer down is an ordinary answer that should not require typing.
+
+    No is recorded as the client rejecting our rate — the return path that
+    already exists — rather than as anything new.
+    """
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text="✅ Yes, proceed", callback_data=f"fx:rateyes:{order_id}"
+        ),
+        InlineKeyboardButton(
+            text="✕ No", callback_data=f"fx:rateno:{order_id}"
+        ),
+    ]])
+
+
 def receipt_keyboard(order_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(
@@ -308,6 +330,7 @@ def quote_preview(
     supplier_name: str,
     supplier_rate: Decimal | None,
     client_rate: Decimal,
+    currency_code: str | None = None,
 ) -> str:
     """What the desk reads before the two rates are saved.
 
@@ -317,7 +340,8 @@ def quote_preview(
     `fx_relay` - the three functions that write to a counterparty all compose
     through `fx.view_for`, and none of them can reach this text.
     """
-    lines = [f"{reference} — rates, not yet saved", ""]
+    where = f" ({currency_code} per 1 USDT)" if currency_code else ""
+    lines = [f"{reference} — rates, not yet saved{where}", ""]
     if supplier_rate is None:
         # Revising our own price on a deal already quoted. The supplier's rate
         # is on the deal but was not entered in this flow, and showing a figure
@@ -1018,7 +1042,7 @@ async def quote_pick_supplier(query: CallbackQuery, state: FSMContext) -> None:
         item, supplier = chosen
         supplier_name = supplier.name
 
-    await state.set_state(FxQuote.awaiting_supplier_rate)
+    await state.set_state(FxQuote.awaiting_currency)
     await state.update_data(
         order_id=int(order_id),
         supplier_work_item_id=item.id,
@@ -1026,11 +1050,39 @@ async def quote_pick_supplier(query: CallbackQuery, state: FSMContext) -> None:
     )
     text, markup, mode = prompt_for(
         query.from_user,
-        f"What rate did {supplier_name} quote us?",
-        placeholder="Their rate",
+        f"Which currency is {supplier_name} quoting in? Three letters — INR, "
+        f"NGN, PHP.",
+        placeholder="Currency code",
     )
     await query.message.answer(text, reply_markup=markup, parse_mode=mode)
     await query.answer()
+
+
+@router.message(FxQuote.awaiting_currency)
+async def capture_currency(message: Message, state: FSMContext) -> None:
+    """Asked before either rate, because it is what makes them mean something.
+
+    NexterPay, 16 September: every supplier quotes in their own local currency,
+    all of them as Local Currency per 1 USDT. A rate entered without it is a
+    bare number, and the message the client is shown - "rate on INR is 89.50" -
+    cannot be written at all.
+    """
+    try:
+        code = fx.parse_currency_code(message.text or "")
+    except fx.FxError as exc:
+        await message.reply(str(exc))
+        return
+
+    data = await state.get_data()
+    await state.update_data(currency_code=code)
+    await state.set_state(FxQuote.awaiting_supplier_rate)
+    text, markup, mode = prompt_for(
+        message.from_user,
+        f"What rate did {data.get('supplier_name', 'the supplier')} quote us? "
+        f"{code} per 1 USDT.",
+        placeholder="Their rate",
+    )
+    await message.answer(text, reply_markup=markup, parse_mode=mode)
 
 
 @router.message(FxQuote.awaiting_supplier_rate)
@@ -1083,6 +1135,7 @@ async def capture_client_rate(message: Message, state: FSMContext) -> None:
             data.get("supplier_name") or "The supplier",
             supplier_rate if data.get("supplier_work_item_id") else None,
             client_rate,
+            data.get("currency_code"),
         ),
         reply_markup=_action_keyboard(
             "✅ Save these rates", f"fx:qsave:{data['order_id']}"
@@ -1136,7 +1189,8 @@ async def quote_save(query: CallbackQuery, state: FSMContext) -> None:
                     actor=actor,
                 )
             await fx.quote_client(
-                session, order, rate=Decimal(data["client_rate"]), actor=actor
+                session, order, rate=Decimal(data["client_rate"]), actor=actor,
+                currency_code=data.get("currency_code"),
             )
             reference, status = order.display_reference, order.status
         except Exception as exc:
@@ -1146,9 +1200,148 @@ async def quote_save(query: CallbackQuery, state: FSMContext) -> None:
 
     await state.clear()
     await query.message.answer(
-        f"{reference} is now {status.label}.\n\n"
-        f"Tell the client the rate in their group, then use /{cmd.ORDER_CLIENT} "
-        f"to create their order."
+        f"{reference} is now {status.label}.",
+        reply_markup=_action_keyboard(
+            "✉ Send the rate to the client", f"fx:tellrate:{order_id}"
+        ),
+    )
+
+
+@router.callback_query(F.data.startswith("fx:tellrate:"))
+async def tell_client_the_rate(query: CallbackQuery) -> None:
+    """Send the client the rate, with Yes and No.
+
+    NexterPay, 16 September: "if we have the rates, we should have option to
+    send the client a message". Option is the operative word — it is offered
+    after the rates are saved, not done automatically, because there are deals
+    where the desk would rather pick up the phone.
+
+    The message is composed by `fx_relay` from the client's columns, so the
+    supplier's rate cannot reach it even if somebody wanted it to.
+    """
+    order_id = int((query.data or "").split(":")[2])
+    await query.answer()
+
+    async with session_scope() as session:
+        ctx = await staff_context(
+            session, query.message.chat.id,
+            query.from_user.id if query.from_user else None,
+        )
+        if ctx is None:
+            await query.message.answer("You are not registered as staff.")
+            return
+        _, actor = ctx
+        order = await session.get(FxOrder, order_id)
+        if order is None:
+            await query.message.answer("That deal no longer exists.")
+            return
+        try:
+            await fx_relay.send_rate_quote(
+                session, gateway(), order, actor=actor,
+                keyboard=rate_decision_keyboard(order.id),
+            )
+        except Exception as exc:
+            logger.exception("FX rate quote send failed for %s", order_id)
+            await query.message.answer(explain(exc))
+            return
+
+    await query.message.answer("Sent. The client has Yes and No to tap.")
+
+
+@router.callback_query(F.data.startswith("fx:rateyes:"))
+async def client_accepts_the_rate(query: CallbackQuery) -> None:
+    """The client saying yes to a price, in their own group.
+
+    No staff check, and the same room check as every other counterparty button:
+    a callback carries whatever id it was built with, and one tapped from the
+    wrong group is not an answer.
+
+    Answers on every path. A client who taps Yes and hears nothing assumes the
+    deal is running.
+    """
+    order_id = int((query.data or "").split(":")[2])
+
+    async with session_scope() as session:
+        order = await session.get(FxOrder, order_id)
+        if order is None:
+            await query.answer(
+                "That quote no longer exists. Please speak to us before acting "
+                "on it.",
+                show_alert=True,
+            )
+            return
+        expected = await _group_for_side(session, order, FxSide.CLIENT)
+        if expected is None or query.message.chat.id != expected:
+            logger.info(
+                "FX rate reply from the wrong chat: order=%s chat=%s",
+                order_id, query.message.chat.id,
+            )
+            await query.answer(
+                "This can only be answered in the group it was sent to.",
+                show_alert=True,
+            )
+            return
+
+        who = query.from_user.full_name if query.from_user else "Client"
+        actor = Actor(
+            name=who,
+            telegram_user_id=query.from_user.id if query.from_user else None,
+        )
+        try:
+            await fx.client_accepts_rate(session, order, actor=actor)
+        except fx.FxError:
+            await query.answer("That has already been answered, thank you.")
+            return
+
+    await query.answer("Thank you.")
+    await query.message.answer(
+        "Thank you — we will send the order through shortly."
+    )
+
+
+@router.callback_query(F.data.startswith("fx:rateno:"))
+async def client_declines_the_rate(query: CallbackQuery) -> None:
+    """No, recorded as the client rejecting our rate.
+
+    Not a new state. This is the return path NexterPay described on
+    12 September, reached by a button instead of the desk typing what the
+    client said — so the deal goes back to unpriced and we go back to the
+    supplier, exactly as it does when somebody records it by hand.
+    """
+    order_id = int((query.data or "").split(":")[2])
+
+    async with session_scope() as session:
+        order = await session.get(FxOrder, order_id)
+        if order is None:
+            await query.answer(
+                "That quote no longer exists. Please speak to us.",
+                show_alert=True,
+            )
+            return
+        expected = await _group_for_side(session, order, FxSide.CLIENT)
+        if expected is None or query.message.chat.id != expected:
+            await query.answer(
+                "This can only be answered in the group it was sent to.",
+                show_alert=True,
+            )
+            return
+
+        who = query.from_user.full_name if query.from_user else "Client"
+        actor = Actor(
+            name=who,
+            telegram_user_id=query.from_user.id if query.from_user else None,
+        )
+        try:
+            await fx.reject_client_rate(
+                session, order, reason="declined the quoted rate", actor=actor
+            )
+        except fx.FxError:
+            await query.answer("That has already been answered, thank you.")
+            return
+
+    await query.answer("Understood.")
+    await query.message.answer(
+        "Understood — we will come back to you with another rate."
     )
 
 
@@ -1485,6 +1678,167 @@ async def reject_save(query: CallbackQuery, state: FSMContext) -> None:
 
     await state.clear()
     await query.message.answer(outcome)
+
+
+# --------------------------------------------------------------------------
+# `/npratecheck` - asking every supplier at once
+# --------------------------------------------------------------------------
+
+# What every supplier is asked. One wording for all of them, on purpose: the
+# replies are read side by side, and five differently-phrased questions produce
+# five differently-shaped answers.
+#
+# It asks how long the rate holds because a rate with no expiry is a rate
+# somebody will still be quoting from at four o'clock.
+RATE_CHECK_SUBJECT = "Rate check"
+RATE_CHECK_BODY = (
+    "Could you send your current rate — local currency per 1 USDT — and how "
+    "long it holds?"
+)
+
+
+async def _supplier_groups(session, department) -> list[Chat]:
+    """Every live supplier group on this desk."""
+    result = await session.execute(
+        select(Chat).where(
+            Chat.is_active.is_(True),
+            Chat.kind == ChatKind.CLIENT,
+            Chat.is_supplier.is_(True),
+            Chat.department == department,
+        ).order_by(Chat.title)
+    )
+    chats = list(result.scalars().all())
+    for chat in chats:
+        await session.refresh(chat, ["client"])
+    return chats
+
+
+@router.message(cmd.any_case(cmd.RATE_CHECK))
+async def rate_check(message: Message, state: FSMContext) -> None:
+    """`/npratecheck` - ask every supplier on this desk for today's rate.
+
+    NexterPay, 16 September: "In Operations, we need to be able to initiate
+    rate checks, or automate this at a set time".
+
+    This is the initiating half. Each supplier gets an ordinary request in
+    their own group, which is deliberate rather than lazy: their answer then
+    arrives on a ticket that can be claimed, chased and quoted from, instead of
+    as a loose message somebody has to notice. The reply is still read by a
+    person and entered with /npquote - the bot cannot parse a rate out of
+    "around 89.5 today mate" and should not pretend to.
+
+    Nothing is sent until the list has been looked at, because this is the one
+    command that writes into every supplier group at once.
+    """
+    user = message.from_user
+    async with session_scope() as session:
+        ctx = await staff_context(session, message.chat.id, user.id if user else None)
+        if ctx is None:
+            await message.reply(
+                await refusal_reason(
+                    user.id if user else None, session, message.chat.id
+                )
+            )
+            return
+        ops_chat, _ = ctx
+        groups = await _supplier_groups(session, ops_chat.department)
+        names = [
+            f"  {(c.client.code if c.client else '????')} · "
+            f"{c.title or c.telegram_chat_id}"
+            for c in groups
+        ]
+        ids = [c.telegram_chat_id for c in groups]
+        department = ops_chat.department.label
+
+    if not groups:
+        await message.reply(
+            f"No supplier groups are registered for {department}, so there is "
+            f"nobody to ask."
+        )
+        return
+
+    await state.clear()
+    await state.update_data(rate_check_ids=ids)
+    await message.reply(
+        "\n".join([
+            f"This opens a request in {len(groups)} supplier "
+            f"{'group' if len(groups) == 1 else 'groups'} on {department}:",
+            "",
+            *names,
+            "",
+            "Each will be asked:",
+            "",
+            f"— — —\n{RATE_CHECK_BODY}\n— — —",
+            "",
+            "Nothing has been sent yet.",
+        ]),
+        reply_markup=_action_keyboard("✉ Ask them all", "fx:rcsend:0"),
+    )
+
+
+@router.callback_query(F.data.startswith("fx:rcsend:"))
+async def rate_check_send(query: CallbackQuery, state: FSMContext) -> None:
+    """Open the request in each group, one at a time.
+
+    A failure on one supplier does not stop the others. If a group's
+    permissions are wrong, the desk would rather have four rates and a named
+    problem than no rates and one error.
+    """
+    data = await state.get_data()
+    ids = data.get("rate_check_ids") or []
+    await query.answer()
+
+    if not ids:
+        await state.clear()
+        await query.message.answer("That list has expired. Run the command again.")
+        return
+
+    opened, failed = [], []
+    async with session_scope() as session:
+        ctx = await staff_context(
+            session, query.message.chat.id,
+            query.from_user.id if query.from_user else None,
+        )
+        if ctx is None:
+            await query.message.answer("You are not registered as staff.")
+            return
+        ops_chat, actor = ctx
+        groups = {
+            c.telegram_chat_id: c
+            for c in await _supplier_groups(session, ops_chat.department)
+        }
+
+        for chat_id in ids:
+            # Re-resolved rather than trusted. A callback carries whatever ids
+            # it was built with, and these decide which groups get written to.
+            chat = groups.get(chat_id)
+            if chat is None:
+                continue
+            try:
+                item = await relay.open_outbound(
+                    session, gateway(),
+                    counterparty_chat=chat,
+                    subject=RATE_CHECK_SUBJECT,
+                    body=RATE_CHECK_BODY,
+                    actor=actor,
+                )
+                opened.append(item.display_reference)
+            except Exception:
+                logger.exception("Rate check failed for chat %s", chat_id)
+                failed.append(chat.title or str(chat_id))
+
+    await state.clear()
+    lines = [f"Asked {len(opened)} supplier{'' if len(opened) == 1 else 's'}."]
+    if opened:
+        lines += ["", "  " + ", ".join(opened)]
+    if failed:
+        lines += ["", "Could not reach: " + ", ".join(failed)]
+    lines += [
+        "",
+        f"Their replies arrive on those requests. Record what they quote with "
+        f"/{cmd.QUOTE}.",
+    ]
+    await query.message.answer("\n".join(lines))
 
 
 # --------------------------------------------------------------------------

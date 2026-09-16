@@ -273,6 +273,12 @@ class EventType(str, enum.Enum):
     FX_SUPPLIER_QUOTED = "fx_supplier_quoted"
     FX_SUPPLIER_RATE_REJECTED = "fx_supplier_rate_rejected"
     FX_RATE_QUOTED = "fx_rate_quoted"
+    # The client saying yes to a rate, before any figures exist. NexterPay,
+    # 16 September: they are asked "would you like to proceed", and the order
+    # is built afterwards. Separate from FX_CLIENT_CONFIRMED, which is the
+    # client agreeing to an order with amounts on it - the two are a different
+    # promise and a dispute six weeks later turns on which one was given.
+    FX_RATE_ACCEPTED = "fx_rate_accepted"
     FX_RATE_REJECTED = "fx_rate_rejected"
     FX_ORDER_CREATED = "fx_order_created"
     FX_CLIENT_CONFIRMED = "fx_client_confirmed"

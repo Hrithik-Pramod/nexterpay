@@ -135,6 +135,9 @@ def _fmt(event: Event, *, verbose: bool = False) -> str:
         return line + (_quote(p.get("reason")) if verbose and p.get("reason") else "")
     if t is EventType.FX_RATE_QUOTED:
         return f"Client quoted {p.get('rate', '?')} by {actor}"
+    if t is EventType.FX_RATE_ACCEPTED:
+        where = f" on {p['currency']}" if p.get("currency") else ""
+        return f"Client accepted {p.get('rate', '?')}{where}"
     if t is EventType.FX_RATE_REJECTED:
         line = f"Client rejected {p.get('rate', '?')}"
         return line + (_quote(p.get("reason")) if verbose and p.get("reason") else "")

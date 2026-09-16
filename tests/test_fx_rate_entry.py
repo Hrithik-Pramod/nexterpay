@@ -136,7 +136,7 @@ def test_the_rate_steps_in_particular() -> None:
 
 
 def test_the_commands_exist_and_are_prefixed() -> None:
-    for name in (cmd.QUOTE, cmd.HASH, cmd.REJECT):
+    for name in (cmd.QUOTE, cmd.HASH, cmd.REJECT, cmd.RATE_CHECK):
         assert name in cmd.ALL, f"{name} is not in the command list"
         assert name.startswith(cmd.PREFIX), f"{name} would clash with another bot"
         # NexterPay asked the underscores out on 3 September.
@@ -216,6 +216,9 @@ def _every_keyboard():
         handlers._action_keyboard("Save", "fx:qsave:7"),
         handlers._action_keyboard("Send", "fx:hsend:7"),
         handlers._action_keyboard("Record", f"fx:rsave:7:{FxSide.CLIENT.value}"),
+        handlers._action_keyboard("Send the rate", "fx:tellrate:7"),
+        handlers._action_keyboard("Ask them all", "fx:rcsend:0"),
+        handlers.rate_decision_keyboard(7),
         handlers._send_keyboard(7, FxSide.CLIENT),
         handlers._send_keyboard(7, FxSide.CLIENT, "Acme Payments"),
         handlers._deal_keyboard([_Deal()], FxSide.SUPPLIER),

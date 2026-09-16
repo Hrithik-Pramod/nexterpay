@@ -103,6 +103,25 @@ def parse_rate(text: str) -> Decimal:
         raise FxError(str(exc).replace("number", "rate", 1)) from None
 
 
+def parse_currency_code(text: str) -> str:
+    """A three-letter currency code, upper-cased.
+
+    Strict about the length because NexterPay's clients read it as a fact -
+    "rate on INR is 89.50" - and "rate on Indian Rupees is 89.50" is a
+    different sentence somebody has to check. Three letters is also the whole
+    of ISO 4217, so nothing legitimate is being refused.
+    """
+    cleaned = (text or "").strip().upper()
+    if not cleaned:
+        raise FxError("Which currency? Three letters, like INR.")
+    if not (len(cleaned) == 3 and cleaned.isalpha()):
+        raise FxError(
+            f"“{text.strip()}” is not a three-letter currency code. INR, NGN, "
+            f"PHP - three letters, nothing else."
+        )
+    return cleaned
+
+
 def format_money(value: Decimal | None) -> str:
     """For display. Thousands separated, trailing zeros trimmed.
 
@@ -170,6 +189,7 @@ class OrderView:
 
     reference: str
     account_name: str | None
+    currency_code: str | None
     rate: Decimal | None
     pays: Decimal | None
     pays_currency: str | None
@@ -211,6 +231,11 @@ def view_for(order: FxOrder, side: FxSide) -> OrderView:
         return OrderView(
             reference=order.client_reference,
             account_name=order.client_account_name,
+            # Not a side's property - both halves of a deal are priced in the
+            # same local currency, which is the whole reason it sits on the
+            # order. Carried here so nothing outside has to reach past the view
+            # to build a sentence about a rate.
+            currency_code=order.currency_code,
             rate=order.client_rate,
             pays=order.client_pays,
             pays_currency=order.client_pays_currency,
@@ -220,6 +245,7 @@ def view_for(order: FxOrder, side: FxSide) -> OrderView:
     return OrderView(
         reference=order.supplier_reference,
         account_name=order.supplier_account_name,
+        currency_code=order.currency_code,
         rate=order.supplier_rate,
         pays=order.supplier_pays,
         pays_currency=order.supplier_pays_currency,
@@ -412,7 +438,8 @@ async def reject_supplier_rate(
 
 
 async def quote_client(
-    session: AsyncSession, order: FxOrder, *, rate: Decimal, actor: Actor
+    session: AsyncSession, order: FxOrder, *, rate: Decimal, actor: Actor,
+    currency_code: str | None = None,
 ) -> FxOrder:
     """Step 4. Our rate, which is the supplier's plus NexterPay's margin.
 
@@ -436,9 +463,41 @@ async def quote_client(
             "money. If that is deliberate, say so in the topic first."
         )
     order.client_rate = rate
+    if currency_code:
+        order.currency_code = currency_code
     if order.status is not FxOrderStatus.RATE_QUOTED:
         _move(order, FxOrderStatus.RATE_QUOTED)
-    await record_event(session, order, EventType.FX_RATE_QUOTED, actor, rate=rate)
+    await record_event(
+        session, order, EventType.FX_RATE_QUOTED, actor,
+        rate=rate, currency=order.currency_code,
+    )
+    await session.flush()
+    return order
+
+
+async def client_accepts_rate(
+    session: AsyncSession, order: FxOrder, *, actor: Actor
+) -> FxOrder:
+    """Step 4b. The client has said yes to the rate, before any figures exist.
+
+    NexterPay, 16 September: the client is shown "rate on INR is 89.50" and
+    asked whether to proceed, and the order is built afterwards.
+
+    Deliberately does not move the deal. Saying yes to a price is not the same
+    as agreeing an order - there are no amounts yet, and the desk still has to
+    build one. Moving the status here would leave a deal reading Awaiting
+    client confirmation with nothing for the client to confirm.
+
+    It is also a different event from `client_confirms`, which is the client
+    agreeing to figures. Six weeks later, a dispute turns on which of those two
+    promises was actually given, so the history has to be able to tell them
+    apart.
+    """
+    _require_state(order, FxOrderStatus.RATE_QUOTED)
+    await record_event(
+        session, order, EventType.FX_RATE_ACCEPTED, actor,
+        rate=order.client_rate, currency=order.currency_code,
+    )
     await session.flush()
     return order
 

@@ -209,9 +209,9 @@ async def test_an_urgent_request_says_so_in_the_topic_list_too(
     title = _title(gw, item)
 
     assert relay.PRIORITY_MARKS[Priority.HIGH] in title
-    # Still red: raising the priority does not claim it. Red-plus-mark is the
-    # combination worth spotting - urgent, and nobody has picked it up.
-    assert title.startswith(relay.LIGHT_UNCLAIMED), "the light still comes first"
+    # Still unclaimed: raising the priority does not claim it. Unclaimed plus a
+    # mark is the combination worth spotting - urgent, and nobody on it.
+    assert title.startswith(relay.SYMBOL_UNCLAIMED), "the symbol still comes first"
     assert item.display_reference in title, "and the reference survives both"
 
 
@@ -276,7 +276,7 @@ async def test_a_closed_request_drops_its_priority_mark(
     await relay.close(session, gw, item, Actor.of(manager))
     title = _title(gw, item)
 
-    assert title.startswith(relay.LIGHT_DONE)
+    assert title.startswith(relay.SYMBOL_CLOSED)
     for mark in relay.PRIORITY_MARKS.values():
         assert mark not in title, f"a closed request is still shouting: {title}"
 

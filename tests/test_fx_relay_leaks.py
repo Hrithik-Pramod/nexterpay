@@ -211,7 +211,9 @@ async def test_the_desk_summary_is_never_sent_outward(
     source = inspect.getsource(fx_relay)
     tree = ast.parse(source)
 
-    outward = {"send_order", "send_settlement", "notify_rejected"}
+    outward = {
+        "send_rate_quote", "send_order", "send_settlement", "notify_rejected",
+    }
     for node in ast.walk(tree):
         if isinstance(node, ast.AsyncFunctionDef) and node.name in outward:
             body = ast.unparse(node)
@@ -223,10 +225,17 @@ async def test_the_desk_summary_is_never_sent_outward(
 def test_only_these_functions_may_write_to_a_counterparty() -> None:
     """The list is deliberately short and deliberately checked.
 
-    A fourth way outward is how a leak arrives - not by somebody rewriting
-    `view_for`, but by adding a helpful new notification that reads the order
+    A new way outward is how a leak arrives - not by somebody rewriting
+    `view_for`, but by adding a helpful notification that reads the order
     directly. If this test fails, the new function needs the same scrutiny the
-    other three had, not an addition to the list.
+    others had, not an addition to the list.
+
+    It was three until 16 September. `send_rate_quote` was deliberately not
+    built - quoting a client is a conversation, and the desk said it in their
+    own words - and NexterPay asked for it outright: "if we have the rates, we
+    should have option to send the client a message". Their call. It earns its
+    place the same way the others do: it composes through `fx.view_for`, so it
+    reads the client's columns and cannot see the supplier's.
     """
     tree = ast.parse(inspect.getsource(fx_relay))
     writers = set()
@@ -238,9 +247,9 @@ def test_only_these_functions_may_write_to_a_counterparty() -> None:
         if "counterparty.telegram_chat_id" in body:
             writers.add(node.name)
 
-    assert writers == {"send_order", "send_settlement", "notify_rejected"}, (
-        f"the ways out of NexterPay have changed: {sorted(writers)}"
-    )
+    assert writers == {
+        "send_rate_quote", "send_order", "send_settlement", "notify_rejected",
+    }, f"the ways out of NexterPay have changed: {sorted(writers)}"
 
 
 async def test_an_order_cannot_be_sent_to_a_side_that_has_no_request(

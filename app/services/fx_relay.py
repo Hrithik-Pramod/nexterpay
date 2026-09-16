@@ -4,17 +4,25 @@ The same safety rule as `app.services.relay`, and for higher stakes: nothing
 reaches a counterparty unless somebody deliberately sends it, and here what is
 sent is a price.
 
-**There are exactly three functions in this module that write to a
+**There are exactly four functions in this module that write to a
 counterparty chat**, and each one takes a side and composes through
 `fx.view_for`, which reads that side's columns alone:
 
+* `send_rate_quote` - the rate, with Yes / No
 * `send_order` - the order, with a button to confirm it
 * `send_settlement` - the hash, with a button to confirm receipt
 * `notify_rejected` - telling a supplier their price was not taken
 
-Nothing else here touches a counterparty group. A fourth would be a leak
-waiting to happen, and `test_only_these_functions_may_write_to_a_counterparty`
-holds the same list and fails if one appears.
+It was three until 16 September. `send_rate_quote` was deliberately not built:
+quoting a client is a conversation, and the desk said it in their own words
+using Reply to Client. NexterPay asked for it outright - "if we have the rates,
+we should have option to send the client a message" - which is their call, and
+the reason the decision was flagged rather than quietly made.
+
+Nothing else here touches a counterparty group. A fifth would be a leak waiting
+to happen, and `test_only_these_functions_may_write_to_a_counterparty` holds the
+same list and fails if one appears. That test getting harder to satisfy is the
+point of it; it should be argued with, not widened.
 
 The internal commentary is separate and goes into the Operations topic, where
 both rates may appear together because the whole topic is staff-only.
@@ -99,9 +107,66 @@ def settlement_text(order: FxOrder) -> str:
     return "\n".join(lines)
 
 
+def rate_quote_text(order: FxOrder) -> str:
+    """The rate, in NexterPay's shape: "rate on INR is 89.50".
+
+    Composed through `fx.view_for` like everything else that leaves here, so
+    the supplier's rate is not reachable from this function even by mistake -
+    it reads the client's columns and cannot see the other side's.
+
+    The currency leads the sentence because without it the number is not a
+    price. Every supplier quotes local currency per 1 USDT, so 89.50 is
+    meaningless until it is 89.50 rupees.
+    """
+    view = fx.view_for(order, FxSide.CLIENT)
+    where = f" on {view.currency_code}" if view.currency_code else ""
+    return "\n".join([
+        view.reference,
+        "",
+        f"Rate{where} is {fx.format_money(view.rate)}.",
+        "",
+        "Would you like to proceed?",
+    ])
+
+
 # --------------------------------------------------------------------------
-# The three ways out
+# The four ways out
 # --------------------------------------------------------------------------
+
+async def send_rate_quote(
+    session: AsyncSession,
+    gateway: TelegramGateway,
+    order: FxOrder,
+    *,
+    actor: Actor,
+    keyboard=None,
+) -> None:
+    """The rate to the client, with Yes and No.
+
+    Always the client. A supplier is never asked whether they would like to
+    proceed with a rate - they gave us one.
+
+    Recorded as an outbound message like any other, which matters more here
+    than elsewhere: this is the moment a price is put in front of a client, and
+    the record of exactly what was said is the thing a dispute comes back to.
+    """
+    counterparty, ops = await _chat_for_side(session, order, FxSide.CLIENT)
+    text = rate_quote_text(order)
+
+    sent = await gateway.send_message(
+        counterparty.telegram_chat_id, text, reply_markup=keyboard
+    )
+    item = await session.get(WorkItem, order.client_work_item_id)
+    await _record_message(
+        session, item,
+        direction=MessageDirection.OUTBOUND,
+        chat_id=counterparty.telegram_chat_id,
+        message_id=sent.message_id,
+        sender_name=actor.name,
+        text=text,
+    )
+    await _announce(session, gateway, order, ops, "Rate sent to the client.")
+
 
 async def send_order(
     session: AsyncSession,

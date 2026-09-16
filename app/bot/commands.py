@@ -138,6 +138,12 @@ QUOTE = _c("quote")
 HASH = _c("hash")
 REJECT = _c("reject")
 
+# Asking every supplier on the desk for today's rate, in one go. NexterPay,
+# 16 September: "we need to be able to initiate rate checks". Manual for now -
+# the automated half needs a time of day and a list of desks, which is a
+# decision rather than a build.
+RATE_CHECK = _c("ratecheck")
+
 # Anywhere
 START = "start"
 START_ALIAS = _c("start")
@@ -154,6 +160,6 @@ ALL = [
     WORKLOAD, SETCODE, ADDPARTY, BROADCAST,
     SETLEAD, LEADS, REMOVELEAD, SETUP, HELP, ROLE,
     NEW_CLIENT, NEW_SUPPLIER,
-    ORDER_CLIENT, ORDER_SUPPLIER, FX_DEALS, QUOTE, HASH, REJECT,
+    ORDER_CLIENT, ORDER_SUPPLIER, FX_DEALS, QUOTE, HASH, REJECT, RATE_CHECK,
     START, START_ALIAS, WHOAMI,
 ]

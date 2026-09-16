@@ -466,6 +466,15 @@ class FxOrder(Base, TimestampMixin):
     client_code: Mapped[str | None] = mapped_column(String(4), nullable=True)
     supplier_code: Mapped[str | None] = mapped_column(String(4), nullable=True)
 
+    # The local currency this deal is priced in - INR, NGN, PHP.
+    #
+    # NexterPay, 16 September: every supplier quotes in their own currency, and
+    # all of them quote it the same way round, as Local Currency per 1 USDT. So
+    # a rate on its own is a bare number - 89.50 means nothing until you know
+    # it is rupees. It sits on the deal rather than on the supplier because the
+    # figure a client is shown has to carry it.
+    currency_code: Mapped[str | None] = mapped_column(String(3), nullable=True)
+
     # The two requests this deal is conducted through. The supplier half does
     # not exist until we go out for a quote.
     client_work_item_id: Mapped[int] = mapped_column(

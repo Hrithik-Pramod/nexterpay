@@ -110,6 +110,16 @@ def support_for_clients() -> str:
     the supplier side keeps the ordinary wording.
     """
     return "\n".join([
+        # The one line that is ours rather than theirs.
+        #
+        # NexterPay's text never names the desk, and a client who is in five
+        # groups with NexterPay cannot tell from it which one they are reading.
+        # That is Gavin's own complaint about the old guide - "this only has
+        # information on support at moment, not the rest" - and the guard in
+        # test_help exists because of it. Worth one line; say so if they would
+        # rather it went.
+        f"You are in a client group for {Department.SUPPORT.label}.",
+        "",
         "For day-to-day operational issues including failed/delayed payments, "
         "transaction queries, technical faults and anything requiring "
         "investigation.",
@@ -210,6 +220,8 @@ _STAFF: list[tuple[str, str, StaffRole]] = [
 # and deliberately so: these six are one sequence, and the question somebody
 # sends /nphelp to answer is "what comes next", not "what was it called".
 _FX: list[tuple[str, str, StaffRole]] = [
+    (cmd.RATE_CHECK, "ask every supplier on this desk for today's rate",
+     StaffRole.OPERATOR),
     (cmd.QUOTE, "record what the supplier quoted, and what we quote the client",
      StaffRole.OPERATOR),
     (cmd.ORDER_CLIENT, "create the client's order, for them to confirm",
