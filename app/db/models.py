@@ -315,6 +315,27 @@ class WorkItem(Base, TimestampMixin):
 
     source_chat_id: Mapped[int] = mapped_column(ForeignKey("chats.id"), nullable=False)
     operations_chat_id: Mapped[int] = mapped_column(ForeignKey("chats.id"), nullable=False)
+
+    # The second outside group, when a request runs between two of them.
+    #
+    # Filing Structure and Connected Tickets, section 4: "A two-sided ticket
+    # has two: the client's group and the supplier's group, with your team in
+    # the middle and a single topic in the Operations Group where all of it is
+    # visible in one place."
+    #
+    # Null for almost everything. A request with one outside group behaves
+    # exactly as it always has, which is the point - this adds a second
+    # destination rather than changing how the first one works.
+    #
+    # It is also the column that removes this platform's oldest safety
+    # property. Until now a request had one outside group and sending to the
+    # wrong party was impossible by construction. With two, it becomes possible
+    # and has to be prevented explicitly - which is why `send_client_reply`
+    # refuses any destination that is not one of this request's own groups,
+    # rather than trusting whoever called it.
+    bridged_chat_id: Mapped[int | None] = mapped_column(
+        ForeignKey("chats.id"), nullable=True
+    )
     topic_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     # The pinned summary at the top of the topic. Kept so it can be edited in
     # place as ownership, status and priority change - PRD 7.3 requires

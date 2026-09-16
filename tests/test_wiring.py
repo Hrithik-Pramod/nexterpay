@@ -91,8 +91,13 @@ def test_routers_are_ordered_so_the_catch_all_is_last():
     registered before the staff router, staff commands would fall into it."""
     names = [r.name for r in dispatcher().sub_routers]
     assert names == [
-        "admin", "broadcast", "outbound", "fx", "staff", "client", "trace"
+        "admin", "broadcast", "outbound", "bridge", "fx", "staff", "client",
+        "trace",
     ]
+    # `bridge` joins the group that has to be offered a message before the
+    # staff router: /npbridge is sent inside a topic, and in a forum that
+    # carries a thread id the staff catch-all would consume first.
+    assert names.index("bridge") < names.index("staff")
     # "trace" logs anything no one else wanted, so it must stay behind the
     # client catch-all or it would log every ordinary message as unhandled.
     assert names[-1] == "trace"

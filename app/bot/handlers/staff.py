@@ -30,7 +30,7 @@ from app.bot.deps import (
 )
 from app.bot.registry import resolve_chat
 from app.db.base import session_scope
-from app.db.models import Client, Staff, WorkItem
+from app.db.models import Chat, Client, Staff, WorkItem
 from app.domain import work_items as wi
 from app.domain.enums import ChatKind, Department, Priority, WorkItemStatus
 from app.domain.history import load_events, render_history
@@ -461,6 +461,16 @@ async def capture_reply_draft(message: Message, state: FSMContext) -> None:
         source, _ = await relay.chats_for(session, item)
         leads = await leads_for(session, source)
 
+        # The second side, where there is one. Its name goes on a button of its
+        # own rather than into a picker, so the choice and the confirmation are
+        # the same tap - section 4 asks for the destination to be named before
+        # sending, and a question followed by a generic Send is two screens
+        # where one will do.
+        bridged_name = None
+        if item.bridged_chat_id is not None:
+            other = await session.get(Chat, item.bridged_chat_id)
+            bridged_name = (other.title if other else None) or "the other side"
+
     await state.update_data(
         draft=text,
         draft_attachment=asdict(attachments[0]) if attachments else None,
@@ -479,10 +489,18 @@ async def capture_reply_draft(message: Message, state: FSMContext) -> None:
                 f"\n\nOnly this one will be sent. Send the other "
                 f"{len(attachments) - 1} separately."
             )
+    destination = (
+        f"one of two groups on {reference} — choose below"
+        if bridged_name
+        else f"{client_name} for {reference}"
+    )
     await message.reply(
-        f"This will be sent to {client_name} for {reference}:\n\n{body}{carried}\n\n"
+        f"This will be sent to {destination}:\n\n{body}{carried}\n\n"
         f"Nothing has been sent yet.",
-        reply_markup=kb.confirm_reply(work_item_id, leads),
+        reply_markup=kb.confirm_reply(
+            work_item_id, leads,
+            source_name=client_name, bridged_name=bridged_name,
+        ),
     )
 
 
@@ -701,7 +719,7 @@ async def _apply(
         await query.message.answer(text, reply_markup=markup, parse_mode=mode)
         return "Type your note"
 
-    if action == "sendreply":
+    if action in ("sendreply", "sendbridged"):
         data = await state.get_data()
         draft = (data.get("draft") or "").strip()
         att_data = data.get("draft_attachment")
@@ -718,15 +736,36 @@ async def _apply(
         tag = int(value) if value and value.isdigit() else None
         attachment = IncomingAttachment(**att_data) if att_data else None
         body = reply_body(draft, has_file=attachment is not None)
+
+        # Which of the two this is going to. The button said the name; this is
+        # the line that makes the button true.
+        #
+        # `send_client_reply` refuses a destination that is not a party to this
+        # request, so a wrong id here is caught there rather than delivered -
+        # the rule is enforced once, in the function that does the sending,
+        # instead of at every call site.
+        to_chat = None
+        if action == "sendbridged":
+            if item.bridged_chat_id is None:
+                await _say(
+                    query,
+                    "This request only runs with one group, so there is no "
+                    "second side to send to.",
+                )
+                return "Not a two-sided request"
+            to_chat = await session.get(Chat, item.bridged_chat_id)
+
         await relay.send_client_reply(
-            session, gw, item, actor, body, attachment=attachment, tag_lead=tag
+            session, gw, item, actor, body,
+            attachment=attachment, tag_lead=tag, to_chat=to_chat,
         )
         await state.clear()
-        sealed = f"Sent to the client:\n\n{body}"
+        where = (to_chat.title if to_chat else None) or "the client"
+        sealed = f"Sent to {where}:\n\n{body}"
         if attachment is not None:
             sealed += f"\n\nWith: {attachment.file_name or attachment.kind}"
         await _seal_preview(query, sealed)
-        return f"Sent to the client for {item.display_reference}"
+        return f"Sent to {where} for {item.display_reference}"
 
     if action == "cancelreply":
         await state.clear()

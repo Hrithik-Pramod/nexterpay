@@ -24,7 +24,7 @@ from aiogram.types import Message
 
 from app.bot import commands as cmd
 from app.bot import deps
-from app.bot.handlers import admin, broadcast, client, outbound, staff
+from app.bot.handlers import admin, bridge, broadcast, client, outbound, staff
 from app.bot.handlers import fx as fx_handlers
 from app.bot.help import build as build_help
 from app.bot.registry import resolve_chat, resolve_staff
@@ -301,6 +301,10 @@ def build_dispatcher() -> Dispatcher:
     # otherwise be swallowed by the staff topic catch-all. And before client,
     # because the Confirm buttons are tapped in a counterparty's own group -
     # the client router's catch-all must not see them first.
+    # Before staff, like broadcast and outbound and for the same reason: the
+    # command is sent inside a topic, and the staff topic catch-all would eat
+    # it first.
+    dp.include_router(bridge.router)
     dp.include_router(fx_handlers.router)
     dp.include_router(staff.router)
     dp.include_router(client.router)

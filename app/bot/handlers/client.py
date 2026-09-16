@@ -491,6 +491,12 @@ async def client_reply(message: Message) -> None:
 
         await relay.relay_client_message(
             session, gateway(), item,
+            # Which group this actually arrived in, rather than the group the
+            # request was raised in. They are the same thing until a request is
+            # bridged, and on a bridged one getting it wrong would record a
+            # supplier's message against the client's chat - where a later
+            # reply would resolve to nothing and be dropped in silence.
+            from_chat=chat,
             text=incoming.text,
             sender_name=incoming.sender_name,
             telegram_message_id=incoming.telegram_message_id,

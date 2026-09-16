@@ -68,6 +68,30 @@ class IncomingAttachment:
     file_size: int | None = None
 
 
+async def counterparty_chats(session: AsyncSession, item: WorkItem) -> list[Chat]:
+    """Every outside group this request reaches. One, or two if it is bridged.
+
+    Filing Structure and Connected Tickets, section 4. A two-sided request has
+    the client's group and the supplier's, with one topic in Operations where
+    both halves are visible.
+
+    This list is what the platform's outward safety now rests on. It used to
+    rest on there being only one group and no way to address another; the list
+    is the replacement, and `send_client_reply` refuses anything not in it.
+
+    The raising group is always first, so a caller that does not care which
+    side it is talking to gets the behaviour every one-sided request has always
+    had.
+    """
+    source, _ = await chats_for(session, item)
+    chats = [source]
+    if item.bridged_chat_id is not None and item.bridged_chat_id != item.source_chat_id:
+        other = await session.get(Chat, item.bridged_chat_id)
+        if other is not None:
+            chats.append(other)
+    return chats
+
+
 async def chats_for(session: AsyncSession, item: WorkItem) -> tuple[Chat, Chat]:
     """(client group, operations group) for a work item, loaded explicitly."""
     source = await session.get(Chat, item.source_chat_id)
@@ -631,9 +655,19 @@ async def relay_client_message(
     sender_telegram_user_id: int | None = None,
     attachments: list[IncomingAttachment] | None = None,
     replying_to: str | None = None,
+    from_chat: Chat | None = None,
 ) -> None:
-    """Client → topic. Reopens nothing and changes no status; staff decide."""
+    """Counterparty → topic. Reopens nothing and changes no status; staff decide.
+
+    `from_chat` says which side spoke, and matters only on a two-sided request.
+    Getting it wrong would be worse than cosmetic: the message is recorded
+    against that chat, and the reply-to-acknowledgement strategy resolves later
+    replies by looking the id up in that chat. Recorded against the wrong one,
+    a supplier's follow-up would resolve to nothing and be silently dropped -
+    the failure this platform has already had twice.
+    """
     source, ops = await chats_for(session, item)
+    source = from_chat or source
 
     await _record_message(
         session, item,
@@ -705,7 +739,21 @@ async def relay_client_message(
                 flattened = flattened[:159].rstrip() + "…"
             context = f"\n<i>in reply to: {html.escape(flattened)}</i>"
 
-        who = f"<b>{html.escape(sender_name)} has replied</b> on {item.display_reference}"
+        # Which side spoke, but only when there are two of them.
+        #
+        # On a two-sided request the team reads one conversation with a client
+        # at one end and a supplier at the other, and "Tom has replied" is
+        # ambiguous in a way that matters: the answer to it goes back out to
+        # somebody, and to the wrong somebody if the reader guessed. A
+        # one-sided request has nothing to disambiguate, so it says nothing.
+        side = ""
+        if item.bridged_chat_id is not None:
+            side = f" <i>({html.escape(source.title or 'other side')})</i>"
+
+        who = (
+            f"<b>{html.escape(sender_name)} has replied</b>{side} on "
+            f"{item.display_reference}"
+        )
         if owner is not None:
             body = f"{mention_for(owner)} — {who}{context}\n{quoted}"
         else:
@@ -763,8 +811,13 @@ async def send_client_reply(
     *,
     attachment: IncomingAttachment | None = None,
     tag_lead: int | None = None,
+    to_chat: Chat | None = None,
 ) -> None:
-    """The only path from NexterPay to a client.
+    """The only path from NexterPay to a counterparty.
+
+    `to_chat` names the destination, and matters only on a two-sided request.
+    Left out, the reply goes to the group the request was raised in, which is
+    what every one-sided request has always done.
 
     The reply carries the reference and becomes the new anchor, so replying to
     it resolves back to this work item.
@@ -783,6 +836,25 @@ async def send_client_reply(
     """
     actor.require_any()
     source, ops = await chats_for(session, item)
+
+    # Which outside group this is going to, checked rather than trusted.
+    #
+    # This is the explicit guarantee that replaced an implicit one. Until
+    # two-sided tickets existed, a request had exactly one outside group and
+    # there was no code path that could send to the wrong party. Now there can
+    # be two, so the destination is named by the caller - and refused here if
+    # it is not a party to this request.
+    #
+    # Checked in this function rather than at the call site on purpose. A rule
+    # enforced by every caller is a rule enforced until somebody writes a new
+    # caller.
+    allowed = await counterparty_chats(session, item)
+    source = to_chat or source
+    if source.id not in {chat.id for chat in allowed}:
+        raise DomainError(
+            f"{source.title or source.telegram_chat_id} is not a party to "
+            f"{item.display_reference}, so nothing was sent."
+        )
 
     # Signed, so the counterparty knows who they are dealing with.
     #

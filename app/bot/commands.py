@@ -144,6 +144,16 @@ REJECT = _c("reject")
 # decision rather than a build.
 RATE_CHECK = _c("ratecheck")
 
+# Attaching a second outside group to a request, so it runs between a client
+# and a supplier with NexterPay in the middle. Filing Structure and Connected
+# Tickets, section 4.
+#
+# Sent inside the request's own topic, like /npreply and /npnote, because the
+# request it applies to is the one you are standing in - and because a command
+# that took a reference could be pointed at the wrong ticket, which on this
+# feature means pointing a client's conversation at a supplier.
+BRIDGE = _c("bridge")
+
 # Anywhere
 START = "start"
 START_ALIAS = _c("start")
@@ -161,5 +171,6 @@ ALL = [
     SETLEAD, LEADS, REMOVELEAD, SETUP, HELP, ROLE,
     NEW_CLIENT, NEW_SUPPLIER,
     ORDER_CLIENT, ORDER_SUPPLIER, FX_DEALS, QUOTE, HASH, REJECT, RATE_CHECK,
+    BRIDGE,
     START, START_ALIAS, WHOAMI,
 ]

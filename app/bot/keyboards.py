@@ -134,7 +134,13 @@ def work_item_actions(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def confirm_reply(work_item_id: int, leads=None) -> InlineKeyboardMarkup:
+def confirm_reply(
+    work_item_id: int,
+    leads=None,
+    *,
+    source_name: str | None = None,
+    bridged_name: str | None = None,
+) -> InlineKeyboardMarkup:
     """Last stop before a message leaves for a client group.
 
     The envelope and the client's name are on the button on purpose. Staff tap
@@ -150,6 +156,35 @@ def confirm_reply(work_item_id: int, leads=None) -> InlineKeyboardMarkup:
     tapping without reading is the worst place for it. NexterPay described the
     flow they expected as "the options for who is there", which is this.
     """
+    # On a two-sided request the destination is named, not described.
+    #
+    # Filing Structure and Connected Tickets, section 4: "Every outbound
+    # message names its destination before it is sent. The confirmation reads
+    # 'Send to Acme Payments' or 'Send to Supplier Pexi', not simply 'Send'."
+    #
+    # This is the screen that replaces a guarantee. Until a request could have
+    # two outside groups, "Send to Client" was the only thing it could possibly
+    # mean; now it is a question, and the person tapping is the last one who
+    # can answer it.
+    if bridged_name:
+        rows = [
+            [InlineKeyboardButton(
+                text=f"✉ Send to {source_name or 'the client'}"[:60],
+                callback_data=cb("sendreply", work_item_id),
+            )],
+            [InlineKeyboardButton(
+                text=f"✉ Send to {bridged_name}"[:60],
+                callback_data=cb("sendbridged", work_item_id),
+            )],
+            [InlineKeyboardButton(
+                text="Cancel", callback_data=cb("cancelreply", work_item_id)
+            )],
+        ]
+        # No tag buttons on a bridged request. A named contact belongs to one
+        # group, and "Send and tag Ann" beside two destinations is a button
+        # whose label does not say which room Ann is in.
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
     rows = [
         [
             InlineKeyboardButton(
