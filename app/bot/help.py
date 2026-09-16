@@ -87,6 +87,59 @@ CHANNEL_PURPOSE: dict[Department, str] = {
 }
 
 
+# NexterPay's command, answered on their side rather than ours.
+#
+# It carries no np prefix because it is not one of ours, and nothing in this
+# platform implements it. It appears in the Support client help because that is
+# where their clients need it, and `test_help` has a named exception for it -
+# the rule that help may only name commands the bot answers is otherwise worth
+# keeping, since a help message pointing at a dead command is worse than a
+# document doing it.
+LOOKUP_COMMAND = "/orderstatus"
+
+
+def support_for_clients() -> str:
+    """The Support client help, written by NexterPay on 15 September.
+
+    Theirs, not ours, and quoted rather than rewritten. It is longer than every
+    other channel's help and that is deliberate on their part: Support is where
+    clients arrive with a transaction reference and no idea what to do with it,
+    which is the problem the whole `/orderstatus` section exists to solve.
+
+    Client groups only. A supplier does not check a client's transaction, so
+    the supplier side keeps the ordinary wording.
+    """
+    return "\n".join([
+        "For day-to-day operational issues including failed/delayed payments, "
+        "transaction queries, technical faults and anything requiring "
+        "investigation.",
+        "",
+        _line(cmd.HELP, "show this help guide at any time"),
+        "",
+        "CHECK TRANSACTION STATUS",
+        "",
+        f"{LOOKUP_COMMAND} <transaction ID> — check a transaction in real time.",
+        "The bot returns Order ID, Status, Amount and any Error.",
+        "",
+        "  Completed — successful",
+        "  Completed with errors — failed",
+        "  PayInExternalPending — pending with the provider",
+        "",
+        "If it is still pending after 24 hours, raise a ticket.",
+        "",
+        "SUPPORT TICKETS",
+        "",
+        _line(cmd.FRONT_DOOR, "open the menu: Raise Request / My Requests"),
+        _line(cmd.TICKETS, "open tickets, plus those resolved in the last four weeks"),
+        "",
+        "To update a ticket, reply to any message we have sent you about it. "
+        "You do not need the reference.",
+        "",
+        f"A message here without /{cmd.FRONT_DOOR}, and not a reply to an "
+        f"existing ticket, is not tracked as a support ticket.",
+    ])
+
+
 def for_client_group(department: Department, *, is_supplier: bool) -> str:
     """What a client or supplier can do. Deliberately short.
 
@@ -97,6 +150,13 @@ def for_client_group(department: Department, *, is_supplier: bool) -> str:
     makes is not getting a command wrong - it is raising the right question in
     the wrong group.
     """
+    # Support's client side has wording of its own, written by NexterPay. The
+    # supplier side of Support, and every other desk, uses the shared text
+    # below. Checked before anything else is assembled, because it replaces the
+    # whole message rather than a line of it.
+    if department is Department.SUPPORT and not is_supplier:
+        return support_for_clients()
+
     raise_label = (
         "Commercial Enquiry" if department is Department.BUSINESS else "Raise Request"
     )
@@ -109,6 +169,7 @@ def for_client_group(department: Department, *, is_supplier: bool) -> str:
         "The one thing to remember: start with /np.",
         "",
         _line(cmd.FRONT_DOOR, f"the menu. Tap {raise_label}, or My Requests."),
+        _line(cmd.HELP, "show this help guide at any time"),
         _line(cmd.TICKETS, "everything open, plus anything resolved in the last "
                            "four weeks"),
         "",

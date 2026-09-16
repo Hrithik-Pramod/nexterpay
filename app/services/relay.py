@@ -235,12 +235,24 @@ def topic_name(item: WorkItem, client_name: str) -> str:
     # `client_name` is kept in the signature: it is what the caller has to
     # hand, and dropping it would make restoring this a change at every call
     # site rather than a change here.
-    # Light, then symbol, then the priority mark. The light is first because
-    # the list truncates from the right and "is anyone on this" is the question
-    # that must survive; the mark is last because only two priorities in five
-    # carry one, and leading with it would ragged the list.
+    # Symbol, then the priority mark, then the reference.
+    #
+    # The traffic light used to lead this. NexterPay asked for it on
+    # 5 September and asked for it out again on 15 September - "the bubbles
+    # still have the colour inside them, remove the dots" - because the topic
+    # already carries a coloured bubble and a second coloured dot beside it
+    # reads as noise.
+    #
+    # Worth knowing what went with it: a topic's bubble colour is fixed when
+    # the topic is created and cannot be edited afterwards, so nothing in the
+    # list changes colour as a request progresses any more. The symbol is now
+    # the only moving part, which is why it carries four states rather than
+    # three.
+    #
+    # `traffic_light` is kept - it is still a correct description of a request
+    # and is cheap to hold - but nothing renders it today.
     return (
-        f"{traffic_light(item)} {status_symbol(item)}{mark or ''} "
+        f"{status_symbol(item)}{mark or ''} "
         f"{item.display_reference} · {item.subject}"
     )[:128]
 
@@ -1004,7 +1016,14 @@ async def assign(
 async def reopen(
     session: AsyncSession, gateway: TelegramGateway, item: WorkItem, actor: Actor
 ) -> None:
-    """Put a closed request back into play. Manager and above."""
+    """Put a closed request back into play. Manager and above.
+
+    Two routes out, depending on whether the archive has already taken it.
+    Before archiving existed there was only one, and reopening an archived
+    request would have tried to write into a topic that had been deleted -
+    which fails, and fails in a way that reads as the bot being broken rather
+    than as the ticket having moved.
+    """
     if item.status is not WorkItemStatus.CLOSED:
         return
 
@@ -1012,10 +1031,85 @@ async def reopen(
     before = await _last_event_id(session, item)
     await wi.reopen(session, item, actor)
 
-    if item.topic_id is not None:
+    if item.archived_at is not None:
+        await _reopen_from_archive(session, gateway, item, ops)
+    elif item.topic_id is not None:
         await gateway.reopen_topic(ops.telegram_chat_id, item.topic_id)
+
     await _announce_since(session, gateway, item, before)
     await refresh_header(session, gateway, item)
+
+
+def archive_link(archive_chat_id: int, thread_id: int) -> str | None:
+    """A tappable link to a topic in a private supergroup.
+
+    Telegram builds these from the chat id with the -100 prefix stripped. Any
+    other shape is not a supergroup and has no such link, so this returns None
+    rather than composing something that would 404 - a dead link in an
+    Operations topic is worse than a sentence saying where to look.
+    """
+    raw = str(archive_chat_id)
+    if not raw.startswith("-100"):
+        return None
+    return f"https://t.me/c/{raw[4:]}/{thread_id}"
+
+
+async def _reopen_from_archive(
+    session: AsyncSession, gateway: TelegramGateway, item: WorkItem, ops: Chat
+) -> None:
+    """A fresh topic for a request the archive has already taken.
+
+    NexterPay, 9 September: "If reopened, a new active topic would be created
+    and linked back to the archived ticket."
+
+    The archived copy is deliberately left where it is. It is read-only and it
+    is the record of how the ticket finished the first time; deleting it to
+    make the reopened one the single version would destroy the thing the
+    archive exists for.
+
+    The link to it goes in the new topic as a message rather than in a column,
+    because `archived_at` is cleared here - the request is live again, and if
+    it is closed a second time it has to archive again rather than be skipped
+    by a sweep that thinks it has already been done.
+    """
+    # Imported here rather than at module scope: `archive` imports this module,
+    # so a top-level import would be circular.
+    from app.services.archive import archive_chat_for
+
+    was_topic = item.archive_topic_id
+    archive_chat = await archive_chat_for(session, item.department)
+
+    client = await session.get(Client, item.client_id)
+    item.topic_id = await gateway.create_topic(
+        ops.telegram_chat_id,
+        topic_name(item, client.name if client else "Unknown client"),
+    )
+    item.header_message_id = None
+    item.archived_at = None
+    item.archive_topic_id = None
+    await session.flush()
+
+    header = await gateway.send_message(
+        ops.telegram_chat_id,
+        header_text(item, client.name if client else "Unknown client"),
+        thread_id=item.topic_id,
+        parse_mode="HTML",
+    )
+    item.header_message_id = header.message_id
+    await session.flush()
+
+    link = (
+        archive_link(archive_chat.telegram_chat_id, was_topic)
+        if archive_chat is not None and was_topic is not None
+        else None
+    )
+    await gateway.send_message(
+        ops.telegram_chat_id,
+        f"Reopened. The original topic was archived and removed, so this is a "
+        f"new one — the archived copy is still there and stays read-only."
+        + (f"\n\n{link}" if link else ""),
+        thread_id=item.topic_id,
+    )
 
 
 async def _closed_by(session: AsyncSession, item: WorkItem):

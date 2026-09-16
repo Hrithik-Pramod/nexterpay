@@ -110,18 +110,28 @@ def test_the_four_symbols_are_distinct() -> None:
 # On the title, in the right order
 # --------------------------------------------------------------------------
 
-def test_the_light_still_leads() -> None:
-    """The topic list truncates from the right. Whatever else goes on the
-    title, "is anyone on this" has to be the character that survives."""
+def test_the_symbol_leads() -> None:
+    """The topic list truncates from the right, so whatever leads is the one
+    character guaranteed to survive. That used to be the traffic light."""
     title = relay.topic_name(_Item(WorkItemStatus.OPEN), "Acme Payments")
-    assert title.startswith(relay.LIGHT_UNCLAIMED)
-
-
-def test_the_symbol_sits_beside_the_light() -> None:
-    title = relay.topic_name(_Item(WorkItemStatus.OPEN), "Acme Payments")
-    assert relay.SYMBOL_UNCLAIMED in title
-    assert title.index(relay.LIGHT_UNCLAIMED) < title.index(relay.SYMBOL_UNCLAIMED)
+    assert title.startswith(relay.SYMBOL_UNCLAIMED)
     assert title.index(relay.SYMBOL_UNCLAIMED) < title.index("ACME-1067")
+
+
+def test_the_dots_are_gone() -> None:
+    """NexterPay, 15 September: "the bubbles still have the colour inside them,
+    remove the dots".
+
+    The topic already carries a coloured bubble, so a coloured dot beside it
+    was a second colour scheme competing with the first. What went with it: the
+    bubble's colour is fixed when the topic is created and cannot be edited, so
+    nothing in the list changes colour as a request moves. The symbol is the
+    only moving part now, which is why it has four states rather than three.
+    """
+    lights = {relay.LIGHT_UNCLAIMED, relay.LIGHT_WORKING, relay.LIGHT_DONE}
+    for status in WorkItemStatus:
+        title = relay.topic_name(_Item(status), "Acme Payments")
+        assert not (set(title) & lights), f"{status.name} still carries a dot"
 
 
 def test_the_priority_mark_still_follows_both() -> None:

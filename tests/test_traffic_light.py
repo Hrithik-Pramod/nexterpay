@@ -37,7 +37,11 @@ async def _raised(session, gw, chat):
 async def test_a_new_request_is_red(session, acme_support, support_ops, gw):
     item = await _raised(session, gw, acme_support)
     assert relay.traffic_light(item) == relay.LIGHT_UNCLAIMED
-    assert _title(gw, item).startswith(relay.LIGHT_UNCLAIMED)
+    # The light itself is no longer rendered — NexterPay asked the dots out of
+    # the title on 15 September, since the topic already carries a coloured
+    # bubble. The stage symbol leads instead, and it is what these titles are
+    # checked on from here.
+    assert _title(gw, item).startswith(relay.SYMBOL_UNCLAIMED)
 
 
 async def test_claiming_turns_it_amber(session, acme_support, support_ops, operator, gw):
@@ -45,7 +49,7 @@ async def test_claiming_turns_it_amber(session, acme_support, support_ops, opera
     await relay.claim(session, gw, item, Actor.of(operator))
 
     assert relay.traffic_light(item) == relay.LIGHT_WORKING
-    assert _title(gw, item).startswith(relay.LIGHT_WORKING)
+    assert _title(gw, item).startswith(relay.SYMBOL_WORKING)
 
 
 async def test_completed_stays_amber(session, acme_support, support_ops, operator, gw):
@@ -76,7 +80,7 @@ async def test_closing_turns_it_green_before_the_topic_is_archived(
     item = await _raised(session, gw, acme_support)
     await relay.close(session, gw, item, Actor.of(manager))
 
-    assert _title(gw, item).startswith(relay.LIGHT_DONE)
+    assert _title(gw, item).startswith(relay.SYMBOL_CLOSED)
 
     renames = [i for i, c in enumerate(gw.calls) if c.method == "rename_topic"]
     closes = [i for i, c in enumerate(gw.calls) if c.method == "close_topic"]
@@ -92,7 +96,7 @@ async def test_reopening_turns_it_back(
     await relay.reopen(session, gw, item, Actor.of(manager))
 
     assert relay.traffic_light(item) != relay.LIGHT_DONE
-    assert _title(gw, item).startswith(relay.LIGHT_WORKING)
+    assert _title(gw, item).startswith(relay.SYMBOL_WORKING)
 
 
 async def test_the_reference_survives_the_light(

@@ -49,7 +49,7 @@ from app.db.models import Chat, Message, WorkItem
 from app.domain.enums import ChatKind, Department, WorkItemStatus
 from app.domain.history import load_events, render_history
 from app.services.gateway import TelegramGateway
-from app.services.relay import chats_for, status_symbol, traffic_light
+from app.services.relay import chats_for, status_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +141,7 @@ def summary_text(
     """
     closed = item.closed_at.strftime("%d %b %Y at %H:%M") if item.closed_at else "—"
     lines = [
-        f"{traffic_light(item)} {status_symbol(item)} {item.display_reference} — archived",
+        f"{status_symbol(item)} {item.display_reference} — archived",
         "",
         f"Client        {client_name}",
         f"Department    {item.department.label}",
@@ -228,6 +228,15 @@ async def archive_one(
             "Archived %s to topic %s and removed the original",
             item.display_reference, thread_id,
         )
+        # And forgotten, which matters more than it looks.
+        #
+        # Leaving the id behind would mean every path that posts into a topic
+        # still holding a thread that no longer exists - a client replying to a
+        # closed request weeks later, for instance, whose notice goes into the
+        # topic. Those paths all already check for None; none of them check
+        # whether the topic is still there, because until now it always was.
+        item.topic_id = None
+        await session.flush()
 
     return True
 

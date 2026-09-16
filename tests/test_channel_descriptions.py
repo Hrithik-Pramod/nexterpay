@@ -68,10 +68,16 @@ def test_the_wording_is_theirs() -> None:
 # And it reaches the person in the room
 # --------------------------------------------------------------------------
 
+# Support's client side has its own message, written by NexterPay on
+# 15 September. It replaces the whole help rather than a line of it, so it is
+# outside the shared-purpose rules below and has its own tests further down.
+SHARED = [d for d in Department if d is not Department.SUPPORT]
+
+
 def test_the_purpose_leads_the_client_help() -> None:
     """Above the commands, because the mistake it prevents happens before
     anybody types anything."""
-    for department in Department:
+    for department in SHARED:
         text = helptext.for_client_group(department, is_supplier=False)
         purpose = helptext.CHANNEL_PURPOSE[department]
         assert purpose in text
@@ -91,7 +97,7 @@ def test_a_supplier_group_says_the_same_thing() -> None:
 def test_each_desk_gets_its_own_and_not_another() -> None:
     """The failure that would make this feature worse than nothing: Finance
     being told what Support is for."""
-    for department in Department:
+    for department in SHARED:
         text = helptext.for_client_group(department, is_supplier=False)
         others = [
             other.label for other in Department
@@ -104,6 +110,51 @@ def test_each_desk_gets_its_own_and_not_another() -> None:
 # --------------------------------------------------------------------------
 # `/npraise` — quieter, not gone
 # --------------------------------------------------------------------------
+
+# --------------------------------------------------------------------------
+# Support's client side, which NexterPay wrote themselves
+# --------------------------------------------------------------------------
+
+def test_support_clients_get_their_transaction_lookup() -> None:
+    """The reason this message is longer than every other desk's.
+
+    Support is where a client arrives holding a transaction reference with no
+    idea what to do with it — which is the same problem the reference nudge
+    solves from the other end.
+    """
+    text = helptext.for_client_group(Department.SUPPORT, is_supplier=False)
+    assert "/orderstatus" in text
+    assert "PayInExternalPending" in text
+    assert "24 hours" in text
+
+
+def test_support_suppliers_do_not_get_it() -> None:
+    """A supplier does not look up a client's transaction. NexterPay were
+    explicit: "only for client end display, yours remains for supplier end"."""
+    text = helptext.for_client_group(Department.SUPPORT, is_supplier=True)
+    assert "/orderstatus" not in text
+    assert helptext.CHANNEL_PURPOSE[Department.SUPPORT] in text
+
+
+def test_the_lookup_command_is_not_one_of_ours() -> None:
+    """`/orderstatus` is answered on NexterPay's side.
+
+    It has a named exception in test_help's guard. If this platform ever grows
+    a command by that name it would be np-prefixed like every other, and the
+    exception would then be hiding a real collision.
+    """
+    assert helptext.LOOKUP_COMMAND.lstrip("/") not in cmd.ALL
+
+
+def test_every_client_help_offers_the_help_command() -> None:
+    """NexterPay's own text lists it, so the others should not be the odd ones
+    out — somebody reading two of these should not find the second one quieter
+    about how to get back to it."""
+    for department in Department:
+        for supplier in (True, False):
+            text = helptext.for_client_group(department, is_supplier=supplier)
+            assert f"/{cmd.HELP}" in text, f"{department.label} supplier={supplier}"
+
 
 def test_npraise_is_no_longer_advertised_to_clients() -> None:
     """NexterPay, 12 September: drop it from the help text.

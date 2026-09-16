@@ -134,7 +134,20 @@ def test_every_command_it_names_is_one_the_bot_answers_to() -> None:
     to doubt the bot."""
     import re
 
-    known = set(cmd.ALL)
+    # One exception, named rather than a loosened rule.
+    #
+    # `/orderstatus` is NexterPay's own command, answered by their side and not
+    # by this bot. It appears in the Support client help because that is where
+    # their clients need it — NexterPay wrote that text themselves on
+    # 15 September.
+    #
+    # The rule it is escaping is worth keeping intact for everything else: help
+    # naming a command the bot does not answer is worse than a document doing
+    # it, because nobody thinks to doubt the bot. So this is a single string,
+    # not a pattern, and a second one should have to be argued for.
+    NOT_OURS = {"orderstatus"}
+
+    known = set(cmd.ALL) | NOT_OURS
     texts = [
         helptext.build(None, None),
         helptext.build(_Chat(ChatKind.CLIENT, Department.SUPPORT), None),

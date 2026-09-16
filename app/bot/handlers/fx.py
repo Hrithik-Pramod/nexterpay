@@ -225,10 +225,26 @@ def preview_text(side: FxSide, target: str, figures: Figures, account: str) -> s
     ])
 
 
-def _send_keyboard(order_id: int, side: FxSide) -> InlineKeyboardMarkup:
+def _send_keyboard(
+    order_id: int, side: FxSide, target: str | None = None
+) -> InlineKeyboardMarkup:
+    """The send button, naming who it goes to.
+
+    Filing Structure and Connected Tickets, section 4: "Every outbound message
+    names its destination before it is sent. The confirmation reads 'Send to
+    Acme Payments' or 'Send to Supplier Pexi', not simply 'Send'."
+
+    This said "Send to the client" until 16 September, which is close and not
+    the same thing. The preview above it always named the party; the button did
+    not, and the button is the one you press. On a desk running two deals at
+    once, "the client" is a description of a role and the name is a fact.
+
+    Falls back to the side where no name is to hand, because a button that says
+    less is better than one that says nothing.
+    """
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
-            text=f"✉ Send to the {side.value}",
+            text=f"✉ Send to {target or f'the {side.value}'}"[:60],
             callback_data=f"fx:send:{order_id}:{side.value}",
         )],
         [InlineKeyboardButton(text="Cancel", callback_data=f"fx:cancel:{order_id}")],
@@ -578,7 +594,7 @@ async def capture_name(message: Message, state: FSMContext) -> None:
     await state.update_data(account=account)
     await message.answer(
         preview_text(side, target, figures, account),
-        reply_markup=_send_keyboard(data["order_id"], side),
+        reply_markup=_send_keyboard(data["order_id"], side, target),
     )
 
 

@@ -140,7 +140,7 @@ async def test_filing_renames_the_topic_to_match_the_new_reference(
     renamed = gw.topic_names[(OPS_CHAT, item.topic_id)]
     # The traffic light leads the title now, so the reference comes second.
     # The topic list truncates from the right, which is why the light is first.
-    assert renamed.startswith(relay.LIGHT_UNCLAIMED)
+    assert renamed.startswith(relay.SYMBOL_UNCLAIMED)
     assert f"ACME-SPEX-{item.reference}" in renamed
     assert "Settlement" in renamed
 

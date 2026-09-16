@@ -217,6 +217,7 @@ def _every_keyboard():
         handlers._action_keyboard("Send", "fx:hsend:7"),
         handlers._action_keyboard("Record", f"fx:rsave:7:{FxSide.CLIENT.value}"),
         handlers._send_keyboard(7, FxSide.CLIENT),
+        handlers._send_keyboard(7, FxSide.CLIENT, "Acme Payments"),
         handlers._deal_keyboard([_Deal()], FxSide.SUPPLIER),
         handlers.confirm_keyboard(7, FxSide.CLIENT),
         handlers.receipt_keyboard(7),
@@ -440,6 +441,29 @@ def test_the_rejection_prompt_helper_always_speaks() -> None:
             assert spoke, "_ask_reason says nothing"
             return
     raise AssertionError("_ask_reason not found")
+
+
+def test_the_send_button_names_the_party() -> None:
+    """Filing Structure and Connected Tickets, section 4: the confirmation
+    reads "Send to Acme Payments", not simply "Send".
+
+    It said "Send to the client" until 16 September. The preview above it
+    always named the party; the button did not, and the button is the one you
+    press. On a desk running two deals at once, "the client" is a role and the
+    name is a fact.
+    """
+    named = handlers._send_keyboard(7, FxSide.CLIENT, "Acme Payments")
+    label = named.inline_keyboard[0][0].text
+    assert "Acme Payments" in label
+
+    supplier = handlers._send_keyboard(7, FxSide.SUPPLIER, "Supplier Pexi")
+    assert "Supplier Pexi" in supplier.inline_keyboard[0][0].text
+
+
+def test_the_send_button_still_says_something_without_a_name() -> None:
+    """A button that says less is better than one that says nothing."""
+    label = handlers._send_keyboard(7, FxSide.CLIENT).inline_keyboard[0][0].text
+    assert "client" in label.lower()
 
 
 def test_the_two_prompts_ask_different_questions() -> None:

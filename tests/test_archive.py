@@ -222,6 +222,105 @@ async def test_one_bad_ticket_does_not_stop_the_rest(
 
 
 # --------------------------------------------------------------------------
+# Reopening something the archive has already taken
+#
+# NexterPay, 9 September: "If reopened, a new active topic would be created and
+# linked back to the archived ticket."
+#
+# This was missed when the archive was built, and missing it left reopen worse
+# than incomplete: the original topic had been deleted but the work item still
+# held its id, so reopening wrote into a thread that no longer existed.
+# --------------------------------------------------------------------------
+
+async def test_archiving_forgets_the_topic_it_deleted(
+    session, acme_support, support_ops, operator, gw, support_archive
+):
+    """The id has to go with the topic.
+
+    Every path that posts into a topic checks for None; not one of them checks
+    whether the topic still exists, because until the archive was built it
+    always did.
+    """
+    item = await _closed(session, gw, acme_support, operator, hours_ago=30)
+    await archive.archive_one(session, gw, item)
+    assert item.topic_id is None
+
+
+async def test_reopening_an_archived_request_gets_a_new_topic(
+    session, acme_support, support_ops, operator, manager, gw, support_archive
+):
+    item = await _closed(session, gw, acme_support, operator, hours_ago=30)
+    await archive.archive_one(session, gw, item)
+    archived_topic = item.archive_topic_id
+
+    await relay.reopen(session, gw, item, Actor.of(manager))
+
+    assert item.topic_id is not None, "reopened with nowhere to work"
+    assert item.topic_id != archived_topic
+    assert (support_ops.telegram_chat_id, item.topic_id) not in gw.reopened_topics, (
+        "it tried to reopen a topic instead of creating one"
+    )
+
+
+async def test_the_archived_copy_is_left_alone(
+    session, acme_support, support_ops, operator, manager, gw, support_archive
+):
+    """It is the record of how the ticket finished the first time. Deleting it
+    to make the reopened one the single version destroys the thing the archive
+    exists for."""
+    item = await _closed(session, gw, acme_support, operator, hours_ago=30)
+    await archive.archive_one(session, gw, item)
+    archived_topic = item.archive_topic_id
+
+    await relay.reopen(session, gw, item, Actor.of(manager))
+
+    assert (ARCHIVE_CHAT, archived_topic) not in gw.deleted_topics
+
+
+async def test_the_new_topic_links_back(
+    session, acme_support, support_ops, operator, manager, gw, support_archive
+):
+    item = await _closed(session, gw, acme_support, operator, hours_ago=30)
+    await archive.archive_one(session, gw, item)
+    await relay.reopen(session, gw, item, Actor.of(manager))
+
+    posted = " ".join(
+        c.payload.get("text", "") for c in gw.calls
+        if c.method == "send_message" and c.chat_id == support_ops.telegram_chat_id
+    )
+    assert "archived" in posted.lower()
+    assert "https://t.me/c/" in posted, "no link back to the archived copy"
+
+
+async def test_closing_it_again_archives_it_again(
+    session, acme_support, support_ops, operator, manager, gw, support_archive
+):
+    """`archived_at` is cleared on reopen, so a second closure is not skipped
+    by a sweep that thinks the work is already done."""
+    item = await _closed(session, gw, acme_support, operator, hours_ago=30)
+    await archive.archive_one(session, gw, item)
+    await relay.reopen(session, gw, item, Actor.of(manager))
+
+    assert item.archived_at is None
+    assert item.archive_topic_id is None
+
+    await relay.close(session, gw, item, Actor.of(operator))
+    item.closed_at = utcnow() - timedelta(hours=30)
+    await session.flush()
+
+    assert [d.id for d in await archive.due_for_archive(session)] == [item.id]
+
+
+def test_a_link_is_only_built_for_a_real_supergroup() -> None:
+    """A dead link in an Operations topic is worse than a sentence saying where
+    to look, so anything that is not a -100 supergroup gets no link at all."""
+    assert relay.archive_link(-1009000000001, 42) == (
+        "https://t.me/c/9000000001/42"
+    )
+    assert relay.archive_link(12345, 42) is None
+
+
+# --------------------------------------------------------------------------
 # One archive per desk
 # --------------------------------------------------------------------------
 
