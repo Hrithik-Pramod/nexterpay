@@ -1105,8 +1105,8 @@ async def _reopen_from_archive(
     )
     await gateway.send_message(
         ops.telegram_chat_id,
-        f"Reopened. The original topic was archived and removed, so this is a "
-        f"new one — the archived copy is still there and stays read-only."
+        "Reopened. The original topic was archived and removed, so this is a "
+        "new one — the archived copy is still there and stays read-only."
         + (f"\n\n{link}" if link else ""),
         thread_id=item.topic_id,
     )
