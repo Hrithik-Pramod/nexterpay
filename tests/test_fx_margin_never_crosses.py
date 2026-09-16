@@ -38,6 +38,12 @@ class _Order:
         self.supplier_code = "SPEX"
         self.status = FxOrderStatus.AWAITING_SETTLEMENT
 
+        # Added 16 September. A property of the deal rather than of a side —
+        # both halves are priced in the same local currency — so it appears in
+        # both views, and the leak tests below check the figures beside it
+        # rather than it.
+        self.currency_code = "EUR"
+
         self.client_account_name = "Acme Payments Ltd"
         self.client_rate = Decimal("1.1642")
         self.client_pays = Decimal("250000")
