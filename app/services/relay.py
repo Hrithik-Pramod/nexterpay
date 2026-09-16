@@ -92,6 +92,32 @@ async def counterparty_chats(session: AsyncSession, item: WorkItem) -> list[Chat
     return chats
 
 
+async def reference_for(
+    session: AsyncSession, item: WorkItem, chat: Chat
+) -> str:
+    """The reference a particular counterparty is shown.
+
+    Each side sees a reference built from **their own** four-letter code, never
+    the other side's.
+
+    Found live on 16 September, on the first two-sided ticket ever sent. The
+    words did not cross - the whole design saw to that - but the reference did:
+    a reply to the supplier went out as "ACME-1072", handing them the client's
+    code. A supplier who knows the work is for ACME knows whose business it is,
+    which is the thing the Filing Structure note says must stay internal, and
+    the reason the FX build has a `supplier_reference` of its own.
+
+    The tests did not catch it. They checked that the message body did not
+    reach the wrong group and never looked at what was wrapped around it.
+    """
+    if chat.id == item.source_chat_id:
+        return item.client_reference
+
+    await session.refresh(chat, ["client"])
+    code = chat.client.code if chat.client else None
+    return f"{code}-{item.reference}" if code else f"#{item.reference}"
+
+
 async def chats_for(session: AsyncSession, item: WorkItem) -> tuple[Chat, Chat]:
     """(client group, operations group) for a work item, loaded explicitly."""
     source = await session.get(Chat, item.source_chat_id)
@@ -866,9 +892,13 @@ async def send_client_reply(
     # sees.
     signature = f" — from {actor.name}" if actor.name else ""
 
-    # client_reference, not display_reference: an outbound message must never
-    # carry the supplier code. See the note on the property.
-    outbound = f"{item.client_reference}{signature} — {text}"
+    # The reference this particular side is shown, never the other side's.
+    #
+    # This was `item.client_reference` until 16 September, which is correct for
+    # a one-sided request and hands the supplier the client's code on a
+    # two-sided one. Never `display_reference`, which carries both.
+    shown_reference = await reference_for(session, item, source)
+    outbound = f"{shown_reference}{signature} — {text}"
 
     parse_mode = None
     if tag_lead is not None:
@@ -888,7 +918,7 @@ async def send_client_reply(
                 for lead in leads
             )
             outbound = (
-                f"{html.escape(item.client_reference)}{html.escape(signature)} — "
+                f"{html.escape(shown_reference)}{html.escape(signature)} — "
                 f"{named} — {html.escape(text)}"
             )
             parse_mode = "HTML"

@@ -168,6 +168,51 @@ async def test_replying_to_one_side_says_nothing_to_the_other(
     assert "chasing the supplier" not in supplier_saw
 
 
+async def test_the_second_side_never_sees_the_first_sides_code(
+    session, acme_support, support_ops, operator, pexi_supplier, gw
+):
+    """Found live, not here — which is the point of writing it down.
+
+    The first two-sided reply ever sent reached the supplier as
+    "ACME-1072 — from peter — …". The words had not crossed; the reference had.
+    A supplier who knows the work is for ACME knows whose business it is, and
+    that is exactly what the Filing Structure note says stays internal.
+
+    The tests that were supposed to cover this checked that the message body
+    did not reach the wrong group. Not one of them looked at what was wrapped
+    around it.
+    """
+    item = await _raised(session, gw, acme_support)
+    item.bridged_chat_id = pexi_supplier.id
+    await session.flush()
+
+    await relay.send_client_reply(
+        session, gw, item, Actor.of(operator), "any update?",
+        to_chat=pexi_supplier,
+    )
+
+    seen = gw.all_text_to(pexi_supplier.telegram_chat_id)
+    assert "any update?" in seen
+    assert "ACME" not in seen, f"the client's code reached the supplier: {seen}"
+
+
+async def test_each_side_is_given_its_own_reference(
+    session, acme_support, support_ops, operator, pexi_supplier, gw
+):
+    """Not a bare number either. A reference a counterparty cannot quote back
+    is a reference that costs somebody a phone call."""
+    item = await _raised(session, gw, acme_support)
+    item.bridged_chat_id = pexi_supplier.id
+    await session.flush()
+
+    assert await relay.reference_for(session, item, acme_support) == (
+        item.client_reference
+    )
+    supplier_ref = await relay.reference_for(session, item, pexi_supplier)
+    assert str(item.reference) in supplier_ref
+    assert "ACME" not in supplier_ref
+
+
 async def test_the_default_is_still_the_raising_group(
     session, acme_support, support_ops, operator, pexi_supplier, gw
 ):
