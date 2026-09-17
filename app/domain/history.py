@@ -79,7 +79,13 @@ def _fmt(event: Event, *, verbose: bool = False) -> str:
     if t is EventType.CLIENT_MESSAGE_RECEIVED:
         return f"Message received from {actor}" + (_quote(p.get("text")) if verbose else "")
     if t is EventType.STAFF_REPLY_SENT:
-        return f"Reply sent to client by {actor}" + (_quote(p.get("text")) if verbose else "")
+        # Named where there are two sides it could have gone to, and not
+        # otherwise - a one-sided request has only ever had one destination,
+        # and spelling it out would add noise to every line in the history.
+        who = p.get("to") or "client"
+        return f"Reply sent to {who} by {actor}" + (
+            _quote(p.get("text")) if verbose else ""
+        )
     if t is EventType.ATTACHMENT_RECEIVED:
         return f"Attachment received from {actor} ({p.get('file_name') or p.get('kind', 'file')})"
     if t is EventType.SUPPLIER_FILED:

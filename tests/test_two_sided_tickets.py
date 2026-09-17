@@ -232,6 +232,53 @@ async def test_the_default_is_still_the_raising_group(
 
 
 # --------------------------------------------------------------------------
+# The history says which side
+# --------------------------------------------------------------------------
+
+async def test_the_history_names_the_side_a_reply_went_to(
+    session, acme_support, support_ops, operator, pexi_supplier, gw
+):
+    """Section 4: "The history records the direction of every message: which
+    side it came from, which side it went to, and who sent it."
+
+    It read "Reply sent to client by peter" whichever side it went to. On a
+    two-sided request that is not untidy wording, it is the audit trail saying
+    something untrue — and the audit trail is the thing somebody reaches for
+    precisely when they are trying to work out what went wrong.
+    """
+    from app.domain.history import load_events, render_history
+
+    item = await _raised(session, gw, acme_support)
+    item.bridged_chat_id = pexi_supplier.id
+    await session.flush()
+
+    await relay.send_client_reply(
+        session, gw, item, Actor.of(operator), "can you confirm?",
+        to_chat=pexi_supplier,
+    )
+
+    history = " ".join(render_history(await load_events(session, item)))
+    assert "Reply sent to" in history
+    assert "Pexi" in history, f"the history does not say where it went: {history}"
+
+
+async def test_a_one_sided_history_is_unchanged(
+    session, acme_support, support_ops, operator, gw
+):
+    """Nothing to disambiguate, so nothing added. A request with one
+    destination should not start carrying its name on every line."""
+    from app.domain.history import load_events, render_history
+
+    item = await _raised(session, gw, acme_support)
+    await relay.send_client_reply(
+        session, gw, item, Actor.of(operator), "an update"
+    )
+
+    history = " ".join(render_history(await load_events(session, item)))
+    assert "Reply sent to client by" in history
+
+
+# --------------------------------------------------------------------------
 # Closing tells both
 # --------------------------------------------------------------------------
 

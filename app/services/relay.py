@@ -948,8 +948,17 @@ async def send_client_reply(
         await _store_attachment(session, item, attachment, source.telegram_chat_id,
                                 file_msg.message_id, MessageDirection.OUTBOUND, actor.name)
 
+    # Who it went to, recorded on the event itself.
+    #
+    # The history line read "Reply sent to client by peter" whichever side it
+    # went to, which on a two-sided request is not a wording problem - it is the
+    # audit trail saying something untrue. Section 4 asks for the direction of
+    # every message to be recorded, and a line that names the wrong party is
+    # worse than one that names none.
     event = await wi.record_event(
-        session, item, EventType.STAFF_REPLY_SENT, actor, text=outbound[:500]
+        session, item, EventType.STAFF_REPLY_SENT, actor,
+        text=outbound[:500],
+        to=source.title if item.bridged_chat_id is not None else None,
     )
     await announce(session, gateway, item, event)
 
