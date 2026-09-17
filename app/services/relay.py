@@ -467,8 +467,14 @@ async def refresh_header(
         logger.debug("Could not refresh header for %s", item.display_reference, exc_info=True)
 
 
-def closure_text(item: WorkItem, resolution: str | None = None) -> str:
-    """What the client is told when a request is closed.
+def closure_text(
+    item: WorkItem, resolution: str | None = None, reference: str | None = None
+) -> str:
+    """What a counterparty is told when a request is closed.
+
+    `reference` names the one this particular side is shown. On a two-sided
+    request the supplier is told too, and must be told using their own code -
+    the same rule that applies to every other message leaving the platform.
 
     NexterPay asked for the original request to be repeated back, because a
     bare "this is now closed" arriving days later means nothing to whoever
@@ -481,7 +487,7 @@ def closure_text(item: WorkItem, resolution: str | None = None) -> str:
         original = original[:399].rstrip() + "…"
 
     parts = [
-        f"Request {item.client_reference} is now resolved.",
+        f"Request {reference or item.client_reference} is now resolved.",
         "",
         f"What you raised on {raised}:",
         f'"{original}"',
@@ -1779,17 +1785,25 @@ async def close(
     await refresh_header(session, gateway, item)
 
     if notify_client:
-        sent = await gateway.send_message(
-            source.telegram_chat_id, closure_text(item, resolution)
-        )
-        await _record_message(
-            session, item,
-            direction=MessageDirection.OUTBOUND,
-            chat_id=source.telegram_chat_id,
-            message_id=sent.message_id,
-            sender_name="NexterPay Operations",
-            text=closure_text(item, resolution),
-        )
+        # Both sides, on a two-sided request. NexterPay, 16 September, asked
+        # directly whether the supplier should be told when one closes: "Tell
+        # Both".
+        #
+        # Each is told using their own reference. A supplier reading the
+        # client's code here would be the same leak as in a reply, arriving by
+        # a different door - which is exactly how the first one arrived.
+        for chat in await counterparty_chats(session, item):
+            reference = await reference_for(session, item, chat)
+            text = closure_text(item, resolution, reference)
+            sent = await gateway.send_message(chat.telegram_chat_id, text)
+            await _record_message(
+                session, item,
+                direction=MessageDirection.OUTBOUND,
+                chat_id=chat.telegram_chat_id,
+                message_id=sent.message_id,
+                sender_name="NexterPay Operations",
+                text=text,
+            )
 
     if item.topic_id is not None:
         await gateway.close_topic(ops.telegram_chat_id, item.topic_id)

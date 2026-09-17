@@ -232,6 +232,58 @@ async def test_the_default_is_still_the_raising_group(
 
 
 # --------------------------------------------------------------------------
+# Closing tells both
+# --------------------------------------------------------------------------
+
+async def test_closing_tells_both_sides(
+    session, acme_support, support_ops, manager, pexi_supplier, gw
+):
+    """NexterPay, 16 September, asked directly: "Supplier — Tell Both".
+
+    The supplier helped with it; leaving them to wonder whether it was ever
+    resolved is the same discourtesy as not telling the client.
+    """
+    item = await _raised(session, gw, acme_support)
+    item.bridged_chat_id = pexi_supplier.id
+    await session.flush()
+
+    await relay.close(session, gw, item, Actor.of(manager))
+
+    assert "resolved" in gw.all_text_to(acme_support.telegram_chat_id)
+    assert "resolved" in gw.all_text_to(pexi_supplier.telegram_chat_id)
+
+
+async def test_each_side_is_closed_with_its_own_reference(
+    session, acme_support, support_ops, manager, pexi_supplier, gw
+):
+    """The leak found on the reply path could arrive by this door just as
+    easily, and would be just as invisible."""
+    item = await _raised(session, gw, acme_support)
+    item.bridged_chat_id = pexi_supplier.id
+    await session.flush()
+
+    await relay.close(session, gw, item, Actor.of(manager))
+
+    assert "ACME" not in gw.all_text_to(pexi_supplier.telegram_chat_id)
+    assert item.client_reference in gw.all_text_to(acme_support.telegram_chat_id)
+
+
+async def test_a_one_sided_request_still_tells_one_group(
+    session, acme_support, support_ops, manager, gw
+):
+    """The change must not start sending closure notices to groups that were
+    never part of anything."""
+    item = await _raised(session, gw, acme_support)
+    await relay.close(session, gw, item, Actor.of(manager))
+
+    notices = [
+        c for c in gw.calls
+        if c.method == "send_message" and "resolved" in c.payload.get("text", "")
+    ]
+    assert len(notices) == 1
+
+
+# --------------------------------------------------------------------------
 # The confirmation names the party
 # --------------------------------------------------------------------------
 

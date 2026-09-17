@@ -66,6 +66,43 @@ def test_a_settlement_hash_is_not_a_reference() -> None:
     assert client.transaction_ids(f"received, thanks — {HASH64}") == []
 
 
+def test_a_long_run_of_digits_is_a_reference() -> None:
+    """NexterPay, 16 September: "Any number with 10 digits or more, without -
+    separation"."""
+    assert client.transaction_ids("1234567890") == ["1234567890"]
+    assert client.transaction_ids("ref 90000000001234 please") == ["90000000001234"]
+
+
+def test_nine_digits_is_not() -> None:
+    """Ten was the number they gave. Nine is an invoice number, an amount, or a
+    date somebody typed without slashes."""
+    assert client.transaction_ids("123456789") == []
+
+
+def test_a_separated_number_is_not() -> None:
+    """"without - separation" — a number with anything between the groups is
+    somebody writing a figure, not quoting a reference."""
+    assert client.transaction_ids("1234-567-890") == []
+    assert client.transaction_ids("9,000,000,000") == []
+
+
+def test_the_digits_rule_is_known_to_be_loose() -> None:
+    """Honest about the cost rather than quiet about it.
+
+    Ten digits with nothing between them is also a phone number, and an amount
+    typed without separators. This test does not assert the bot is right — it
+    asserts that we know, so nobody later reads a false positive as a bug in
+    the pattern rather than a consequence of the rule.
+    """
+    assert client.transaction_ids("9000000000") == ["9000000000"]
+
+
+def test_a_uuid_is_not_counted_twice() -> None:
+    """The digits rule could match inside a UUID. The scan resumes after each
+    match, so it does not."""
+    assert client.transaction_ids(UUID) == [UUID]
+
+
 def test_ordinary_words_are_not_references() -> None:
     for text in (
         "any update on this please?",

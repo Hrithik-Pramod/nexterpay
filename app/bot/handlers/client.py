@@ -342,9 +342,23 @@ async def open_one_request(query: CallbackQuery) -> None:
 # is 64 hex characters, and FX tickets are now full of them - without the
 # boundary the first 32 of every hash would read as a transaction reference
 # and the bot would correct a client who had done nothing wrong.
+# Three shapes now. NexterPay added the third on 16 September: "any number with
+# 10 digits or more, without - separation".
+#
+# The UUID is tried first and the scan resumes after whatever it matched, so a
+# long digit run inside a UUID is not counted twice.
+#
+# The digits rule is the loose one, and worth being honest about: ten or more
+# digits with nothing between them is also what a large amount looks like
+# typed without separators, and what a phone number looks like. A client
+# writing "9000000000" means nine billion; the bot will read it as a reference
+# and answer with the lookup format. That is NexterPay's call and it is a
+# cheap wrong answer - the nudge says how to search, it does not do anything -
+# but it is the reason this pattern is written out rather than tucked away.
 TRANSACTION_ID = re.compile(
     r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
     r"|\b[0-9a-fA-F]{32}\b"
+    r"|\b\d{10,}\b"
 )
 
 # NexterPay's command, not one of ours - it is answered on their side, which
