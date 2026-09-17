@@ -458,6 +458,18 @@ def test_only_these_functions_may_write_to_a_client_chat() -> None:
         "source.telegram_chat_id",
         "source_chat.telegram_chat_id",
         "counterparty_chat.telegram_chat_id",
+        # Added 17 September, and it is the second time this list has been the
+        # thing that mattered.
+        #
+        # `close` started sending to both sides of a two-sided request, so it
+        # loops and the destination is held as `chat` rather than `source`.
+        # The test did not report a new writer — it reported `close`
+        # disappearing from the writers it could see, which is worse: the
+        # function still writes outward and had become invisible here.
+        #
+        # The tempting fix was to drop `close` from `allowed`. That would have
+        # gone green and left this guard permanently blind to it.
+        "chat.telegram_chat_id",
     )
 
     source = pathlib.Path("app/services/relay.py").read_text().splitlines()
