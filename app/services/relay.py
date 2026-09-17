@@ -468,30 +468,48 @@ async def refresh_header(
 
 
 def closure_text(
-    item: WorkItem, resolution: str | None = None, reference: str | None = None
+    item: WorkItem,
+    resolution: str | None = None,
+    reference: str | None = None,
+    *,
+    raised_it: bool = True,
 ) -> str:
     """What a counterparty is told when a request is closed.
 
     `reference` names the one this particular side is shown. On a two-sided
-    request the supplier is told too, and must be told using their own code -
+    request the other side is told too, and must be told using their own code -
     the same rule that applies to every other message leaving the platform.
 
     NexterPay asked for the original request to be repeated back, because a
     bare "this is now closed" arriving days later means nothing to whoever
     reads it. The line on what was done is optional: the person closing adds
     one if there is something worth saying, and skips it if there is not.
-    """
-    raised = item.created_at.strftime("%d %B") if item.created_at else "earlier"
-    original = " ".join((item.original_message or "").split())
-    if len(original) > 400:
-        original = original[:399].rstrip() + "…"
 
-    parts = [
-        f"Request {reference or item.client_reference} is now resolved.",
-        "",
-        f"What you raised on {raised}:",
-        f'"{original}"',
-    ]
+    **`raised_it` is a leak guard, not a wording preference.** The original
+    message belongs to whoever raised the request. On a two-sided request the
+    other side did not raise it and has never seen it, so repeating it to them
+    would forward a client's words to a supplier with nobody deciding to - the
+    exact thing section 4's first rule forbids.
+
+    Found on 17 September by closing a bridged ticket and reading what the
+    supplier got: "What you raised on 16 September: 'bridge reference check'".
+    Wrong twice over - they had raised nothing, and those were the client's
+    words.
+    """
+    parts = [f"Request {reference or item.client_reference} is now resolved."]
+
+    if raised_it:
+        raised = item.created_at.strftime("%d %B") if item.created_at else "earlier"
+        original = " ".join((item.original_message or "").split())
+        if len(original) > 400:
+            original = original[:399].rstrip() + "…"
+        parts += ["", f"What you raised on {raised}:", f'"{original}"']
+    else:
+        # No quotation, and no summary of one either. "The matter you were
+        # helping with" is as far as this can go without describing something
+        # they were never told.
+        parts += ["", "Thank you for your help with it."]
+
     if resolution:
         parts += ["", "What we did:", resolution.strip()]
     parts += ["", "If anything is still outstanding, reply to this message."]
@@ -1803,7 +1821,11 @@ async def close(
         # a different door - which is exactly how the first one arrived.
         for chat in await counterparty_chats(session, item):
             reference = await reference_for(session, item, chat)
-            text = closure_text(item, resolution, reference)
+            text = closure_text(
+                item, resolution, reference,
+                # Only the side that raised it is shown what was raised.
+                raised_it=chat.id == item.source_chat_id,
+            )
             sent = await gateway.send_message(chat.telegram_chat_id, text)
             await _record_message(
                 session, item,

@@ -315,6 +315,44 @@ async def test_each_side_is_closed_with_its_own_reference(
     assert item.client_reference in gw.all_text_to(acme_support.telegram_chat_id)
 
 
+async def test_the_closure_notice_does_not_quote_the_client_to_the_supplier(
+    session, acme_support, support_ops, manager, pexi_supplier, gw
+):
+    """The second leak, found the same way as the first — by closing a bridged
+    ticket and reading what the supplier actually got.
+
+    The closure notice repeats the original request back, which NexterPay asked
+    for and which is right for whoever raised it. On a two-sided request the
+    other side did not raise it and has never seen it, so repeating it forwards
+    a client's words to a supplier with nobody deciding to. That is section 4's
+    first rule, broken by a message written long before section 4 existed.
+    """
+    item = await relay.open_request(
+        session, gw, source_chat=acme_support,
+        subject="Settlement missing",
+        body="the 14:02 payment to our Dubai account never arrived",
+        raised_by_name="Haze",
+    )
+    item.bridged_chat_id = pexi_supplier.id
+    await session.flush()
+
+    await relay.close(session, gw, item, Actor.of(manager))
+
+    supplier_saw = gw.all_text_to(pexi_supplier.telegram_chat_id)
+    assert "resolved" in supplier_saw
+    assert "Dubai" not in supplier_saw, (
+        f"the client's own words reached the supplier: {supplier_saw}"
+    )
+    assert "What you raised" not in supplier_saw, (
+        "the supplier is being told they raised something they did not"
+    )
+
+    # And the client still gets the whole thing.
+    client_saw = gw.all_text_to(acme_support.telegram_chat_id)
+    assert "Dubai" in client_saw
+    assert "What you raised" in client_saw
+
+
 async def test_a_one_sided_request_still_tells_one_group(
     session, acme_support, support_ops, manager, gw
 ):
