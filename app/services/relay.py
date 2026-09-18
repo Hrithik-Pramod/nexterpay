@@ -259,15 +259,20 @@ def status_symbol(item: WorkItem) -> str:
 def topic_name(item: WorkItem, client_name: str) -> str:
     """What the topic is called in the list, which is where triage happens.
 
-    The light and the priority mark both go here, and for the same reason.
-    NexterPay asked for High to stand out; it was built into the header only,
-    where you have to open a request to see it. A priority you cannot see
+    The status symbol and the priority mark both go here, and for the same
+    reason. NexterPay asked for High to stand out; it was built into the header
+    only, where you have to open a request to see it. A priority you cannot see
     while scanning is a priority you cannot sort by, which leaves it doing
     nothing that the header's own status line was not already doing.
 
-    Mark after the light, not before: the light answers "is anyone on this",
+    Mark after the symbol, not before: the symbol answers "is anyone on this",
     which is the first question, and every topic has one. Only two priorities
     in five carry a mark, so leading with it would ragged the list.
+
+    This said "light" until 18 September, describing the traffic light that was
+    removed on the 15th - the comments below the signature had been updated and
+    the docstring had not. Left as a note because the docstring is what gets
+    read first and was the last thing still claiming the dots were there.
     """
     # No mark once it is closed. Green says finished and the mark says drop
     # everything, and a list of archived work carrying urgency flags trains
