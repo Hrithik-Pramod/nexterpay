@@ -24,6 +24,7 @@ the order things happen in rather than about whether they happen.
 from __future__ import annotations
 
 from datetime import timedelta
+from itertools import count
 
 import pytest
 import pytest_asyncio
@@ -53,11 +54,20 @@ async def support_archive(session, support_ops):
     )
 
 
+# Client message ids, unique per test run.
+#
+# The pair (chat, message id) is unique in the messages table, so a helper that
+# handed out a fixed id would collide the moment a test raised two requests in
+# the same group - which the starvation test below does ten times.
+_client_message_ids = count(5001)
+
+
 async def _closed(session, gw, chat, operator, *, hours_ago: float):
     """A request raised, then closed, with the clock wound back."""
     item = await relay.open_request(
         session, gw, source_chat=chat, subject="Settlement missing",
         body="the 14:02 payment never arrived", raised_by_name="Haze",
+        original_telegram_message_id=next(_client_message_ids),
     )
     await relay.close(session, gw, item, Actor.of(operator))
     item.closed_at = utcnow() - timedelta(hours=hours_ago)
@@ -233,6 +243,47 @@ async def test_the_conversation_is_forwarded_not_retyped(
     assert gw.forwarded, "nothing was forwarded into the archive"
     assert all(to == ARCHIVE_CHAT for to, _, _, _ in gw.forwarded)
     assert all(thread == item.archive_topic_id for *_, thread in gw.forwarded)
+
+
+async def test_the_archive_contains_what_the_client_actually_said(
+    session, acme_support, support_ops, operator, gw, support_archive
+):
+    """The other half of the conversation.
+
+    Found by opening the real archive on 18 September rather than by this
+    suite, which is the uncomfortable part: every assertion above passed
+    while every archived ticket held only NexterPay's outbound messages.
+    The client's opening words were on the work item as a column and were
+    never a `Message`, so there was nothing for the sweep to forward.
+
+    Checked as "forwarded from the client's own group" rather than as a count,
+    because the count was never the problem - four messages were being
+    forwarded quite happily. What was missing was whose they were.
+    """
+    item = await _closed(session, gw, acme_support, operator, hours_ago=30)
+    await archive.archive_one(session, gw, item)
+
+    from_client_group = [
+        message_id
+        for _, from_chat, message_id, _ in gw.forwarded
+        if from_chat == acme_support.telegram_chat_id
+    ]
+    assert from_client_group, (
+        "the archive holds only our side of the conversation - the client's "
+        "opening message was never forwarded"
+    )
+
+
+async def test_the_client_s_opening_words_come_first(
+    session, acme_support, support_ops, operator, gw, support_archive
+):
+    """A conversation that opens with our acknowledgement reads as though we
+    started it. The archive should open the way the real exchange did."""
+    item = await _closed(session, gw, acme_support, operator, hours_ago=30)
+    await archive.archive_one(session, gw, item)
+
+    first_from = gw.forwarded[0][1]
+    assert first_from == acme_support.telegram_chat_id
 
 
 async def test_the_summary_carries_what_they_asked_for(

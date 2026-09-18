@@ -570,6 +570,7 @@ async def open_request(
     body: str,
     raised_by_name: str,
     raised_by_telegram_user_id: int | None = None,
+    original_telegram_message_id: int | None = None,
     attachments: list[IncomingAttachment] | None = None,
     ack_keyboard=None,
     context: str | None = None,
@@ -587,6 +588,38 @@ async def open_request(
         raised_by_name=raised_by_name,
         raised_by_telegram_user_id=raised_by_telegram_user_id,
     )
+
+    # The client's own words, recorded as a message rather than only as a
+    # column on the work item.
+    #
+    # `original_message` on the work item is what the header and the closure
+    # notice quote, and for a long time it was the only place the opening
+    # message existed. That was invisible until the archive was opened on 18
+    # September: the archive forwards `Message` rows, so every archived ticket
+    # held our four outbound messages and none of the client's - the one thing
+    # the forwarding was chosen for. An archive that cannot show what the
+    # client actually asked for cannot settle a dispute, which is the entire
+    # reason NexterPay wanted forwards rather than copies.
+    #
+    # Recorded first, so it sorts ahead of the header and the acknowledgement
+    # and the archived conversation opens the way the real one did. Recorded
+    # against the client's group and their real message id, so the forward
+    # carries their name and their timestamp rather than the bot's.
+    #
+    # This does not change reply routing. Inbound client messages in the client
+    # group are already anchors - `add_to_request` has recorded follow-ups this
+    # way all along - so the opening message simply becomes the first of them
+    # instead of the only one missing.
+    if original_telegram_message_id is not None:
+        await _record_message(
+            session, item,
+            direction=MessageDirection.INBOUND,
+            chat_id=source_chat.telegram_chat_id,
+            message_id=original_telegram_message_id,
+            sender_name=raised_by_name,
+            sender_telegram_user_id=raised_by_telegram_user_id,
+            text=body,
+        )
     client = await session.get(Client, item.client_id)
     client_name = client.name if client else "Unknown client"
     _, ops = await chats_for(session, item)
