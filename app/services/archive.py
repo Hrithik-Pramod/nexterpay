@@ -32,8 +32,10 @@ quietly:
   bad day, delete the only record.
 
 * It is **quiet when unconfigured**. A desk with no archive group registered
-  is skipped and logged, not raised. Archiving is housekeeping; it must never
-  be the reason the bot stops answering people.
+  is not swept at all. Archiving is housekeeping; it must never be the reason
+  the bot stops answering people — and, learned the hard way on 18 September,
+  it must never let an unconfigured desk's backlog crowd a configured desk's
+  work out of the batch. See `due_for_archive`.
 """
 
 from __future__ import annotations
@@ -84,19 +86,52 @@ async def archive_chat_for(
     return result.scalar_one_or_none()
 
 
+async def archiving_departments(session: AsyncSession) -> list[Department]:
+    """Desks that have somewhere to put finished work."""
+    result = await session.execute(
+        select(Chat.department).where(
+            Chat.kind == ChatKind.ARCHIVE,
+            Chat.is_active.is_(True),
+        )
+    )
+    return list(result.scalars().all())
+
+
 async def due_for_archive(
     session: AsyncSession, *, now=None, limit: int = BATCH
 ) -> list[WorkItem]:
-    """Closed long enough ago, and not yet moved.
+    """Closed long enough ago, not yet moved, and with somewhere to go.
 
     Ordered oldest first so a backlog drains in the order it accumulated,
     rather than the newest closures jumping the queue every sweep and the
     oldest never being reached at all.
+
+    **Why the department filter is here and not left to `archive_one`.** It was
+    left to `archive_one` at first, which returned False for a desk with no
+    archive group and logged it. That reads as harmless - the ticket stays put,
+    nothing is lost - and it starved the archive completely within a week.
+
+    A ticket that cannot be archived never gets `archived_at`, so it is due
+    again on the next sweep, and on every sweep after that. Ten such tickets is
+    the whole batch. On 18 September the ten oldest closed tickets on this
+    platform were all on desks that had never been given an archive group, and
+    they had been taking all ten slots every fifteen minutes since - while
+    Support, which *was* configured, had work closed the previous day sitting
+    behind them that would never have been reached.
+
+    So: nowhere to put it means not due. The filter belongs in the query that
+    fills the batch, because the bug was never about archiving - it was about
+    which tickets are allowed to occupy the batch.
     """
+    departments = await archiving_departments(session)
+    if not departments:
+        return []
+
     cutoff = (now or utcnow()) - ARCHIVE_AFTER
     result = await session.execute(
         select(WorkItem)
         .where(
+            WorkItem.department.in_(departments),
             WorkItem.status == WorkItemStatus.CLOSED,
             WorkItem.closed_at.is_not(None),
             WorkItem.closed_at <= cutoff,

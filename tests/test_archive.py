@@ -70,33 +70,124 @@ async def _closed(session, gw, chat, operator, *, hours_ago: float):
 # --------------------------------------------------------------------------
 
 async def test_a_request_closed_yesterday_is_due(
-    session, acme_support, support_ops, operator, gw
+    session, acme_support, support_ops, operator, gw, support_archive
 ):
     item = await _closed(session, gw, acme_support, operator, hours_ago=25)
     assert [d.id for d in await archive.due_for_archive(session)] == [item.id]
 
 
 async def test_a_request_closed_an_hour_ago_is_left_alone(
-    session, acme_support, support_ops, operator, gw
+    session, acme_support, support_ops, operator, gw, support_archive
 ):
     """The 24 hours are for the desk, not the archive.
 
     Somebody closes a ticket, the client replies an hour later saying it is not
     fixed, and reopening a topic that still exists is a very different
     afternoon from reconstructing one that does not.
+
+    `support_archive` is requested so this fails for the reason it names. The
+    desk now has to be configured for anything to be due at all, so without
+    the fixture an empty list would prove the 24 hours were respected when it
+    actually only proved the desk had nowhere to archive to.
     """
     await _closed(session, gw, acme_support, operator, hours_ago=1)
     assert await archive.due_for_archive(session) == []
 
 
 async def test_an_open_request_is_never_due(
-    session, acme_support, support_ops, gw
+    session, acme_support, support_ops, gw, support_archive
 ):
     await relay.open_request(
         session, gw, source_chat=acme_support, subject="Still open",
         body="ongoing", raised_by_name="Haze",
     )
     assert await archive.due_for_archive(session) == []
+
+
+# --------------------------------------------------------------------------
+# What an unconfigured desk must not do to a configured one
+#
+# Found in production on 18 September, not by this suite. The archive had been
+# working for a week and had stopped moving anything at all, silently, while
+# reporting success-shaped INFO lines every fifteen minutes.
+# --------------------------------------------------------------------------
+
+async def test_a_desk_with_no_archive_group_is_not_due(
+    session, acme_compliance, operator, gw
+):
+    """Nowhere to put it is not the same as due but failing.
+
+    This is the whole fix in one line. The old code called this ticket due,
+    handed it to `archive_one`, got False back, logged, and left
+    `archived_at` null — so it was due again fifteen minutes later, and for
+    ever.
+    """
+    await _closed(session, gw, acme_compliance, operator, hours_ago=30)
+    assert await archive.due_for_archive(session) == []
+
+
+async def test_an_unconfigured_backlog_cannot_starve_a_configured_desk(
+    session, acme_support, support_ops, acme_compliance, operator, gw,
+    support_archive,
+):
+    """The production fault, reproduced.
+
+    Compliance has no archive group and a backlog older than anything on
+    Support. The batch is filled oldest-first, so under the old code those
+    tickets took every slot on every sweep and Support's work — which had
+    somewhere to go — was never reached. Nothing errored. The logs looked
+    busy. The archive had simply stopped.
+
+    `BATCH` items are used deliberately: one stale ticket would not have shown
+    this, because the batch had room for both. It needed a backlog exactly as
+    large as the batch, which is the shape a real desk reaches on its own.
+    """
+    for _ in range(archive.BATCH):
+        await _closed(session, gw, acme_compliance, operator, hours_ago=200)
+
+    wants_archiving = await _closed(
+        session, gw, acme_support, operator, hours_ago=30
+    )
+
+    due = await archive.due_for_archive(session)
+    assert [d.id for d in due] == [wants_archiving.id]
+
+    assert await archive.sweep(session, gw) == 1
+    await session.refresh(wants_archiving)
+    assert wants_archiving.archived_at is not None
+
+
+async def test_configuring_a_desk_lets_its_backlog_drain(
+    session, acme_compliance, operator, gw, support_ops
+):
+    """And the tickets that were stranded are not lost.
+
+    They were never modified while there was nowhere to put them, so
+    registering the group is the whole of the remedy — nothing has to be
+    replayed or repaired by hand. Which is the one thing the old behaviour
+    did get right.
+    """
+    await _closed(session, gw, acme_compliance, operator, hours_ago=30)
+    assert await archive.due_for_archive(session) == []
+
+    await register_archive_chat(
+        session,
+        telegram_chat_id=-1009000000002,
+        department=Department.COMPLIANCE,
+        title="Compliance — Closed",
+    )
+    assert len(await archive.due_for_archive(session)) == 1
+
+
+async def test_a_platform_with_no_archives_at_all_sweeps_nothing(
+    session, acme_support, support_ops, operator, gw
+):
+    """The state every deployment starts in. It must cost one query, not a
+    batch of work that cannot succeed."""
+    await _closed(session, gw, acme_support, operator, hours_ago=30)
+    assert await archive.archiving_departments(session) == []
+    assert await archive.due_for_archive(session) == []
+    assert await archive.sweep(session, gw) == 0
 
 
 async def test_an_archived_request_is_not_due_again(
