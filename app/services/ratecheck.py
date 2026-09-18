@@ -27,7 +27,7 @@ desk today? A ticket is a fact that survives a restart, which a boolean is not.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, time, timezone
+from datetime import UTC, datetime, time
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -106,7 +106,7 @@ async def already_asked_today(
     Counts manual runs too. Somebody who ran `/npratecheck` at half past eight
     has already asked, and the desk does not need the bot asking again at nine.
     """
-    midnight = datetime.combine(now.date(), time(0, 0), tzinfo=timezone.utc)
+    midnight = datetime.combine(now.date(), time(0, 0), tzinfo=UTC)
     result = await session.execute(
         select(WorkItem.id).where(
             WorkItem.department == department,
@@ -128,7 +128,7 @@ async def due(
     the dot is a job that silently does nothing on the day a deploy happens to
     land in that minute.
     """
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     if now.timetz().replace(tzinfo=None) < RUN_AT_UTC:
         return []
 

@@ -22,18 +22,19 @@ restart and a boolean does not.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import pytest_asyncio
 
 from app.bot.registry import register_client_chat
 from app.domain.enums import Department, StaffRole
+from app.domain.errors import NotAuthorised
 from app.services import ratecheck
 from app.services.gateway import FakeGateway
 
-NINE = datetime(2026, 9, 18, 9, 5, tzinfo=timezone.utc)
-EIGHT = datetime(2026, 9, 18, 8, 55, tzinfo=timezone.utc)
+NINE = datetime(2026, 9, 18, 9, 5, tzinfo=UTC)
+EIGHT = datetime(2026, 9, 18, 8, 55, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -73,7 +74,7 @@ async def test_it_fires_after_nine_not_only_at_nine(
     """The sweep runs on a fifteen-minute cycle, so it will almost never be
     looking at exactly 09:00. A job that only fires on the dot is one that
     silently does nothing on the day a deploy lands in that minute."""
-    late = datetime(2026, 9, 18, 14, 30, tzinfo=timezone.utc)
+    late = datetime(2026, 9, 18, 14, 30, tzinfo=UTC)
     assert Department.SUPPORT in await ratecheck.due(session, now=late)
 
 
@@ -190,7 +191,10 @@ async def test_the_system_account_is_an_ordinary_operator(
     assert actor.role is StaffRole.OPERATOR
     actor.require(StaffRole.OPERATOR)
 
-    with pytest.raises(Exception):
+    # Named rather than blind. `pytest.raises(Exception)` would pass on a typo
+    # in the line below just as happily as on a refusal, which would make this
+    # a test that cannot fail for the reason it exists.
+    with pytest.raises(NotAuthorised):
         actor.require(StaffRole.MANAGER)
 
 
