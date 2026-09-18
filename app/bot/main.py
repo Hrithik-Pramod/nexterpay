@@ -33,7 +33,7 @@ from app.bot.routing import build_strategy
 from app.config import get_settings
 from app.db.base import init_engine, session_scope
 from app.domain.enums import ChatKind, StaffRole
-from app.services import archive
+from app.services import archive, ratecheck
 from app.services.gateway import AiogramGateway
 from app.services.throttle import ThrottledGateway
 
@@ -66,6 +66,10 @@ async def _archive_sweeper(gateway) -> None:
     """
     while True:
         await asyncio.sleep(SWEEP_INTERVAL_SECONDS)
+
+        # Two jobs, two try blocks. They are unrelated, and a desk whose
+        # archive permissions are wrong should not also stop every supplier
+        # being asked for a rate.
         try:
             async with session_scope() as session:
                 moved = await archive.sweep(session, gateway)
@@ -75,6 +79,16 @@ async def _archive_sweeper(gateway) -> None:
             raise
         except Exception:
             logger.exception("Archive sweep failed; it will run again")
+
+        try:
+            async with session_scope() as session:
+                asked = await ratecheck.run(session, gateway)
+            if asked:
+                logger.info("Rate check opened with %d supplier(s)", asked)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Rate check failed; it will run again")
 
 
 # What each role adds to the one below it. Written as what a person gains,
