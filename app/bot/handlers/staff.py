@@ -1340,8 +1340,9 @@ async def staff_edited_a_message(message: Message) -> None:
 
     if corrected:
         await message.reply(
-            f"Updated — the {'copy' if corrected == 1 else 'copies'} sent out "
-            f"now read as edited."
+            "Updated — the copy sent out now reads as edited."
+            if corrected == 1
+            else f"Updated — all {corrected} copies sent out now read as edited."
         )
     else:
         # Not an error, and worth saying out loud. An internal note has no

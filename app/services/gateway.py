@@ -80,6 +80,8 @@ class TelegramGateway(Protocol):
 
     async def close_topic(self, chat_id: int, thread_id: int) -> None: ...
 
+    async def hide_general_topic(self, chat_id: int) -> None: ...
+
     async def rename_topic(self, chat_id: int, thread_id: int, name: str) -> None: ...
 
     async def reopen_topic(self, chat_id: int, thread_id: int) -> None: ...
@@ -192,6 +194,23 @@ class AiogramGateway:
                 raise
             logger.info("Topic %s in %s was already open", thread_id, chat_id)
 
+    async def hide_general_topic(self, chat_id: int) -> None:
+        """Take the 'General' tab out of a forum's topic list.
+
+        NexterPay, 20 September, on the archive groups: "does it still need a
+        general tab?" It does not - nothing is ever posted there and it sits
+        at the front of a list whose whole purpose is closed work.
+
+        Telegram creates General in every forum and it cannot be deleted, only
+        hidden. Needs can_manage_topics, which the bot already has in an
+        archive group because creating topics needs it too.
+        """
+        try:
+            await self._bot.hide_general_forum_topic(chat_id=chat_id)
+        except TelegramBadRequest as exc:
+            # Already hidden is the desired state, not a failure.
+            logger.info("Could not hide General in %s: %s", chat_id, exc)
+
     async def close_topic(self, chat_id: int, thread_id: int) -> None:
         try:
             await self._bot.close_forum_topic(chat_id=chat_id, message_thread_id=thread_id)
@@ -298,6 +317,7 @@ class FakeGateway:
         self.reopened_topics: list[tuple[int, int]] = []
         self.deleted: list[tuple[int, int]] = []
         self.closed_topics: list[tuple[int, int]] = []
+        self.hidden_general: list[int] = []
         self.deleted_topics: list[tuple[int, int]] = []
         # (to chat, from chat, message id, thread). The archive tests assert on
         # this: a forwarded message keeps its author, and a copied one does not,
@@ -412,6 +432,11 @@ class FakeGateway:
         self._maybe_fail()
         self.reopened_topics.append((chat_id, thread_id))
         self.calls.append(Call("reopen_topic", chat_id, {"thread_id": thread_id}))
+
+    async def hide_general_topic(self, chat_id: int) -> None:
+        self._maybe_fail()
+        self.hidden_general.append(chat_id)
+        self.calls.append(Call("hide_general_topic", chat_id, {}))
 
     async def close_topic(self, chat_id: int, thread_id: int) -> None:
         self._maybe_fail()

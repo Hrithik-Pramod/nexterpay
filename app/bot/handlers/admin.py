@@ -21,7 +21,7 @@ from sqlalchemy import func, select
 
 from app.bot import commands as cmd
 from app.bot import keyboards as kb
-from app.bot.deps import prompt_for
+from app.bot.deps import gateway, prompt_for
 from app.bot.registry import (
     deactivate_staff,
     leads_for,
@@ -42,6 +42,20 @@ from app.domain.enums import ChatKind, Department, StaffRole, WorkItemStatus
 
 logger = logging.getLogger(__name__)
 router = Router(name="admin")
+
+
+def archive_group_name(department) -> str:
+    """What NexterPay call an archive group.
+
+    Their convention, set on 20 September: "All should be called NPArchive -
+    'Finance' etc". Nothing in the platform depends on it — an archive is found
+    by its registration, not its title — so this is a suggestion rather than a
+    rule, and registering a differently-named group still works.
+
+    It is here rather than in the message so the Setup Guide and the bot cannot
+    drift apart on it.
+    """
+    return f"NPArchive - {department.label}"
 
 
 async def _is_admin(session, user_id: int | None) -> bool:
@@ -244,13 +258,48 @@ async def cmd_register_archive(message: Message, command: CommandObject) -> None
             "Registered archive group %s as %s", message.chat.id, department.value
         )
 
-    await message.reply(
-        f"Registered this group as the {department.label} archive.\n\n"
-        f"Closed requests move here 24 hours after they are closed, with the "
-        f"conversation forwarded so it keeps who said what. The original topic "
-        f"is removed once the copy exists.\n\n"
-        f"The bot needs Manage Topics and Delete Messages here."
-    )
+    # General is hidden as part of registering, not left for somebody to do.
+    #
+    # NexterPay, 20 September: "does it still need a general tab?" It does not.
+    # Telegram puts General at the front of every forum's topic list and it
+    # cannot be deleted, only hidden - and a list whose entire purpose is
+    # closed work should open on closed work.
+    #
+    # Best effort. A group where this fails is still a working archive, and
+    # refusing to register one over a cosmetic tab would be the wrong trade.
+    hidden = True
+    try:
+        await gateway().hide_general_topic(message.chat.id)
+    except Exception:
+        hidden = False
+        logger.exception("Could not hide General in %s", message.chat.id)
+
+    expected = archive_group_name(department)
+    lines = [
+        f"Registered this group as the {department.label} archive.",
+        "",
+        "Closed requests move here 24 hours after they are closed, with the "
+        "conversation forwarded so it keeps who said what. The original topic "
+        "is removed once the copy exists.",
+        "",
+        "The bot needs Manage Topics and Delete Messages here.",
+    ]
+    if (message.chat.title or "").strip().lower() != expected.lower():
+        lines += [
+            "",
+            f"One thing: NexterPay name these “{expected}”. This group is "
+            f"“{message.chat.title}”. Nothing depends on the name — it is so "
+            f"the archives sort together in a long chat list — but it is "
+            f"easier to change now than once people have pinned it.",
+        ]
+    if not hidden:
+        lines += [
+            "",
+            "I could not hide the General tab here. Check the bot has Manage "
+            "Topics, or hide it by hand in Manage Group → Topics.",
+        ]
+
+    await message.reply("\n".join(lines))
 
 
 @router.message(cmd.any_case(cmd.REGISTER_CLIENT))

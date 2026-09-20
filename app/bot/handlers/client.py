@@ -64,9 +64,18 @@ async def offer_raise_button(message: Message, command: CommandObject) -> None:
         if department == "business"
         else "What do you need help with?"
     )
+    # One route in, and only one named.
+    #
+    # This offered `/npraise payment not received for INV-2041` as an example.
+    # NexterPay took that command out of the help on 14 September and out of
+    # the menu on 20 September - "REMOVE IT" - and they were right that
+    # advertising it here undid the first change: the platform removed it with
+    # one hand and taught it with the other.
+    #
+    # The command itself still works, for anybody with it in muscle memory.
+    # It is simply no longer something a client is shown.
     await message.answer(
-        f"{prompt}\n\nTap the button below, or send it in one go - "
-        f"for example: /{cmd.RAISE} payment not received for INV-2041",
+        f"{prompt}\n\nTap the button below to get started.",
         reply_markup=kb.raise_request_prompt(department),
     )
 

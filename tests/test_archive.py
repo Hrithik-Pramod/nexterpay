@@ -536,3 +536,50 @@ def test_closed_is_the_only_status_that_qualifies() -> None:
     assert "WorkItemStatus.CLOSED" in source
     assert "COMPLETED" not in source
     assert WorkItemStatus.COMPLETED is not WorkItemStatus.CLOSED
+
+
+# --------------------------------------------------------------------------
+# What an archive group is called, and what is in it
+#
+# NexterPay, 20 September: "Need to look at Archive, All should be called
+# NPArchive - 'Finance' etc" and "In that, does it still need a general tab?"
+# --------------------------------------------------------------------------
+
+def test_the_naming_convention_is_theirs() -> None:
+    from app.bot.handlers.admin import archive_group_name
+
+    assert archive_group_name(Department.FINANCE) == "NPArchive - Finance"
+    assert archive_group_name(Department.SUPPORT) == "NPArchive - Support"
+
+
+def test_the_name_uses_the_label_people_say() -> None:
+    """Not the stored value. Compliance is the case that catches this - the
+    department is stored as "compliance" and NexterPay call it Compliance and
+    Risk, and an archive called "NPArchive - Compliance" would be the only
+    place on the platform using the short form."""
+    from app.bot.handlers.admin import archive_group_name
+
+    assert archive_group_name(Department.COMPLIANCE) == (
+        f"NPArchive - {Department.COMPLIANCE.label}"
+    )
+
+
+async def test_nothing_depends_on_the_name(session, support_ops, operator, gw):
+    """A suggestion, not a rule.
+
+    An archive is found by its registration, never by its title, so a group
+    named anything at all still works. Worth pinning: the day the name becomes
+    a requirement is the day somebody renaming a group in Telegram silently
+    breaks their desk's archiving — and they would have no reason to connect
+    the two.
+    """
+    await register_archive_chat(
+        session,
+        telegram_chat_id=-1009000000099,
+        department=Department.SUPPORT,
+        title="something else entirely",
+    )
+
+    found = await archive.archive_chat_for(session, Department.SUPPORT)
+    assert found is not None
+    assert found.title == "something else entirely"
