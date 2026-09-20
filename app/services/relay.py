@@ -1014,11 +1014,27 @@ async def relay_client_message(
         # and closures, and this notice was left composing its own. It is the
         # third time the words have stayed inside and the reference has not.
         shown_reference = await reference_for(session, item, source)
-        # MARK_RESOLVED rather than a new symbol: this message is about a
-        # request in exactly the state that marker already stands for, and it
-        # is the one the counterparty was shown when it was closed.
+        # "Resolved", not "closed", and MARK_RESOLVED rather than 🏁.
+        #
+        # NexterPay asked on 20 September whether this should carry 🏁, to keep
+        # Completed and Closed apart. It should not, and the question exposed
+        # that the message was saying both: a ✅ beside the word "closed".
+        #
+        # Clients have one word for these two states - `client_label` maps
+        # Completed and Closed alike to "Resolved" - and they have only ever
+        # seen four symbols. 🏁 is a topic-title symbol, which is NexterPay's
+        # own view of their desk. Putting it in front of a counterparty would
+        # introduce a fifth symbol and expose an internal distinction, at the
+        # exact moment somebody is already wondering why their reply did not
+        # reopen anything.
+        #
+        # So the wording moved to match the marker, rather than the marker to
+        # match the wording. NexterPay's decision: "keep ✅ and change the
+        # wording... so client-facing language stays consistent and 🏁 remains
+        # internal only."
         note = (
-            f"{MARK_RESOLVED} <b>{_e(shown_reference)} is already closed.</b>\n\n"
+            f"{MARK_RESOLVED} <b>{_e(shown_reference)} has already been "
+            f"resolved.</b>\n\n"
             f"This has been passed to the person who handled it rather than "
             f"reopening the request. If it needs to be looked at again, they "
             f"will come back to you."

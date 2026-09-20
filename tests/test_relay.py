@@ -439,7 +439,7 @@ def test_only_these_functions_may_write_to_a_client_chat() -> None:
         "open_outbound",      # a request NexterPay raise with a counterparty
         "post_anchor",        # a fresh message to reply to, from the list
         "send_client_reply",  # the only route for staff-written words
-        "relay_client_message",  # telling someone a request is already closed
+        "relay_client_message",  # telling someone a request is already resolved
         "close",              # the closure notice
         # Added deliberately on 5 September, and it is the one on this list
         # that interpolates anything about a person: "ACME-1042 - Gavin is

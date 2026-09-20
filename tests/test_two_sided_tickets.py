@@ -492,7 +492,7 @@ def test_opening_a_request_tells_nobody_outside() -> None:
 #
 #   16 Sept — a staff reply reached the supplier as ACME-1072.
 #   17 Sept — a closure notice quoted the client's words to the supplier.
-#   20 Sept — the "already closed" notice, below.
+#   20 Sept — the "already been resolved" notice, below.
 #
 # The first two were fixed by writing `reference_for` and applying it where
 # the leak had been seen. Nothing looked for the other places, so this one sat
@@ -532,7 +532,7 @@ async def test_a_supplier_replying_to_a_closed_request_sees_their_own_code(
     )
 
     seen = gw.all_text_to(pexi_supplier.telegram_chat_id)
-    assert "already closed" in seen
+    assert "already been resolved" in seen
     assert "SPEX" in seen
     assert "ACME" not in seen, f"the client's code reached the supplier: {seen}"
 
@@ -559,7 +559,7 @@ async def test_the_client_still_sees_their_own(
     )
 
     seen = gw.all_text_to(acme_support.telegram_chat_id)
-    assert "already closed" in seen
+    assert "already been resolved" in seen
     assert "ACME" in seen
 
 

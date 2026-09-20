@@ -96,7 +96,7 @@ async def test_a_reply_after_closing_does_not_reopen_it(
 
     assert item.status is WorkItemStatus.CLOSED, "a client reply must not reopen it"
     # The client is told, rather than left wondering - we invited the reply.
-    assert any("already closed" in m for m in gw.messages_to(CLIENT_CHAT))
+    assert any("already been resolved" in m for m in gw.messages_to(CLIENT_CHAT))
     # And it reached the person who closed it.
     assert "tg://user" in gw.all_text_to(OPS_CHAT)
 
