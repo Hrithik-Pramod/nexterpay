@@ -965,8 +965,20 @@ async def relay_client_message(
         # The person who closed it is notified and decides. The client is told
         # rather than left wondering - we invited the reply, so silence here
         # would be worse than not inviting it at all.
+        # The reference this side is shown, never the other side's.
+        #
+        # This said `item.client_reference` until 20 September, which is right
+        # for a one-sided request and hands the supplier the client's code on a
+        # two-sided one - `source` is reassigned to `from_chat` above, so this
+        # message goes to whoever wrote and was built from whoever raised.
+        #
+        # The same fault as 16 September, in a path that was not looked at when
+        # that one was fixed: `reference_for` was written, applied to replies
+        # and closures, and this notice was left composing its own. It is the
+        # third time the words have stayed inside and the reference has not.
+        shown_reference = await reference_for(session, item, source)
         note = (
-            f"{item.client_reference} is already closed, so this has been passed to "
+            f"{shown_reference} is already closed, so this has been passed to "
             f"the person who handled it rather than reopening the request. "
             f"If it needs to be looked at again, they will come back to you."
         )

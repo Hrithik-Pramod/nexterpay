@@ -481,3 +481,130 @@ def test_opening_a_request_tells_nobody_outside() -> None:
     source = ast.unparse(ast.parse(inspect.getsource(bridge.add_side)))
     assert "send_client_reply" not in source
     assert "gateway" not in source
+
+
+# --------------------------------------------------------------------------
+# The reference, on every path out — not just the ones we remembered
+#
+# Found on 20 September, auditing the outbound strings after promising to on
+# the 17th and not doing it. This is the third time the words have stayed
+# inside and the reference has not:
+#
+#   16 Sept — a staff reply reached the supplier as ACME-1072.
+#   17 Sept — a closure notice quoted the client's words to the supplier.
+#   20 Sept — the "already closed" notice, below.
+#
+# The first two were fixed by writing `reference_for` and applying it where
+# the leak had been seen. Nothing looked for the other places, so this one sat
+# there through both fixes. Hence the structural test at the bottom.
+# --------------------------------------------------------------------------
+
+async def _code(session, chat, code):
+    await session.refresh(chat, ["client"])
+    chat.client.code = code
+    await session.flush()
+
+
+async def test_a_supplier_replying_to_a_closed_request_sees_their_own_code(
+    session, acme_support, support_ops, operator, pexi_supplier, gw
+):
+    """The leak, reproduced.
+
+    A supplier replies to a two-sided request that has been closed. The notice
+    telling them it will not reopen was composed from `item.client_reference`
+    while being sent to them — so they were told, in as many words, which
+    client the work had been for.
+    """
+    await _code(session, acme_support, "ACME")
+    await _code(session, pexi_supplier, "SPEX")
+
+    item = await _raised(session, gw, acme_support)
+    item.bridged_chat_id = pexi_supplier.id
+    await session.flush()
+    await relay.close(session, gw, item, Actor.of(operator))
+
+    await relay.relay_client_message(
+        session, gw, item,
+        text="any update on this?",
+        sender_name="Pexi Desk",
+        telegram_message_id=9911,
+        from_chat=pexi_supplier,
+    )
+
+    seen = gw.all_text_to(pexi_supplier.telegram_chat_id)
+    assert "already closed" in seen
+    assert "SPEX" in seen
+    assert "ACME" not in seen, f"the client's code reached the supplier: {seen}"
+
+
+async def test_the_client_still_sees_their_own(
+    session, acme_support, support_ops, operator, pexi_supplier, gw
+):
+    """The fix must not simply blank the reference. A notice a counterparty
+    cannot match to a request costs somebody a phone call."""
+    await _code(session, acme_support, "ACME")
+    await _code(session, pexi_supplier, "SPEX")
+
+    item = await _raised(session, gw, acme_support)
+    item.bridged_chat_id = pexi_supplier.id
+    await session.flush()
+    await relay.close(session, gw, item, Actor.of(operator))
+
+    await relay.relay_client_message(
+        session, gw, item,
+        text="still not right",
+        sender_name="Haze",
+        telegram_message_id=9912,
+        from_chat=acme_support,
+    )
+
+    seen = gw.all_text_to(acme_support.telegram_chat_id)
+    assert "already closed" in seen
+    assert "ACME" in seen
+
+
+def test_a_function_that_can_write_to_either_side_must_not_build_its_own_reference():
+    """The structural guard, written after the third occurrence.
+
+    `item.client_reference` is correct in a function that only ever writes to
+    the group that raised the request — the acknowledgement, the claim notice,
+    the anchor. It is a leak in any function whose destination can be
+    reassigned to the other side, because the reference is then built from one
+    party and delivered to the other.
+
+    Those functions are identifiable: they take a `from_chat` or `to_chat`
+    and reassign `source` from it. In those, the reference must come from
+    `reference_for`, which asks the destination what it is called.
+
+    Checked in the source rather than by behaviour on purpose. A behavioural
+    test proves the path somebody thought of; this one fails on a path nobody
+    has thought of yet, which is how all three of these arrived.
+    """
+    import ast
+    import pathlib
+
+    source = pathlib.Path("app/services/relay.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    offenders = []
+    for fn in [n for n in ast.walk(tree)
+               if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef))]:
+        body = ast.get_source_segment(source, fn) or ""
+        redirects = "= from_chat or source" in body or "= to_chat or source" in body
+        if not redirects:
+            continue
+        # Comments explaining the rule mention it; code using it is the fault.
+        code_lines = [
+            line for line in body.splitlines()
+            if "client_reference" in line and not line.strip().startswith("#")
+        ]
+        if code_lines:
+            offenders.append(f"  {fn.name}: {code_lines[0].strip()}")
+
+    assert not offenders, (
+        "these can write to either side of a two-sided request and build the "
+        "reference themselves:\n" + "\n".join(offenders)
+        + "\n\nUse `await reference_for(session, item, source)` — it asks the "
+          "destination what it is called. See the three dates at the top of "
+          "this section."
+    )
