@@ -1950,7 +1950,19 @@ async def open_outbound(
     # Still a choice per message rather than automatic. Tagging the same
     # person on everything teaches them to ignore it, which costs more than
     # it buys.
-    parse_mode = None
+    # HTML on every path, because `outbound_opening_text` composes HTML now.
+    #
+    # This was `None` here and "HTML" only inside the tag_lead branch, which
+    # was correct until 20 September and became a bug the moment the opening
+    # message gained a bold title: an untagged opening would have arrived at
+    # the counterparty with the tags showing as text. Every rate check and
+    # every request NexterPay raise goes through this line.
+    #
+    # Found by reading the code rather than by the check I had written to find
+    # exactly this - the check looked for parse_mode="HTML" within a few lines
+    # of the send and found the one in the branch below, which is not the one
+    # that runs.
+    parse_mode = "HTML"
     if tag_lead is not None:
         from app.bot.registry import leads_for
 
@@ -1964,8 +1976,10 @@ async def open_outbound(
                 f"{html.escape(lead.display_name)}</a>"
                 for lead in leads
             )
-            outbound = f"{named} —\n{html.escape(outbound)}"
-            parse_mode = "HTML"
+            # `outbound` is already escaped HTML from `outbound_opening_text`.
+            # Escaping it again here would turn its own tags into text, which
+            # is the same fault twice in one function.
+            outbound = f"{named} —\n{outbound}"
 
     sent = await gateway.send_message(
         counterparty_chat.telegram_chat_id, outbound, parse_mode=parse_mode

@@ -321,3 +321,91 @@ def test_every_tag_we_open_is_closed() -> None:
     for sample in samples:
         for tag in ("b", "i"):
             assert sample.count(f"<{tag}>") == sample.count(f"</{tag}>"), sample
+
+
+# --------------------------------------------------------------------------
+# Markup and parse mode must agree, on every path
+#
+# Found on 20 September, in production, by reading the code. `open_outbound`
+# set parse_mode only inside its tag-a-contact branch. That was right until
+# the opening message gained a bold title that morning, and wrong from the
+# moment it did: an untagged opening - which is every rate check and every
+# request NexterPay raise - would have arrived at the counterparty with the
+# tags showing as text.
+#
+# There was already a check meant to catch exactly this. It scanned the source
+# for parse_mode="HTML" within a few lines of each send, found the one in the
+# branch below the default, and reported the function as fine. A test that
+# looks near the right place is not the same as one that looks at it.
+#
+# So this is the invariant instead, asserted on what the gateway actually
+# received: if a message carries tags, it was sent as HTML. It does not care
+# how the code is arranged, which is the point.
+# --------------------------------------------------------------------------
+
+def _markup_matches_parse_mode(gw) -> list[str]:
+    """Every send where tags and parse mode disagree, in either direction."""
+    wrong = []
+    for call in gw.calls:
+        if call.method not in ("send_message", "edit_message_text"):
+            continue
+        text = call.payload.get("text") or ""
+        tagged = "<b>" in text or "<i>" in text or "<a href=" in text
+        as_html = call.payload.get("parse_mode") == "HTML"
+        if tagged and not as_html:
+            wrong.append(f"tags sent as plain text: {text[:90]!r}")
+    return wrong
+
+
+async def test_nothing_sends_tags_as_plain_text(
+    session, acme_support, support_ops, operator, pexi_supplier, gw
+):
+    """Drives the paths that compose HTML and checks every send the gateway
+    saw. A message that fails this does not look wrong to a client — it shows
+    them `<b>` and `</i>`, which looks broken."""
+    from app.services.relay import open_outbound, post_anchor
+
+    item = await _open(session, gw, acme_support)
+    await relay.claim(session, gw, item, Actor.of(operator))
+    await relay.send_client_reply(
+        session, gw, item, Actor.of(operator), "Looking at it now.",
+    )
+    await post_anchor(session, gw, item)
+    await relay.close(session, gw, item, Actor.of(operator))
+
+    # The one that was broken: NexterPay raising something themselves.
+    await open_outbound(
+        session, gw,
+        counterparty_chat=pexi_supplier,
+        subject="Rate check",
+        body="Could you send your current rate?",
+        actor=Actor.of(operator),
+    )
+
+    assert _markup_matches_parse_mode(gw) == []
+
+
+async def test_an_outbound_opening_is_sent_as_html(
+    session, support_ops, operator, pexi_supplier, gw
+):
+    """Named separately from the sweep above, because this is the one that
+    shipped broken and a general test passing tells you less than a specific
+    one that is about the actual fault."""
+    from app.services.relay import open_outbound
+
+    await open_outbound(
+        session, gw,
+        counterparty_chat=pexi_supplier,
+        subject="Rate check",
+        body="Could you send your current rate?",
+        actor=Actor.of(operator),
+    )
+
+    sends = [
+        call for call in gw.calls
+        if call.method == "send_message"
+        and call.chat_id == pexi_supplier.telegram_chat_id
+    ]
+    assert sends, "nothing reached the supplier"
+    assert sends[0].payload["parse_mode"] == "HTML"
+    assert "<b>" in sends[0].payload["text"]
