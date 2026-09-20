@@ -42,7 +42,7 @@ async def test_it_opens_a_real_request_and_sends_it(
     outbound = gw.all_text_to(CLIENT_CHAT)
     assert "discrepancy in the 3 March" in outbound
     assert item.client_reference in outbound
-    assert "Reply to this message to respond" in outbound
+    assert "Reply to this message</b> to respond" in outbound
 
     # And the team can see who raised it and with whom.
     topic = gw.all_text_to(OPS_CHAT)

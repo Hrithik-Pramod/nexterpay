@@ -28,6 +28,7 @@ from __future__ import annotations
 import ast
 import inspect
 
+from app.services import relay
 from app.services.relay import outbound_body
 
 # --------------------------------------------------------------------------
@@ -97,8 +98,10 @@ def test_the_counterparty_sees_the_message_once() -> None:
     text = outbound_opening_text(_Item(typed), typed)
 
     assert text.count(typed) == 1, f"said twice:\n{text}"
-    assert text.startswith("ACME-1051 · " + typed)
-    assert text.endswith("Reply to this message to respond.")
+    # The header carries the marker and the bold from 20 September; what
+    # matters here is still that the subject leads and is said once.
+    assert text.startswith(f"{relay.MARK_RECEIVED} <b>ACME-1051 · {typed}")
+    assert text.endswith("to respond.)</i>")
 
 
 def test_the_counterparty_still_gets_the_detail_of_a_longer_message() -> None:

@@ -1014,12 +1014,18 @@ async def relay_client_message(
         # and closures, and this notice was left composing its own. It is the
         # third time the words have stayed inside and the reference has not.
         shown_reference = await reference_for(session, item, source)
+        # MARK_RESOLVED rather than a new symbol: this message is about a
+        # request in exactly the state that marker already stands for, and it
+        # is the one the counterparty was shown when it was closed.
         note = (
-            f"{shown_reference} is already closed, so this has been passed to "
-            f"the person who handled it rather than reopening the request. "
-            f"If it needs to be looked at again, they will come back to you."
+            f"{MARK_RESOLVED} <b>{_e(shown_reference)} is already closed.</b>\n\n"
+            f"This has been passed to the person who handled it rather than "
+            f"reopening the request. If it needs to be looked at again, they "
+            f"will come back to you."
         )
-        sent = await gateway.send_message(source.telegram_chat_id, note)
+        sent = await gateway.send_message(
+            source.telegram_chat_id, note, parse_mode="HTML"
+        )
         await _record_message(
             session, item,
             direction=MessageDirection.OUTBOUND,
@@ -1636,12 +1642,21 @@ def outbound_opening_text(item: WorkItem, body: str) -> str:
 
     Deliberately not the acknowledgement wording. "Request X has been logged
     with our Support team" is nonsense when we are the ones raising it.
+
+    Formatted like the rest from 20 September, at NexterPay's request. It
+    carries MARK_RECEIVED because from the counterparty's side that is exactly
+    what has happened - a request has arrived for them. It is the same event
+    as the acknowledgement, pointed the other way.
     """
-    parts = [f"{item.client_reference} · {item.subject}"]
+    parts = [
+        f"{MARK_RECEIVED} <b>{_e(item.client_reference)} · {_e(item.subject)}</b>"
+    ]
     rest = outbound_body(item.subject or "", body)
     if rest:
-        parts.append(rest)
-    parts.append("Reply to this message to respond.")
+        parts.append(_e(rest))
+    parts.append(
+        "<i>(<b>Reply to this message</b> to respond.)</i>"
+    )
     return "\n\n".join(parts)
 
 
@@ -2012,12 +2027,19 @@ async def post_anchor(
     works.
     """
     source, _ = await chats_for(session, item)
+    # Formatted with the rest from 20 September, and deliberately without a
+    # marker. The four markers mean four things that have happened to a
+    # request; an anchor is a pointer to one that already exists and nothing
+    # has happened at all. Giving it one would spend a symbol on a non-event
+    # and make the other four mean less.
     text = (
-        f"{item.client_reference} · {item.subject}\n"
-        f"Status: {item.status.client_label}\n\n"
-        f"Reply to this message to add to this request."
+        f"<b>{_e(item.client_reference)} · {_e(item.subject)}</b>\n"
+        f"Status: {_e(item.status.client_label)}\n\n"
+        f"<i>(<b>Reply to this message</b> to add to this request.)</i>"
     )
-    sent = await gateway.send_message(source.telegram_chat_id, text)
+    sent = await gateway.send_message(
+        source.telegram_chat_id, text, parse_mode="HTML"
+    )
     await _record_message(
         session, item,
         direction=MessageDirection.OUTBOUND,
