@@ -517,6 +517,9 @@ async def client_reply(message: Message) -> None:
             telegram_message_id=incoming.telegram_message_id,
             sender_telegram_user_id=incoming.sender_telegram_user_id,
             attachments=extract_attachments(message),
+            # A Reply button on the client's own words, so answering this one
+            # is a tap rather than a scroll back to the action row.
+            topic_keyboard=kb.on_incoming_message(item.id),
             # What they were quoting. Telegram shows it to them; without this
             # the team saw only what they typed, so "no, the other one"
             # arrived with nothing to say which one.

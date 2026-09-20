@@ -744,6 +744,21 @@ class Message(Base):
     sender_telegram_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     sender_name: Mapped[str] = mapped_column(String(200), nullable=False)
     text: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # The message in the Operations Group that produced this one.
+    #
+    # Only outbound relays have it, and it is what makes an edit possible.
+    # NexterPay, 19 September: a staff member edited their message after it had
+    # gone out, the topic showed the correction, and the counterparty was still
+    # reading the original. Nothing linked the two, so there was nothing to
+    # correct.
+    #
+    # The chat is not stored alongside it because there is only one candidate -
+    # a reply is always composed in the request's own Operations Group - and a
+    # second column would be a second thing to keep true.
+    origin_message_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True, index=True
+    )
     sent_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )

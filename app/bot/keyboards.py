@@ -594,3 +594,46 @@ def role_menu(department) -> InlineKeyboardMarkup:
     ]
     rows.append([InlineKeyboardButton(text="Cancel", callback_data=admin_cb("cancel"))])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def on_incoming_message(work_item_id: int) -> InlineKeyboardMarkup:
+    """A Reply button on the client's own message in the topic.
+
+    NexterPay, 19 September: "whenever we receive a message from client on a
+    ticket, every follow up comes with action button for reply so we can
+    respond to that specific message as a reply."
+
+    They are describing something the platform could already do and made
+    awkward. Replying meant scrolling back to the request's action row, which
+    on a long thread is a scroll past everything that has happened since — so
+    the button goes where the thing being answered is.
+
+    It starts the same flow the action row does. A second way in, not a second
+    implementation: two routes to the same screen is a convenience, two
+    implementations of sending is how the preview quietly stops appearing on
+    one of them.
+    """
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✉ Reply", callback_data=cb("reply", work_item_id)),
+    ]])
+
+
+def after_sending(work_item_id: int, origin_message_id: int) -> InlineKeyboardMarkup:
+    """Retract, offered on the confirmation of a message that has just gone.
+
+    The answer to NexterPay's second point on 19 September, and deliberately
+    not what they asked for. They wanted deleting a message in the topic to
+    remove the counterparty's copy; Telegram never tells a bot that a message
+    was deleted in a group, so there is no event to hang that on.
+
+    A button always knows it was pressed. It sits on the confirmation rather
+    than on the request's action row because it is about one message, and the
+    action row belongs to the request as a whole - a Retract there would be a
+    button with no way of saying what it would take back.
+    """
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text="↩ Retract",
+            callback_data=cb("retract", work_item_id, str(origin_message_id)),
+        ),
+    ]])

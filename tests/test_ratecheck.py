@@ -27,7 +27,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 import pytest_asyncio
 
-from app.bot.registry import register_client_chat
+from app.bot.registry import register_client_chat, register_operations_chat
 from app.domain.enums import Department, StaffRole
 from app.domain.errors import NotAuthorised
 from app.services import ratecheck
@@ -43,13 +43,35 @@ def gw() -> FakeGateway:
 
 
 @pytest_asyncio.fixture
-async def second_supplier(session, support_ops):
+async def finance_ops(session):
+    return await register_operations_chat(
+        session,
+        telegram_chat_id=-1001000006666,
+        department=Department.FINANCE,
+        title="Finance Operations",
+    )
+
+
+@pytest_asyncio.fixture
+async def pexi_finance(session, finance_ops):
+    return await register_client_chat(
+        session,
+        telegram_chat_id=-1002000006666,
+        client_name="Supplier Pexi",
+        department=Department.FINANCE,
+        title="Pexi — Finance",
+        is_supplier=True,
+    )
+
+
+@pytest_asyncio.fixture
+async def second_supplier(session, finance_ops):
     return await register_client_chat(
         session,
         telegram_chat_id=-1002000007777,
         client_name="Another Supplier Ltd",
-        department=Department.SUPPORT,
-        title="Another — Support",
+        department=Department.FINANCE,
+        title="Another — Finance",
         is_supplier=True,
     )
 
@@ -58,31 +80,68 @@ async def second_supplier(session, support_ops):
 # When it runs
 # --------------------------------------------------------------------------
 
-async def test_nothing_happens_before_nine(session, support_ops, pexi_supplier):
+async def test_nothing_happens_before_nine(session, finance_ops, pexi_finance):
     assert await ratecheck.due(session, now=EIGHT) == []
 
 
 async def test_a_desk_with_suppliers_is_due_after_nine(
-    session, support_ops, pexi_supplier
+    session, finance_ops, pexi_finance
 ):
-    assert Department.SUPPORT in await ratecheck.due(session, now=NINE)
+    assert Department.FINANCE in await ratecheck.due(session, now=NINE)
 
 
 async def test_it_fires_after_nine_not_only_at_nine(
-    session, support_ops, pexi_supplier
+    session, finance_ops, pexi_finance
 ):
     """The sweep runs on a fifteen-minute cycle, so it will almost never be
     looking at exactly 09:00. A job that only fires on the dot is one that
     silently does nothing on the day a deploy lands in that minute."""
     late = datetime(2026, 9, 18, 14, 30, tzinfo=UTC)
-    assert Department.SUPPORT in await ratecheck.due(session, now=late)
+    assert Department.FINANCE in await ratecheck.due(session, now=late)
 
 
-async def test_a_desk_with_no_suppliers_is_never_due(session, support_ops):
-    """Nobody to ask. Support has an Operations Group and a client group in
-    these fixtures and no supplier, which is the ordinary state of a desk that
-    does not buy anything."""
+async def test_a_desk_with_no_suppliers_is_never_due(session, finance_ops):
+    """Nobody to ask. Finance has an Operations Group here and no supplier
+    group, which is the ordinary state of a desk on the day it is set up."""
     assert await ratecheck.due(session, now=NINE) == []
+
+
+# --------------------------------------------------------------------------
+# Which desks ask at all
+#
+# NexterPay, 19 September: "only FX operations ask the rate to the suppliers
+# on that group right?" They were right to check. It was every desk, and the
+# scheduled run on the 18th had already opened rate checks with the Business
+# and Compliance supplier groups.
+# --------------------------------------------------------------------------
+
+async def test_a_desk_that_does_not_trade_currency_is_never_asked(
+    session, support_ops, pexi_supplier, gw
+):
+    """A supplier group is not a reason to ask for a rate.
+
+    Support has a supplier here - plenty of desks do, for things that have
+    nothing to do with currency - and it must not be asked. This is the test
+    the original lacked: it proved a desk *with* suppliers was due, and every
+    desk with suppliers passed it.
+    """
+    assert Department.SUPPORT not in await ratecheck.due(session, now=NINE)
+    assert await ratecheck.run(session, gw, now=NINE) == 0
+    assert gw.all_text_to(pexi_supplier.telegram_chat_id) == ""
+
+
+async def test_only_finance_is_ever_due(
+    session, support_ops, pexi_supplier, finance_ops, pexi_finance
+):
+    """Both desks have suppliers. Only one buys currency."""
+    assert await ratecheck.due(session, now=NINE) == [Department.FINANCE]
+
+
+def test_the_desks_that_ask_are_stated_not_inferred() -> None:
+    """Held as a list rather than worked out from whether a desk happens to
+    have a supplier. If Business ever does start dealing rates, adding it here
+    is the honest way to say so - and the change is visible in a diff."""
+    assert ratecheck.RATE_CHECK_DEPARTMENTS == (Department.FINANCE,)
 
 
 # --------------------------------------------------------------------------
@@ -90,15 +149,15 @@ async def test_a_desk_with_no_suppliers_is_never_due(session, support_ops):
 # --------------------------------------------------------------------------
 
 async def test_every_supplier_on_the_desk_is_asked(
-    session, support_ops, pexi_supplier, second_supplier, gw
+    session, finance_ops, pexi_finance, second_supplier, gw
 ):
     assert await ratecheck.run(session, gw, now=NINE) == 2
-    assert ratecheck.BODY in gw.all_text_to(pexi_supplier.telegram_chat_id)
+    assert ratecheck.BODY in gw.all_text_to(pexi_finance.telegram_chat_id)
     assert ratecheck.BODY in gw.all_text_to(second_supplier.telegram_chat_id)
 
 
 async def test_running_twice_in_a_day_asks_once(
-    session, support_ops, pexi_supplier, gw
+    session, finance_ops, pexi_finance, gw
 ):
     """The test that matters most here.
 
@@ -112,18 +171,18 @@ async def test_running_twice_in_a_day_asks_once(
 
 
 async def test_a_restart_does_not_ask_again(
-    session, support_ops, pexi_supplier, gw
+    session, finance_ops, pexi_finance, gw
 ):
     """Nothing is remembered in memory, so there is nothing for a restart to
     forget. `already_asked_today` reads the tickets."""
     await ratecheck.run(session, gw, now=NINE)
     assert await ratecheck.already_asked_today(
-        session, Department.SUPPORT, now=NINE
+        session, Department.FINANCE, now=NINE
     ) is True
 
 
 async def test_tomorrow_it_asks_again(
-    session, support_ops, pexi_supplier, gw
+    session, finance_ops, pexi_finance, gw
 ):
     await ratecheck.run(session, gw, now=NINE)
     tomorrow = NINE + timedelta(days=1)
@@ -131,7 +190,7 @@ async def test_tomorrow_it_asks_again(
 
 
 async def test_a_manual_run_counts_as_today_s_ask(
-    session, acme_support, support_ops, operator, pexi_supplier, gw
+    session, finance_ops, operator, pexi_finance, gw
 ):
     """Somebody who ran /npratecheck by hand has already asked.
 
@@ -145,14 +204,14 @@ async def test_a_manual_run_counts_as_today_s_ask(
 
     await open_outbound(
         session, gw,
-        counterparty_chat=pexi_supplier,
+        counterparty_chat=pexi_finance,
         subject=ratecheck.SUBJECT,
         body=ratecheck.BODY,
         actor=Actor.of(operator),
     )
 
     assert await ratecheck.already_asked_today(
-        session, Department.SUPPORT, now=NINE
+        session, Department.FINANCE, now=NINE
     ) is True
     assert await ratecheck.run(session, gw, now=NINE) == 0
 
@@ -162,7 +221,7 @@ async def test_a_manual_run_counts_as_today_s_ask(
 # --------------------------------------------------------------------------
 
 async def test_the_tickets_say_who_raised_them(
-    session, support_ops, pexi_supplier, gw
+    session, finance_ops, pexi_finance, gw
 ):
     """And it is not a person who was asleep at the time."""
     from sqlalchemy import select
@@ -179,12 +238,12 @@ async def test_the_tickets_say_who_raised_them(
 
 
 async def test_the_system_account_is_an_ordinary_operator(
-    session, support_ops
+    session, finance_ops
 ):
     """Not a back door. It can do what an Operator can do and no more — which
     is all it needs, and means it shows up in the staff list where anybody can
     see it."""
-    actor = await ratecheck.system_actor(session, Department.SUPPORT)
+    actor = await ratecheck.system_actor(session, Department.FINANCE)
 
     assert actor.name == ratecheck.SYSTEM_NAME
     assert actor.staff is not None
@@ -198,7 +257,7 @@ async def test_the_system_account_is_an_ordinary_operator(
         actor.require(StaffRole.MANAGER)
 
 
-async def test_its_id_cannot_collide_with_a_person(session, support_ops):
+async def test_its_id_cannot_collide_with_a_person(session, finance_ops):
     """Telegram user ids are positive, so zero belongs to nobody.
 
     A mention of this account will not resolve to anyone — it reads as a name
@@ -207,11 +266,11 @@ async def test_its_id_cannot_collide_with_a_person(session, support_ops):
     assert ratecheck.SYSTEM_TELEGRAM_USER_ID == 0
 
 
-async def test_seniority_is_still_held_per_desk(session, support_ops):
+async def test_seniority_is_still_held_per_desk(session, finance_ops):
     """The same rule as for a person. An account registered on Support has no
     standing on Finance, and this one is registered desk by desk as it is
     needed."""
-    await ratecheck.system_actor(session, Department.SUPPORT)
+    await ratecheck.system_actor(session, Department.FINANCE)
     finance = await ratecheck.system_actor(session, Department.FINANCE)
     assert finance.role is StaffRole.OPERATOR
 

@@ -57,6 +57,21 @@ RUN_AT_UTC = time(9, 0)
 SYSTEM_TELEGRAM_USER_ID = 0
 SYSTEM_NAME = "NexterPay Operations"
 
+# The desks that buy currency, and therefore the desks with rates to ask about.
+#
+# This used to be every department that happened to have a supplier group, and
+# NexterPay caught it on 19 September: "only FX operations ask the rate to the
+# suppliers on that group right?" They were right, and it had already happened
+# - on the 18th the scheduled run opened SPEX-1085 in the Business supplier
+# group and SPEX-1086 in Compliance. Neither desk trades currency. Both had a
+# supplier, which was the whole of the test.
+#
+# A tuple rather than a flag on the department, because this is a fact about
+# what a desk does rather than a setting somebody should be able to change by
+# accident - and if Business ever does start dealing rates, adding it here is
+# the honest way to say so.
+RATE_CHECK_DEPARTMENTS: tuple[Department, ...] = (Department.FINANCE,)
+
 SUBJECT = "Rate check"
 BODY = (
     "Could you send your current rate — local currency per 1 USDT — and how "
@@ -121,19 +136,25 @@ async def already_asked_today(
 async def due(
     session: AsyncSession, *, now: datetime | None = None
 ) -> list[Department]:
-    """Desks that should be asked now: past nine, with suppliers, not yet asked.
+    """Desks that should be asked now: past nine, trade currency, with
+    suppliers, and not yet asked today.
 
     Past nine rather than at nine. The sweep runs on a fifteen-minute cycle, so
     it will rarely be looking at exactly 09:00 - and a job that only fires on
     the dot is a job that silently does nothing on the day a deploy happens to
     land in that minute.
+
+    The department filter is first because it is the cheapest and because
+    getting it wrong is the loudest: the failure mode is not an error, it is a
+    supplier on a desk that does not trade currency being asked every morning
+    for a rate nobody wants, until they stop reading anything we send them.
     """
     now = now or datetime.now(UTC)
     if now.timetz().replace(tzinfo=None) < RUN_AT_UTC:
         return []
 
     out = []
-    for department in Department:
+    for department in RATE_CHECK_DEPARTMENTS:
         if not await _supplier_groups(session, department):
             continue
         if await already_asked_today(session, department, now=now):

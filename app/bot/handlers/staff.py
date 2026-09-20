@@ -239,7 +239,10 @@ async def cmd_reply(message: Message, command: CommandObject) -> None:
             )
             return
         try:
-            await relay.send_client_reply(session, gateway(), item, actor, text)
+            await relay.send_client_reply(
+                session, gateway(), item, actor, text,
+                origin_message_id=message.message_id,
+            )
         except Exception as exc:
             logger.exception("%s failed for work item %s", cmd.REPLY, item.id)
             await message.reply(explain(exc))
@@ -474,6 +477,11 @@ async def capture_reply_draft(message: Message, state: FSMContext) -> None:
     await state.update_data(
         draft=text,
         draft_attachment=asdict(attachments[0]) if attachments else None,
+        # Kept so the message that leaves can be found again from the one
+        # somebody typed. It is what makes an edit or a retraction possible;
+        # without it the two are unrelated rows and a correction in the topic
+        # has nothing to correct. NexterPay, 19 September.
+        draft_message_id=message.message_id,
     )
     # The preview names the attachment. A confirmation screen exists to stop
     # people tapping without reading, so it has to show everything that is
@@ -758,19 +766,54 @@ async def _apply(
         await relay.send_client_reply(
             session, gw, item, actor, body,
             attachment=attachment, tag_lead=tag, to_chat=to_chat,
+            origin_message_id=data.get("draft_message_id"),
         )
         await state.clear()
         where = (to_chat.title if to_chat else None) or "the client"
         sealed = f"Sent to {where}:\n\n{body}"
         if attachment is not None:
             sealed += f"\n\nWith: {attachment.file_name or attachment.kind}"
-        await _seal_preview(query, sealed)
+        origin = data.get("draft_message_id")
+        await _seal_preview(
+            query, sealed,
+            kb.after_sending(item.id, origin) if origin else None,
+        )
         return f"Sent to {where} for {item.display_reference}"
 
     if action == "cancelreply":
         await state.clear()
         await _seal_preview(query, "Cancelled. Nothing was sent to the client.")
         return "Cancelled"
+
+    if action == "retract":
+        if not value:
+            await _say(query, "There is nothing recorded to retract here.")
+            return "Nothing to retract"
+
+        deleted, withdrawn = await relay.retract_relayed_reply(
+            session, gw, item, int(value),
+        )
+        if not deleted and not withdrawn:
+            await _say(
+                query,
+                "Nothing was taken back. Either it has already been "
+                "retracted, or the copy could not be found.",
+            )
+            return "Nothing retracted"
+
+        # Two outcomes and they mean different things to whoever is reading.
+        # Deleted means the counterparty will not find it; withdrawn means they
+        # can still see that something was there and was taken back, which is
+        # the most Telegram allows after 48 hours.
+        if withdrawn:
+            outcome = (
+                "That message was sent more than 48 hours ago, so Telegram "
+                "will not let it be deleted. It now reads as withdrawn."
+            )
+        else:
+            outcome = "Taken back. The copy has been removed from their group."
+        await _seal_preview(query, outcome)
+        return f"Retracted for {item.display_reference}"
 
     if action == "answer":
         if item.asked_from_id is None:
@@ -1133,14 +1176,19 @@ async def _say(query: CallbackQuery, text: str) -> None:
         logger.debug("Could not reply in the topic", exc_info=True)
 
 
-async def _seal_preview(query: CallbackQuery, text: str) -> None:
-    """Replace the preview with its outcome and strip the buttons.
+async def _seal_preview(query: CallbackQuery, text: str, markup=None) -> None:
+    """Replace the preview with its outcome and strip the send buttons.
 
     Leaving a live "Send to client" button under a message that has already
     been sent is an invitation to send it twice.
+
+    `markup` is how Retract arrives: the send buttons go, and a single button
+    about the message that just left takes their place. It is the only button
+    that belongs here, and it belongs here rather than on the request's action
+    row because it is about one message rather than the request.
     """
     try:
-        await query.message.edit_text(text[:4000], reply_markup=None)
+        await query.message.edit_text(text[:4000], reply_markup=markup)
     except Exception:
         logger.debug("Could not seal preview", exc_info=True)
 
@@ -1220,6 +1268,7 @@ async def topic_message(message: Message) -> None:
                     session, gateway(), item, actor,
                     body or "please see the attached.",
                     attachment=attachments[0],
+                    origin_message_id=message.message_id,
                 )
                 await message.reply("Sent to the client, with the attachment.")
             elif outbound:
@@ -1237,3 +1286,69 @@ async def topic_message(message: Message) -> None:
                 )
         except Exception as exc:
             await message.reply(explain(exc))
+
+
+# --------------------------------------------------------------------------
+# Corrections
+#
+# NexterPay, 19 September, testing ACME-1088: "Editing a message after its
+# send out - the message gets edited internally but on client group message
+# send out remains the same."
+#
+# Nothing in this platform had ever looked at an edit. Telegram does send
+# them, as `edited_message`, and the counterparty's copy can be rewritten in
+# place - so the correction somebody makes in the topic becomes the correction
+# the client reads.
+#
+# Only replies sent from 20 September onwards can be corrected. Anything older
+# was recorded without knowing which message produced it, so there is nothing
+# to find. The handler says so rather than going quiet, because a silent
+# no-op is exactly what was reported in the first place.
+# --------------------------------------------------------------------------
+
+@router.edited_message(F.chat.type.in_({"group", "supergroup"}))
+async def staff_edited_a_message(message: Message) -> None:
+    """A message edited inside an Operations topic, propagated outward."""
+    async with session_scope() as session:
+        resolved = await _resolve(session, message, message.message_thread_id)
+        if resolved is None:
+            raise SkipHandler
+        chat, _, item = resolved
+        if chat.kind is not ChatKind.OPERATIONS or item is None:
+            raise SkipHandler
+
+        text = (message.text or message.caption or "").strip()
+        if not text:
+            return
+
+        # Commands are stripped so that editing "/npreply we have paid" sends
+        # the words rather than the command with them.
+        for prefix in (f"/{cmd.REPLY}", f"/{cmd.NOTE}"):
+            if text.lower().startswith(prefix):
+                text = text[len(prefix):].strip()
+                break
+        if not text:
+            return
+
+        try:
+            corrected = await relay.edit_relayed_reply(
+                session, gateway(), item, message.message_id, text,
+            )
+        except Exception as exc:
+            await message.reply(explain(exc))
+            return
+
+    if corrected:
+        await message.reply(
+            f"Updated — the {'copy' if corrected == 1 else 'copies'} sent out "
+            f"now read as edited."
+        )
+    else:
+        # Not an error, and worth saying out loud. An internal note has no
+        # copy anywhere and never did; a reply sent before this existed has
+        # one that cannot be found.
+        await message.reply(
+            "This edit stays in the topic. Either nothing was sent out from "
+            "this message, or it was sent before edits were carried across — "
+            "in which case use Retract, or send a correction."
+        )

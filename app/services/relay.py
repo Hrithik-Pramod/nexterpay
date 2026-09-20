@@ -37,7 +37,9 @@ from __future__ import annotations
 import html
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import utcnow
@@ -137,6 +139,7 @@ async def _record_message(
     sender_name: str,
     text: str | None,
     sender_telegram_user_id: int | None = None,
+    origin_message_id: int | None = None,
 ) -> Message:
     message = Message(
         work_item_id=item.id,
@@ -146,6 +149,7 @@ async def _record_message(
         sender_name=sender_name,
         sender_telegram_user_id=sender_telegram_user_id,
         text=text,
+        origin_message_id=origin_message_id,
     )
     session.add(message)
     await session.flush()
@@ -501,7 +505,10 @@ def closure_text(
     Wrong twice over - they had raised nothing, and those were the client's
     words.
     """
-    parts = [f"Request {reference or item.client_reference} is now resolved."]
+    parts = [
+        f"{MARK_RESOLVED} Request {reference or item.client_reference} is now "
+        f"resolved."
+    ]
 
     if raised_it:
         raised = item.created_at.strftime("%d %B") if item.created_at else "earlier"
@@ -517,28 +524,93 @@ def closure_text(
 
     if resolution:
         parts += ["", "What we did:", resolution.strip()]
-    parts += ["", "If anything is still outstanding, reply to this message."]
+    parts += ["", OUTSTANDING_HINT]
     return "\n".join(parts)
+
+
+# The markers on the front of every message that leaves the platform.
+#
+# NexterPay's design, drawn as a before-and-after on 19 September. The point is
+# not decoration: a counterparty group carries ordinary conversation as well as
+# ours, and a request that opens with a symbol is findable by scrolling. They
+# are constants because they are wording, and wording changes - this is the one
+# place to change it.
+MARK_RECEIVED = "📥"
+MARK_RESPONSE = "💬"
+MARK_RESOLVED = "✅"
+MARK_OWNER = "👤"
+
+# The invitation, in brackets and on its own line.
+#
+# It was a plain sentence run on from the message before it, which read as part
+# of the answer rather than as an instruction about the group. NexterPay's
+# mockup sets it apart, and they are right: it is the only line in any of these
+# messages that tells somebody what to *do*.
+REPLY_HINT = (
+    "(Please reply to this message if you would like to add anything further.)"
+)
+OUTSTANDING_HINT = "(If anything is still outstanding, reply to this message.)"
 
 
 def acknowledgement_text(item: WorkItem) -> str:
     """What a counterparty sees when their request is opened.
 
-    Business closes differently, at NexterPay's request. A commercial enquiry
-    is a conversation being started rather than a fault being reported, and
-    "add anything further to it" is the wrong invitation when what the person
-    wants to know is that someone is coming back to them.
+    "Has been received... will review your request" rather than "has been
+    logged with our team". NexterPay's wording, and the better of the two: a
+    person who has just reported a problem wants to know somebody will look at
+    it, not that a record exists.
+
+    Business reads differently, at NexterPay's request. A commercial enquiry is
+    a conversation being started rather than a fault being reported, and "add
+    anything further to it" is the wrong invitation when what the person wants
+    to know is that someone is coming back to them.
     """
-    closing = (
-        "One of our Business Team will get back to you. Please reply to this "
-        "message if you would like to add anything further."
-        if item.department is Department.BUSINESS
-        else "Please reply to this message if you would like to add anything "
-        "further."
-    )
+    if item.department is Department.BUSINESS:
+        opening = (
+            f"Enquiry {item.client_reference} has been received. One of our "
+            f"{item.department.label} Team will get back to you."
+        )
+    else:
+        opening = (
+            f"Request {item.client_reference} has been received. Our "
+            f"{item.department.label} Team will review your request."
+        )
+    return f"{MARK_RECEIVED} {opening}\n\n{REPLY_HINT}"
+
+
+def staff_reply_text(
+    reference: str,
+    text: str,
+    *,
+    mention: str | None = None,
+    escape: bool = False,
+) -> str:
+    """A reply from the desk, as the counterparty reads it.
+
+    Was `ACME-1042 — from Sarah Hill — <text>`, one run-on line. NexterPay
+    redrew it on 19 September as a header, the message, then the invitation,
+    and it reads far better: the answer is the thing somebody wants, and it now
+    starts on its own line instead of after two pieces of routing.
+
+    **The sender's name is deliberately not here any more**, and that reverses
+    a decision from 5 September ("the client should know who they are speaking
+    with, more personal"). NexterPay's new design announces the person once,
+    when they claim the request, rather than on every message. That is the
+    better trade on a long thread - a name on all twelve replies is noise - but
+    it does mean a second person stepping in is not announced. Putting it back
+    is one line, and it is worth asking them rather than assuming.
+
+    `escape` exists because this composes into HTML when a contact is tagged.
+    The reference is ours, but `text` is whatever a member of staff typed, and
+    a stray "<" would otherwise be swallowed as markup or rejected outright by
+    Telegram. `mention` is already markup and is never escaped.
+    """
+    esc = html.escape if escape else (lambda value: value)
+    body = f"{mention} — {esc(text)}" if mention else esc(text)
     return (
-        f"Request {item.client_reference} has been logged with our "
-        f"{item.department.label} Team.\n\n{closing}"
+        f"{MARK_RESPONSE} Response to {esc(reference)}\n\n"
+        f"{body}\n\n"
+        f"{REPLY_HINT}"
     )
 
 
@@ -560,9 +632,15 @@ def claim_notice_text(item: WorkItem, actor_name: str | None) -> str | None:
     on - saying "someone" would be worse than the silence.
     """
     if item.department is Department.BUSINESS:
-        return f"Our {item.department.label} Team is looking into your enquiry."
+        return (
+            f"{MARK_OWNER} Enquiry {item.client_reference} — our "
+            f"{item.department.label} Team is looking into it."
+        )
     if actor_name:
-        return f"{actor_name} is now looking after your request."
+        return (
+            f"{MARK_OWNER} Request {item.client_reference} — {actor_name} is "
+            f"now looking after your request."
+        )
     return None
 
 
@@ -744,6 +822,7 @@ async def relay_client_message(
     attachments: list[IncomingAttachment] | None = None,
     replying_to: str | None = None,
     from_chat: Chat | None = None,
+    topic_keyboard=None,
 ) -> None:
     """Counterparty → topic. Reopens nothing and changes no status; staff decide.
 
@@ -846,8 +925,13 @@ async def relay_client_message(
             body = f"{mention_for(owner)} — {who}{context}\n{quoted}"
         else:
             body = f"{who}{context}\n{quoted}"
+        # The keyboard is passed in rather than built here, for the same reason
+        # `ack_keyboard` is: this module must not import the bot layer. It goes
+        # on the client's words themselves so that answering is a tap from the
+        # thing being answered, rather than a scroll back to the action row.
         await gateway.send_message(
-            ops.telegram_chat_id, body, thread_id=item.topic_id, parse_mode="HTML"
+            ops.telegram_chat_id, body, thread_id=item.topic_id, parse_mode="HTML",
+            reply_markup=topic_keyboard,
         )
     elif owner is not None and attachments:
         # An attachment with no words still needs the owner to know.
@@ -900,6 +984,7 @@ async def send_client_reply(
     attachment: IncomingAttachment | None = None,
     tag_lead: int | None = None,
     to_chat: Chat | None = None,
+    origin_message_id: int | None = None,
 ) -> None:
     """The only path from NexterPay to a counterparty.
 
@@ -944,23 +1029,13 @@ async def send_client_reply(
             f"{item.display_reference}, so nothing was sent."
         )
 
-    # Signed, so the counterparty knows who they are dealing with.
-    #
-    # NexterPay asked for this on 5 September - "the client should know who
-    # they are speaking with, more personal". They are right, and it costs
-    # nothing: a reply from a name is a conversation, a reply from a company
-    # is a ticketing system. It is the staff member's display name from their
-    # record, not their Telegram name, so NexterPay control what a client
-    # sees.
-    signature = f" — from {actor.name}" if actor.name else ""
-
     # The reference this particular side is shown, never the other side's.
     #
     # This was `item.client_reference` until 16 September, which is correct for
     # a one-sided request and hands the supplier the client's code on a
     # two-sided one. Never `display_reference`, which carries both.
     shown_reference = await reference_for(session, item, source)
-    outbound = f"{shown_reference}{signature} — {text}"
+    outbound = staff_reply_text(shown_reference, text)
 
     parse_mode = None
     if tag_lead is not None:
@@ -979,9 +1054,8 @@ async def send_client_reply(
                 f"{html.escape(lead.display_name)}</a>"
                 for lead in leads
             )
-            outbound = (
-                f"{html.escape(shown_reference)}{html.escape(signature)} — "
-                f"{named} — {html.escape(text)}"
+            outbound = staff_reply_text(
+                shown_reference, text, mention=named, escape=True
             )
             parse_mode = "HTML"
 
@@ -995,6 +1069,7 @@ async def send_client_reply(
         message_id=sent.message_id,
         sender_name=actor.name,
         text=outbound,
+        origin_message_id=origin_message_id,
     )
 
     if attachment is not None:
@@ -1017,6 +1092,154 @@ async def send_client_reply(
         to=source.title if item.bridged_chat_id is not None else None,
     )
     await announce(session, gateway, item, event)
+
+
+# Telegram will not delete a message more than 48 hours old, for anybody.
+#
+# From the Bot API's own list of limitations on deleteMessage: "A message can
+# only be deleted if it was sent less than 48 hours ago." Nothing on our side
+# changes that, so a retraction past the window edits the message instead of
+# removing it - which is the honest outcome, because the counterparty has
+# certainly read it by then and pretending otherwise would be a worse lie than
+# the correction.
+RETRACTION_WINDOW = timedelta(hours=48)
+
+RETRACTED_TEXT = "This message was withdrawn by NexterPay."
+
+
+async def relayed_copies_of(
+    session: AsyncSession, origin_message_id: int
+) -> list[Message]:
+    """The counterparty-facing messages a given Operations message produced.
+
+    A list rather than one, because a reply on a two-sided request can be sent
+    to each side separately and both came from the same composition. Correcting
+    one and leaving the other would be worse than correcting neither.
+    """
+    result = await session.execute(
+        select(Message)
+        .where(
+            Message.origin_message_id == origin_message_id,
+            Message.direction == MessageDirection.OUTBOUND,
+            Message.telegram_message_id.is_not(None),
+        )
+        .order_by(Message.id)
+    )
+    return list(result.scalars().all())
+
+
+async def edit_relayed_reply(
+    session: AsyncSession,
+    gateway: TelegramGateway,
+    item: WorkItem,
+    origin_message_id: int,
+    new_text: str,
+) -> int:
+    """Somebody corrected what they sent. Correct what the counterparty sees.
+
+    NexterPay, 19 September: "the message gets edited internally but on client
+    group message send out remains the same". They were right, and there was no
+    mechanism at all - nothing in this platform had ever looked at an
+    `edited_message` update.
+
+    Returns how many copies were corrected, which is zero for anything sent
+    before 20 September. Those have no `origin_message_id`, so there is nothing
+    to find. Saying so is better than silently doing nothing.
+
+    The header is rebuilt rather than patched, so a corrected message is shaped
+    exactly like a fresh one - same marker, same reference, same invitation.
+    """
+    copies = await relayed_copies_of(session, origin_message_id)
+    if not copies:
+        return 0
+
+    corrected = 0
+    for copy in copies:
+        chat = await _chat_by_telegram_id(session, copy.telegram_chat_id)
+        reference = (
+            await reference_for(session, item, chat)
+            if chat is not None
+            else item.client_reference
+        )
+        rebuilt = staff_reply_text(reference, new_text)
+        try:
+            await gateway.edit_message_text(
+                copy.telegram_chat_id, copy.telegram_message_id, rebuilt
+            )
+        except Exception:
+            # One group refusing an edit must not stop the other side being
+            # corrected. Telegram refuses an edit that changes nothing, which
+            # is harmless and common - somebody fixing whitespace.
+            logger.exception(
+                "Could not edit the copy of %s in chat %s",
+                item.display_reference, copy.telegram_chat_id,
+            )
+            continue
+        copy.text = rebuilt
+        corrected += 1
+
+    await session.flush()
+    return corrected
+
+
+async def retract_relayed_reply(
+    session: AsyncSession,
+    gateway: TelegramGateway,
+    item: WorkItem,
+    origin_message_id: int,
+    *,
+    now: datetime | None = None,
+) -> tuple[int, int]:
+    """Take a sent message back. Returns (deleted, withdrawn).
+
+    The answer to NexterPay's second point, and deliberately not the thing they
+    asked for. They asked for a deletion in the topic to remove the
+    counterparty's copy; Telegram never tells a bot that a message was deleted
+    in a group, so there is no event to act on and no amount of work produces
+    one. An explicit button is the honest version: it always knows it was
+    pressed.
+
+    Two outcomes, because Telegram allows a delete only inside 48 hours.
+    Younger than that, the copy goes. Older, it is edited to say it was
+    withdrawn, because it cannot be removed and leaving it unmarked would be
+    the same as doing nothing.
+    """
+    copies = await relayed_copies_of(session, origin_message_id)
+    now = now or utcnow()
+
+    deleted = withdrawn = 0
+    for copy in copies:
+        within_window = (now - copy.sent_at) < RETRACTION_WINDOW
+        try:
+            if within_window:
+                await gateway.delete_message(
+                    copy.telegram_chat_id, copy.telegram_message_id
+                )
+                deleted += 1
+            else:
+                await gateway.edit_message_text(
+                    copy.telegram_chat_id, copy.telegram_message_id, RETRACTED_TEXT
+                )
+                withdrawn += 1
+        except Exception:
+            logger.exception(
+                "Could not retract the copy of %s in chat %s",
+                item.display_reference, copy.telegram_chat_id,
+            )
+            continue
+        copy.text = RETRACTED_TEXT
+
+    await session.flush()
+    return deleted, withdrawn
+
+
+async def _chat_by_telegram_id(
+    session: AsyncSession, telegram_chat_id: int
+) -> Chat | None:
+    result = await session.execute(
+        select(Chat).where(Chat.telegram_chat_id == telegram_chat_id)
+    )
+    return result.scalar_one_or_none()
 
 
 async def add_internal_note(

@@ -448,6 +448,16 @@ def test_only_these_functions_may_write_to_a_client_chat() -> None:
         # rule that no staff *wording* leaves this module still holds. Worth
         # noticing that the guard caught it rather than letting it through.
         "claim",
+        # Added 20 September with edit and retract. Neither sends anything —
+        # they change or remove a message already sitting in the counterparty's
+        # group, which alters what a customer of NexterPay's customer reads
+        # just as surely as a new message does.
+        #
+        # This is why the pattern below is not only send_*. Writing these two
+        # against `edit_message_text` would have left them outside the guard
+        # entirely: a new outward path, green on every test, invisible here.
+        "edit_relayed_reply",
+        "retract_relayed_reply",
     }
 
     # Every name a counterparty chat is held under in this module. Missing one
@@ -470,6 +480,20 @@ def test_only_these_functions_may_write_to_a_client_chat() -> None:
         # The tempting fix was to drop `close` from `allowed`. That would have
         # gone green and left this guard permanently blind to it.
         "chat.telegram_chat_id",
+        # Added 20 September. Edit and retract work from a recorded Message
+        # row rather than from a Chat, so the destination is held as
+        # `copy.telegram_chat_id`.
+        "copy.telegram_chat_id",
+    )
+
+    # Sending is not the only way to change what a counterparty reads.
+    #
+    # Editing a message they have already received rewrites it in place, and
+    # deleting one removes it. Both are outward writes and both belong under
+    # this guard. `refresh_header` edits too, but into the Operations Group,
+    # whose name is not in the list above — which is the whole mechanism.
+    outward = (
+        r"gateway\.(send_message|send_file|edit_message_text|delete_message)\("
     )
 
     source = pathlib.Path("app/services/relay.py").read_text().splitlines()
@@ -479,7 +503,7 @@ def test_only_these_functions_may_write_to_a_client_chat() -> None:
         if named:
             current = named.group(1)
         window = "".join(source[index:index + 4])
-        if re.search(r"gateway\.send_(message|file)\(", line) and any(
+        if re.search(outward, line) and any(
             name in window for name in chat_names
         ):
             writers.add(current)
