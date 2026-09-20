@@ -399,8 +399,21 @@ class FakeGateway:
         # stripped it. Every test passed. NexterPay found it in ten minutes by
         # looking at the screen.
         self.markups[message_id] = _button_data(reply_markup)
+        # `parse_mode` is recorded for the same reason the markup is: a test
+        # can only check what the fake remembers. It was left out, and on
+        # 20 September that cost an afternoon - an invariant asserting "if a
+        # message carries tags it was sent as HTML" read None for every edit
+        # and reported perfectly correct code as broken.
+        #
+        # A fake that forgets an argument does not make tests pass when they
+        # should fail; it makes them fail when they should pass, and sends
+        # somebody looking for a bug that is not there.
         self.calls.append(
-            Call("edit_message_text", chat_id, {"message_id": message_id, "text": text})
+            Call("edit_message_text", chat_id, {
+                "message_id": message_id,
+                "text": text,
+                "parse_mode": parse_mode,
+            })
         )
 
     async def create_topic(self, chat_id: int, name: str) -> int:
