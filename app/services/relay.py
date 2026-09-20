@@ -37,7 +37,7 @@ from __future__ import annotations
 import html
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -582,6 +582,7 @@ def staff_reply_text(
     reference: str,
     text: str,
     *,
+    sender: str | None = None,
     mention: str | None = None,
     escape: bool = False,
 ) -> str:
@@ -592,13 +593,18 @@ def staff_reply_text(
     and it reads far better: the answer is the thing somebody wants, and it now
     starts on its own line instead of after two pieces of routing.
 
-    **The sender's name is deliberately not here any more**, and that reverses
-    a decision from 5 September ("the client should know who they are speaking
-    with, more personal"). NexterPay's new design announces the person once,
-    when they claim the request, rather than on every message. That is the
-    better trade on a long thread - a name on all twelve replies is noise - but
-    it does mean a second person stepping in is not announced. Putting it back
-    is one line, and it is worth asking them rather than assuming.
+    **The name stays, in the header.** The mockup showed `Response to
+    ACME-1098` with no name, and dropping it was the first version of this.
+    Two tests failed, and they were right to: NexterPay asked for signed
+    replies on 5 September — "the client should know who they are speaking
+    with, more personal" — and asked again for Business specifically, where a
+    negotiation is the most personal conversation on the platform. A drawn
+    example of one message is not the place to read a reversal of that into.
+    So the redraw is the shape, and the name moves into the header rather than
+    out of the message.
+
+    It is the staff member's display name from their record, not their Telegram
+    name, so NexterPay control what a client sees.
 
     `escape` exists because this composes into HTML when a contact is tagged.
     The reference is ours, but `text` is whatever a member of staff typed, and
@@ -606,9 +612,10 @@ def staff_reply_text(
     Telegram. `mention` is already markup and is never escaped.
     """
     esc = html.escape if escape else (lambda value: value)
+    signature = f" — from {esc(sender)}" if sender else ""
     body = f"{mention} — {esc(text)}" if mention else esc(text)
     return (
-        f"{MARK_RESPONSE} Response to {esc(reference)}\n\n"
+        f"{MARK_RESPONSE} Response to {esc(reference)}{signature}\n\n"
         f"{body}\n\n"
         f"{REPLY_HINT}"
     )
@@ -633,8 +640,8 @@ def claim_notice_text(item: WorkItem, actor_name: str | None) -> str | None:
     """
     if item.department is Department.BUSINESS:
         return (
-            f"{MARK_OWNER} Enquiry {item.client_reference} — our "
-            f"{item.department.label} Team is looking into it."
+            f"{MARK_OWNER} Enquiry {item.client_reference} — Our "
+            f"{item.department.label} Team is looking into your enquiry."
         )
     if actor_name:
         return (
@@ -1035,7 +1042,7 @@ async def send_client_reply(
     # a one-sided request and hands the supplier the client's code on a
     # two-sided one. Never `display_reference`, which carries both.
     shown_reference = await reference_for(session, item, source)
-    outbound = staff_reply_text(shown_reference, text)
+    outbound = staff_reply_text(shown_reference, text, sender=actor.name)
 
     parse_mode = None
     if tag_lead is not None:
@@ -1055,7 +1062,8 @@ async def send_client_reply(
                 for lead in leads
             )
             outbound = staff_reply_text(
-                shown_reference, text, mention=named, escape=True
+                shown_reference, text,
+                sender=actor.name, mention=named, escape=True,
             )
             parse_mode = "HTML"
 
@@ -1105,6 +1113,22 @@ async def send_client_reply(
 RETRACTION_WINDOW = timedelta(hours=48)
 
 RETRACTED_TEXT = "This message was withdrawn by NexterPay."
+
+
+def _as_utc(value: datetime) -> datetime:
+    """A stored timestamp, made safe to subtract.
+
+    The column is `DateTime(timezone=True)` and Postgres honours that. SQLite
+    does not — it hands back a naive datetime, and subtracting one from an
+    aware one raises rather than quietly giving a wrong answer, which is the
+    one mercy in it.
+
+    Tests run on SQLite and production is Postgres, so this is exactly the
+    class of fault the suite is structurally placed to catch late: it passed
+    ruff, it passed review, and it failed on the first test that did real
+    arithmetic on a stored time.
+    """
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 async def relayed_copies_of(
@@ -1161,7 +1185,7 @@ async def edit_relayed_reply(
             if chat is not None
             else item.client_reference
         )
-        rebuilt = staff_reply_text(reference, new_text)
+        rebuilt = staff_reply_text(reference, new_text, sender=copy.sender_name)
         try:
             await gateway.edit_message_text(
                 copy.telegram_chat_id, copy.telegram_message_id, rebuilt
@@ -1209,7 +1233,7 @@ async def retract_relayed_reply(
 
     deleted = withdrawn = 0
     for copy in copies:
-        within_window = (now - copy.sent_at) < RETRACTION_WINDOW
+        within_window = (now - _as_utc(copy.sent_at)) < RETRACTION_WINDOW
         try:
             if within_window:
                 await gateway.delete_message(
@@ -1386,7 +1410,13 @@ async def claim(
         return
 
     source, _ = await chats_for(session, item)
-    notice = f"{item.client_reference} — {who}"
+    # `claim_notice_text` owns the whole line, reference included.
+    #
+    # This used to prefix it here, which was harmless while the notice was a
+    # bare sentence and became wrong the moment it started with a marker: the
+    # client got "#1000 — 👤 Request #1000 — Sarah Hill is now…", the symbol
+    # buried mid-string and the reference twice.
+    notice = who
     sent = await gateway.send_message(source.telegram_chat_id, notice)
     await _record_message(
         session, item,

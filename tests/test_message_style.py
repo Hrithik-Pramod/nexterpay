@@ -12,9 +12,10 @@ guard. A leak breaks a test; a message that reads badly breaks nothing and is
 simply what every client sees until somebody complains. The screenshot is the
 specification, so it is worth pinning.
 
-One deliberate loss is recorded here rather than left to be discovered:
-`staff_reply_text` no longer carries the sender's name. See the test at the
-bottom.
+The redraw changed the shape and nothing else. The first attempt also dropped
+the sender's name, on the strength of the mockup showing none — two existing
+tests failed and were right to, because NexterPay had asked for signed replies
+twice. The name moved into the header instead. See the test at the bottom.
 """
 
 from __future__ import annotations
@@ -121,10 +122,12 @@ async def test_a_reply_invites_a_reply(
 # --------------------------------------------------------------------------
 
 def test_a_reply_is_headed_with_the_reference() -> None:
-    text = relay.staff_reply_text("ACME-1098", "This was processed. Thanks")
+    text = relay.staff_reply_text(
+        "ACME-1098", "This was processed. Thanks", sender="Sarah Hill",
+    )
     first, blank, body = text.split("\n")[:3]
 
-    assert first == f"{relay.MARK_RESPONSE} Response to ACME-1098"
+    assert first == f"{relay.MARK_RESPONSE} Response to ACME-1098 — from Sarah Hill"
     assert blank == ""
     assert body == "This was processed. Thanks"
 
@@ -185,24 +188,29 @@ async def test_business_names_the_team_not_the_person(
 
 
 # --------------------------------------------------------------------------
-# What the redraw cost
+# What the redraw did not change
 # --------------------------------------------------------------------------
 
-def test_a_reply_no_longer_carries_the_senders_name() -> None:
-    """Recorded deliberately, because it reverses an earlier decision.
+def test_a_reply_still_carries_the_senders_name() -> None:
+    """The redraw changed the shape, not who the message is from.
 
-    On 5 September NexterPay asked for replies to be signed — "the client
-    should know who they are speaking with, more personal". The 19 September
-    mockup announces the person once, when they claim the request, and not on
-    every message after it.
+    The first version of this dropped the name, because the mockup shows
+    `Response to ACME-1098` with nothing after it. Two existing tests failed
+    and they were right to. NexterPay asked for signed replies on 5 September —
+    "the client should know who they are speaking with, more personal" — and
+    again for Business, where a negotiation is the most personal conversation
+    on the platform.
 
-    That is the better trade on a long thread: a name on all twelve replies is
-    noise. It does mean a second person stepping in mid-thread is not
-    announced. This test fails the day somebody puts the signature back, which
-    is the point — it should be a decision, not a drift.
+    A drawn example of a single message is not where a reversal of that should
+    be read in. The name moved into the header instead.
     """
-    text = relay.staff_reply_text("ACME-1098", "Done.")
-    assert "from" not in text.lower().split("\n")[0]
+    text = relay.staff_reply_text("ACME-1098", "Done.", sender="Sarah Hill")
+    header = text.split("\n")[0]
+
+    assert "from Sarah Hill" in header
+    assert header.startswith(relay.MARK_RESPONSE)
+    # Still the header, not the answer: the message begins on its own line.
+    assert text.split("\n")[2] == "Done."
 
 
 async def test_the_person_is_still_announced_once(

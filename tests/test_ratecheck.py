@@ -22,7 +22,7 @@ restart and a boolean does not.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 
 import pytest
 import pytest_asyncio
@@ -33,8 +33,22 @@ from app.domain.errors import NotAuthorised
 from app.services import ratecheck
 from app.services.gateway import FakeGateway
 
-NINE = datetime(2026, 9, 18, 9, 5, tzinfo=UTC)
-EIGHT = datetime(2026, 9, 18, 8, 55, tzinfo=UTC)
+# Anchored to today rather than to a fixed date, and that is not tidiness.
+#
+# `already_asked_today` compares a ticket's `created_at` — a real timestamp,
+# written by the database when the test runs — against midnight on whichever
+# day is being simulated. A hard-coded date works only while the calendar has
+# not yet passed it: after that, a ticket "created" today is newer than
+# tomorrow-in-the-fixture, so `test_tomorrow_it_asks_again` sees it as already
+# asked and fails.
+#
+# It did exactly that on 20 September, two days after the date it was pinned
+# to, in a run that was checking something else entirely. A test that starts
+# failing because time passed is worse than one that never passed at all — it
+# spends somebody's afternoon on a change that did not cause it.
+_TODAY = datetime.now(UTC).date()
+NINE = datetime.combine(_TODAY, time(9, 5), tzinfo=UTC)
+EIGHT = datetime.combine(_TODAY, time(8, 55), tzinfo=UTC)
 
 
 @pytest.fixture

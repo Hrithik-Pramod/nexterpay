@@ -70,6 +70,16 @@ ROUTING_SILENCE = {
         "which cmd_reply answers. Speaking in any of those cases would mean "
         "the bot replies to everything said in an Operations Group."
     ),
+    "staff_edited_a_message": (
+        "Edits arrive for every message in every Operations topic, whether or "
+        "not they have anything to do with us — somebody fixing a typo in a "
+        "note, or clearing a photo caption. The handler speaks whenever it "
+        "has something to say: it confirms a correction that went out, and it "
+        "says so when one could not be carried across. The silence left is "
+        "for edits with no text in them at all, where there is nothing to "
+        "relay and nothing to report, and answering would mean the bot "
+        "replies every time anybody adjusts anything in a topic."
+    ),
 }
 
 
