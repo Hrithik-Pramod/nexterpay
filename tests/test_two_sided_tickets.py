@@ -608,3 +608,66 @@ def test_a_function_that_can_write_to_either_side_must_not_build_its_own_referen
           "destination what it is called. See the three dates at the top of "
           "this section."
     )
+
+
+# --------------------------------------------------------------------------
+# /npreply refuses where it cannot name a recipient
+#
+# NexterPay, 20 September: "someone could intend to reply to the supplier and
+# accidentally send supplier-facing content to the client with no preview or
+# recipient confirmation." Their wording for the refusal, their decision to
+# keep the fast path on one-sided requests where there is nothing to get
+# wrong.
+# --------------------------------------------------------------------------
+
+REFUSAL = (
+    "This request has more than one external party. Please use Reply and "
+    "choose the recipient."
+)
+
+
+def test_the_refusal_is_worded_as_they_asked() -> None:
+    """Checked against the source of both paths, because the command arrives
+    at two different handlers - typed, and as a file's caption - and a refusal
+    that exists in one of them is the fault it was meant to prevent."""
+    import pathlib
+
+    source = pathlib.Path("app/bot/handlers/staff.py").read_text(encoding="utf-8")
+    assert source.count("more than one external party") == 2, (
+        "both /npreply paths must refuse: the typed command and the same "
+        "command sent as a caption on a file"
+    )
+
+
+def test_both_paths_check_before_sending() -> None:
+    """The guard has to come before the send, not after it.
+
+    Stated as its own test because the difference between the two is the whole
+    feature, and it is one line's placement.
+    """
+    import pathlib
+    import re
+
+    source = pathlib.Path("app/bot/handlers/staff.py").read_text(encoding="utf-8")
+    for block in re.findall(
+        r"bridged_chat_id is not None:.*?(?=\n\n\n|\Z)", source, re.S
+    )[:2]:
+        refusal = block.find("more than one external party")
+        send = block.find("send_client_reply")
+        if send != -1:
+            assert refusal < send, "the refusal must come before the send"
+
+
+async def test_a_one_sided_request_still_takes_the_fast_path(
+    session, acme_support, support_ops, operator, gw
+):
+    """The command is not being removed. On a request with one counterparty
+    there is nothing to choose between, so the preview buys nothing and costs
+    a screen."""
+    item = await _raised(session, gw, acme_support)
+    assert item.bridged_chat_id is None
+
+    await relay.send_client_reply(
+        session, gw, item, Actor.of(operator), "on it now",
+    )
+    assert "on it now" in gw.all_text_to(acme_support.telegram_chat_id)

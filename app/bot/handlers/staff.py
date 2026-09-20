@@ -238,6 +238,27 @@ async def cmd_reply(message: Message, command: CommandObject) -> None:
                 "the topic of the request you are answering."
             )
             return
+
+        # Refused on a two-sided request, at NexterPay's instruction on
+        # 20 September and with their wording.
+        #
+        # The command has no way to name a recipient, so on a bridged request
+        # it defaulted to whoever raised it — always the client. That is a
+        # guess made on somebody's behalf about which counterparty hears
+        # something, and it is the same shape as the two leaks already found:
+        # defensible, silent, and wrong in exactly the case that costs most.
+        #
+        # NexterPay put it plainly: someone could intend to reply to the
+        # supplier and send supplier-facing content to the client, with no
+        # preview and no recipient named. The fast path stays for one-sided
+        # requests, where there is nothing to get wrong.
+        if item.bridged_chat_id is not None:
+            await message.reply(
+                "This request has more than one external party. Please use "
+                "Reply and choose the recipient."
+            )
+            return
+
         try:
             await relay.send_client_reply(
                 session, gateway(), item, actor, text,
@@ -1260,6 +1281,19 @@ async def topic_message(message: Message) -> None:
             return
         _, actor, item = resolved
         if item is None:
+            return
+
+        # The same refusal as `cmd_reply`, because this is the same command.
+        #
+        # `/npreply` sent as a file's caption arrives here rather than there,
+        # and guarding only the text path would have left a file going to the
+        # wrong counterparty while the words were refused. Which is the habit
+        # that produced three reference leaks: fixing it where it was seen.
+        if outbound and item.bridged_chat_id is not None:
+            await message.reply(
+                "This request has more than one external party. Please use "
+                "Reply and choose the recipient."
+            )
             return
 
         try:
