@@ -1,5 +1,13 @@
 """The nine o'clock rate check.
 
+**Built, tested, and deferred to Phase 2 on 20 September** - "remove for now,
+as phase 2 item". It is no longer wired to the scheduler. These tests still
+run, because the module is meant to be picked back up rather than rewritten,
+and an untested deferred feature is a rewritten one.
+
+`/npratecheck` is unaffected: it has its own implementation in the FX handlers
+and never used this module.
+
 NexterPay asked for rate checks to be initiated from Operations "or automate
 this at a set time" on 16 September, and set the time on the 17th: 09:00 UTC.
 
@@ -300,3 +308,65 @@ def test_every_supplier_is_asked_the_same_question() -> None:
     produce five differently-shaped answers."""
     assert "1 USDT" in ratecheck.BODY
     assert "how long it holds" in ratecheck.BODY
+
+
+# --------------------------------------------------------------------------
+# Deferred, not deleted
+#
+# NexterPay, 20 September: "remove for now, as phase 2 item". The scheduled
+# run goes; the manual command stays; the module stays and stays tested.
+#
+# Both halves of that are worth pinning. Somebody re-wiring the scheduler
+# without being asked would start messaging suppliers at nine again, and
+# somebody deleting the module as dead code would turn a one-line change back
+# into a rebuild.
+# --------------------------------------------------------------------------
+
+def test_the_scheduler_no_longer_runs_it() -> None:
+    """The sweeper archives and does nothing else."""
+    import pathlib
+
+    main = pathlib.Path("app/bot/main.py").read_text(encoding="utf-8")
+    sweeper = main[main.index("async def _archive_sweeper"):]
+    sweeper = sweeper[: sweeper.index("\n\n\n")]
+
+    assert "ratecheck.run" not in sweeper, (
+        "the scheduled rate check is wired back in. NexterPay deferred it to "
+        "Phase 2 on 20 September - if that has changed, say so here too."
+    )
+
+
+async def test_the_module_is_still_here_and_still_works(
+    session, finance_ops, pexi_finance, gw
+):
+    """Deferred means not called, not gone.
+
+    If this file is ever deleted because the module "is not used", re-enabling
+    the feature stops being one line and becomes a rebuild - which is exactly
+    what deferring it was meant to avoid.
+    """
+    assert await ratecheck.due(session, now=NINE) == [Department.FINANCE]
+    assert await ratecheck.run(session, gw, now=NINE) == 1
+
+
+def test_the_manual_command_never_used_this_module() -> None:
+    """Which is why deferring the schedule does not touch /npratecheck.
+
+    The two were written separately - the handler builds its own supplier list
+    and preview - so turning the timer off leaves the command exactly as it
+    was.
+
+    Checked against the import and the call rather than the word "ratecheck",
+    which appears in that file as the name of the command itself. The first
+    version of this test asserted the word was absent and would have failed
+    for a reason that has nothing to do with what it is about.
+    """
+    import pathlib
+
+    handlers = pathlib.Path("app/bot/handlers/fx.py").read_text(encoding="utf-8")
+
+    assert "from app.services import ratecheck" not in handlers
+    assert "services.ratecheck" not in handlers
+    assert "ratecheck.run" not in handlers
+    # And the command itself is still there, which is the point of the test.
+    assert "cmd.RATE_CHECK" in handlers

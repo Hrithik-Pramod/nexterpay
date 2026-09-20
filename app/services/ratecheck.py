@@ -1,8 +1,23 @@
 """Asking every supplier for a rate, on a timer.
 
+**Not currently scheduled. Deferred to Phase 2 on 20 September.**
+
+NexterPay: "remove for now, as phase 2 item", alongside the supplier and
+currency catalogue it belongs with. Asking every supplier the same question at
+nine is only half of it; the other half is knowing which currency each of them
+deals in, and that catalogue does not exist yet.
+
+Nothing here is deleted and the tests still run. It is simply not wired to
+anything - `app/bot/main.py` no longer calls `run()`. Re-enabling is restoring
+one call, not rebuilding the feature, which is the state a deferred thing
+should be left in.
+
+`/npratecheck` is unaffected and still works. It has its own implementation in
+the FX handlers and never used this module.
+
 NexterPay, 16 September: "In Operations, we need to be able to initiate rate
 checks, or automate this at a set time." The manual half is `/npratecheck`.
-This is the timer, and they set it on the 17th: **09:00 UTC**.
+This was the timer, and they set it on the 17th: **09:00 UTC**.
 
 **The identity question, and why it needed asking.** Every request on this
 platform records who raised it, and a job that runs at nine in the morning has

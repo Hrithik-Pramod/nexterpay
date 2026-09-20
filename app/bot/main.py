@@ -33,7 +33,7 @@ from app.bot.routing import build_strategy
 from app.config import get_settings
 from app.db.base import init_engine, session_scope
 from app.domain.enums import ChatKind, StaffRole
-from app.services import archive, ratecheck
+from app.services import archive
 from app.services.gateway import AiogramGateway
 from app.services.throttle import ThrottledGateway
 
@@ -67,9 +67,18 @@ async def _archive_sweeper(gateway) -> None:
     while True:
         await asyncio.sleep(SWEEP_INTERVAL_SECONDS)
 
-        # Two jobs, two try blocks. They are unrelated, and a desk whose
-        # archive permissions are wrong should not also stop every supplier
-        # being asked for a rate.
+        # One job now. The scheduled rate check used to run here too.
+        #
+        # NexterPay deferred it to Phase 2 on 20 September - "remove for now,
+        # as phase 2 item" - alongside the supplier and currency catalogue it
+        # really belongs with. Asking every supplier the same question at nine
+        # is only half the feature; the other half is knowing which currency
+        # each of them deals in, and that catalogue does not exist yet.
+        #
+        # `app/services/ratecheck.py` is left in place and still tested. It is
+        # simply not wired to anything: re-enabling is restoring the call, not
+        # rebuilding the feature. `/npratecheck` is unaffected - it has its own
+        # implementation in the FX handlers and never used this one.
         try:
             async with session_scope() as session:
                 moved = await archive.sweep(session, gateway)
@@ -79,16 +88,6 @@ async def _archive_sweeper(gateway) -> None:
             raise
         except Exception:
             logger.exception("Archive sweep failed; it will run again")
-
-        try:
-            async with session_scope() as session:
-                asked = await ratecheck.run(session, gateway)
-            if asked:
-                logger.info("Rate check opened with %d supplier(s)", asked)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("Rate check failed; it will run again")
 
 
 # What each role adds to the one below it. Written as what a person gains,
