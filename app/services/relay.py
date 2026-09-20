@@ -505,17 +505,18 @@ def closure_text(
     Wrong twice over - they had raised nothing, and those were the client's
     words.
     """
-    parts = [
-        f"{MARK_RESOLVED} Request {reference or item.client_reference} is now "
-        f"resolved."
-    ]
+    shown = _e(reference or item.client_reference)
+    parts = [f"{MARK_RESOLVED} <b>Request {shown} is now resolved.</b>"]
 
     if raised_it:
         raised = item.created_at.strftime("%d %B") if item.created_at else "earlier"
         original = " ".join((item.original_message or "").split())
         if len(original) > 400:
             original = original[:399].rstrip() + "…"
-        parts += ["", f"What you raised on {raised}:", f'"{original}"']
+        # Their own words, in italics and quoted, as NexterPay drew it. Escaped
+        # because this is the single most likely place for a stray "<" on the
+        # whole platform: it is whatever the client typed, played back to them.
+        parts += ["", f"What you raised on {_e(raised)}:", f"<i>“{_e(original)}”</i>"]
     else:
         # No quotation, and no summary of one either. "The matter you were
         # helping with" is as far as this can go without describing something
@@ -523,7 +524,7 @@ def closure_text(
         parts += ["", "Thank you for your help with it."]
 
     if resolution:
-        parts += ["", "What we did:", resolution.strip()]
+        parts += ["", "What we did:", _e(resolution.strip())]
     parts += ["", OUTSTANDING_HINT]
     return "\n".join(parts)
 
@@ -546,10 +547,41 @@ MARK_OWNER = "👤"
 # of the answer rather than as an instruction about the group. NexterPay's
 # mockup sets it apart, and they are right: it is the only line in any of these
 # messages that tells somebody what to *do*.
+#
+# Italic for the aside, bold for the instruction inside it, at NexterPay's
+# request on 20 September. The nesting is the point: the brackets say "this is
+# not part of the answer", the bold says "this is the bit that matters".
 REPLY_HINT = (
-    "(Please reply to this message if you would like to add anything further.)"
+    "<i>(Please <b>reply to this message</b> if you would like to add "
+    "anything further.)</i>"
 )
-OUTSTANDING_HINT = "(If anything is still outstanding, reply to this message.)"
+OUTSTANDING_HINT = (
+    "<i>(If anything is still outstanding, <b>reply to this message</b>.)</i>"
+)
+
+# Everything below composes HTML, which changes the rules for all of it.
+#
+# `parse_mode` is off by default on the gateway for a good reason, written
+# there: most of what this bot sends is text a client or a member of staff
+# typed, and a stray "<" is either swallowed as markup or rejected outright by
+# Telegram - which means a message that silently does not arrive.
+#
+# So from here on every interpolated value is escaped, without exception, and
+# the only unescaped things are the tags themselves. The values that actually
+# matter are `original_message` and `resolution` in a closure, and `text` in a
+# reply: those are somebody's typing, and "amount < 500 & rising" is a
+# perfectly ordinary thing for a client to write.
+def _e(value: object) -> str:
+    """Escape anything going into an HTML message. Never optional.
+
+    `quote=False` on purpose. Telegram asks for exactly three replacements -
+    "<" with &lt;, ">" with &gt; and "&" with &amp; - and escaping quotes on
+    top of that is noise in messages that are full of quoted client text. A
+    closure plays back what somebody wrote, in quotation marks, so this is the
+    difference between reading their words and reading &quot;their words&quot;
+    if a client ever sees an entity Telegram does not decode.
+    """
+    return html.escape(str(value), quote=False)
 
 
 def acknowledgement_text(item: WorkItem) -> str:
@@ -565,17 +597,16 @@ def acknowledgement_text(item: WorkItem) -> str:
     anything further to it" is the wrong invitation when what the person wants
     to know is that someone is coming back to them.
     """
+    # The title is bold and the sentence after it is not, at NexterPay's
+    # request on 20 September. The title is the part somebody scanning a busy
+    # group needs to find; the rest is courtesy.
     if item.department is Department.BUSINESS:
-        opening = (
-            f"Enquiry {item.client_reference} has been received. One of our "
-            f"{item.department.label} Team will get back to you."
-        )
+        title = f"Enquiry {_e(item.client_reference)} has been received."
+        rest = f"One of our {_e(item.department.label)} Team will get back to you."
     else:
-        opening = (
-            f"Request {item.client_reference} has been received. Our "
-            f"{item.department.label} Team will review your request."
-        )
-    return f"{MARK_RECEIVED} {opening}\n\n{REPLY_HINT}"
+        title = f"Request {_e(item.client_reference)} has been received."
+        rest = f"Our {_e(item.department.label)} Team will review your request."
+    return f"{MARK_RECEIVED} <b>{title}</b> {rest}\n\n{REPLY_HINT}"
 
 
 def staff_reply_text(
@@ -606,16 +637,21 @@ def staff_reply_text(
     It is the staff member's display name from their record, not their Telegram
     name, so NexterPay control what a client sees.
 
-    `escape` exists because this composes into HTML when a contact is tagged.
-    The reference is ours, but `text` is whatever a member of staff typed, and
-    a stray "<" would otherwise be swallowed as markup or rejected outright by
-    Telegram. `mention` is already markup and is never escaped.
+    Everything interpolated is escaped, and that is no longer optional. It used
+    to be, because only the tagged-contact path composed HTML; from
+    20 September every message out is HTML, so `text` - whatever a member of
+    staff typed - is escaped on every path. "amount < 500 & rising" is an
+    ordinary thing to write and would otherwise be swallowed as markup or
+    rejected outright by Telegram, which means a reply that silently never
+    arrives. `mention` is already markup and is the one thing not escaped.
+
+    `escape` is kept as a parameter and ignored, so that any caller still
+    passing it keeps working; it will go once nothing does.
     """
-    esc = html.escape if escape else (lambda value: value)
-    signature = f" — from {esc(sender)}" if sender else ""
-    body = f"{mention} — {esc(text)}" if mention else esc(text)
+    signature = f" — from {_e(sender)}" if sender else ""
+    body = f"{mention} — {_e(text)}" if mention else _e(text)
     return (
-        f"{MARK_RESPONSE} Response to {esc(reference)}{signature}\n\n"
+        f"{MARK_RESPONSE} <b>Response to {_e(reference)}{signature}</b>\n\n"
         f"{body}\n\n"
         f"{REPLY_HINT}"
     )
@@ -640,13 +676,13 @@ def claim_notice_text(item: WorkItem, actor_name: str | None) -> str | None:
     """
     if item.department is Department.BUSINESS:
         return (
-            f"{MARK_OWNER} Enquiry {item.client_reference} — Our "
-            f"{item.department.label} Team is looking into your enquiry."
+            f"{MARK_OWNER} <b>Enquiry {_e(item.client_reference)}</b> — Our "
+            f"{_e(item.department.label)} Team is looking into your enquiry."
         )
     if actor_name:
         return (
-            f"{MARK_OWNER} Request {item.client_reference} — {actor_name} is "
-            f"now looking after your request."
+            f"{MARK_OWNER} <b>Request {_e(item.client_reference)}</b> — "
+            f"{_e(actor_name)} is now looking after your request."
         )
     return None
 
@@ -767,6 +803,7 @@ async def open_request(
         source_chat.telegram_chat_id,
         acknowledgement_text(item),
         reply_markup=ack_keyboard,
+        parse_mode="HTML",
     )
     await _record_message(
         session, item,
@@ -1056,7 +1093,8 @@ async def send_client_reply(
     shown_reference = await reference_for(session, item, source)
     outbound = staff_reply_text(shown_reference, text, sender=actor.name)
 
-    parse_mode = None
+    # HTML on every path from 20 September, not only when a contact is tagged.
+    parse_mode = "HTML"
     if tag_lead is not None:
         from app.bot.registry import leads_for
 
@@ -1200,7 +1238,8 @@ async def edit_relayed_reply(
         rebuilt = staff_reply_text(reference, new_text, sender=copy.sender_name)
         try:
             await gateway.edit_message_text(
-                copy.telegram_chat_id, copy.telegram_message_id, rebuilt
+                copy.telegram_chat_id, copy.telegram_message_id, rebuilt,
+                parse_mode="HTML",
             )
         except Exception:
             # One group refusing an edit must not stop the other side being
@@ -1429,7 +1468,9 @@ async def claim(
     # client got "#1000 — 👤 Request #1000 — Sarah Hill is now…", the symbol
     # buried mid-string and the reference twice.
     notice = who
-    sent = await gateway.send_message(source.telegram_chat_id, notice)
+    sent = await gateway.send_message(
+        source.telegram_chat_id, notice, parse_mode="HTML"
+    )
     await _record_message(
         session, item,
         direction=MessageDirection.OUTBOUND,
@@ -2129,7 +2170,9 @@ async def close(
                 # Only the side that raised it is shown what was raised.
                 raised_it=chat.id == item.source_chat_id,
             )
-            sent = await gateway.send_message(chat.telegram_chat_id, text)
+            sent = await gateway.send_message(
+                chat.telegram_chat_id, text, parse_mode="HTML"
+            )
             await _record_message(
                 session, item,
                 direction=MessageDirection.OUTBOUND,

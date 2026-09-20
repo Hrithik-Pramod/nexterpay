@@ -516,4 +516,5 @@ async def test_a_commercial_enquiry_says_someone_will_come_back(session, gw=None
     text = relay.acknowledgement_text(enquiry)
     assert "One of our Business Team will get back to you" in text
     # The general wording, which this one replaces.
-    assert "Please reply to this message if you would like to add" in text
+    assert "reply to this message" in text
+    assert relay.REPLY_HINT in text

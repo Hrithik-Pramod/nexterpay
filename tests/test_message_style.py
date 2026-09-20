@@ -97,12 +97,15 @@ async def test_the_reply_hint_stands_on_its_own_line(
     assert f"\n\n{relay.REPLY_HINT}" in ack
 
 
-def test_the_invitation_is_bracketed() -> None:
-    """NexterPay's mockup sets it apart from the message. It is the only line
-    in any of these that tells somebody what to do."""
-    assert relay.REPLY_HINT.startswith("(") and relay.REPLY_HINT.endswith(")")
-    assert relay.OUTSTANDING_HINT.startswith("(")
-    assert relay.OUTSTANDING_HINT.endswith(")")
+def test_the_invitation_is_bracketed_and_set_apart() -> None:
+    """NexterPay's mockup sets it apart from the message, and on 20 September
+    they asked for the nesting: italic for the aside, bold for the instruction
+    inside it. The brackets say "this is not the answer"; the bold says "this
+    is the part that matters"."""
+    for hint in (relay.REPLY_HINT, relay.OUTSTANDING_HINT):
+        assert hint.startswith("<i>(")
+        assert hint.endswith(")</i>")
+        assert "<b>reply to this message</b>" in hint
 
 
 async def test_a_reply_invites_a_reply(
@@ -127,7 +130,9 @@ def test_a_reply_is_headed_with_the_reference() -> None:
     )
     first, blank, body = text.split("\n")[:3]
 
-    assert first == f"{relay.MARK_RESPONSE} Response to ACME-1098 — from Sarah Hill"
+    assert first == (
+        f"{relay.MARK_RESPONSE} <b>Response to ACME-1098 — from Sarah Hill</b>"
+    )
     assert blank == ""
     assert body == "This was processed. Thanks"
 
@@ -223,3 +228,96 @@ async def test_the_person_is_still_announced_once(
     notice = gw.messages_to(CLIENT_CHAT)[-1]
     assert "Sarah Hill" in notice
     assert item.client_reference in notice
+
+
+# --------------------------------------------------------------------------
+# Formatting, and the price of it
+#
+# NexterPay, 20 September: titles bold, the invitation italic with "reply to
+# this message" bold inside it, and the client's quoted words in italics.
+#
+# Turning HTML on changes the rules for everything, which is why the tests
+# below are mostly about escaping rather than about tags. A message with an
+# unescaped "<" in it is not a message that looks wrong - Telegram rejects it
+# outright, so it is a message the client never receives, and nothing on our
+# side reports a failure the client can see.
+# --------------------------------------------------------------------------
+
+BRUTAL = 'amount < 500 & rising > "urgent" <b>not bold</b>'
+
+
+def test_the_titles_are_bold(session) -> None:
+    text = relay.staff_reply_text("ACME-1098", "ok", sender="Sarah Hill")
+    assert text.split("\n")[0].count("<b>") == 1
+    assert text.split("\n")[0].endswith("</b>")
+
+
+async def test_a_clients_angle_brackets_survive_their_own_closure(
+    session, acme_support, support_ops, operator, gw
+):
+    """The most likely place on the platform for this to bite.
+
+    A closure repeats what the client originally wrote, back to them. So the
+    one string guaranteed to contain whatever a client felt like typing is
+    also the one we hand to Telegram as markup.
+    """
+    item = await relay.open_request(
+        session, gw, source_chat=acme_support, subject="Amounts",
+        body=BRUTAL, raised_by_name="Tom Baker",
+    )
+    await relay.close(session, gw, item, Actor.of(operator))
+
+    closure = gw.messages_to(CLIENT_CHAT)[-1]
+    assert "&lt;" in closure and "&amp;" in closure
+    assert "<b>not bold</b>" not in closure, (
+        "a client typed <b> and it was passed through as markup"
+    )
+
+
+async def test_staff_typing_angle_brackets_is_escaped_too(
+    session, acme_support, support_ops, operator, gw
+):
+    """Every reply is HTML now, not only the ones that tag a contact. That was
+    the change most likely to go unnoticed: the tagged path had always escaped
+    and the ordinary path had never needed to."""
+    item = await _open(session, gw, acme_support)
+    await relay.send_client_reply(
+        session, gw, item, Actor.of(operator), BRUTAL,
+    )
+    sent = gw.messages_to(CLIENT_CHAT)[-1]
+    assert "&lt;" in sent
+    assert "<b>not bold</b>" not in sent
+
+
+def test_a_name_with_an_ampersand_does_not_break_the_header() -> None:
+    """Staff display names are set by NexterPay and "Smith & Co" is an
+    ordinary thing to call someone."""
+    text = relay.staff_reply_text("ACME-1098", "ok", sender="Smith & Co")
+    assert "Smith &amp; Co" in text
+    assert "Smith & Co" not in text
+
+
+async def test_a_resolution_note_is_escaped(
+    session, acme_support, support_ops, operator, gw
+):
+    """Typed by staff at the moment of closing, and it goes straight out."""
+    item = await _open(session, gw, acme_support)
+    await relay.close(
+        session, gw, item, Actor.of(operator), resolution="refunded < 24h & confirmed",
+    )
+    closure = gw.messages_to(CLIENT_CHAT)[-1]
+    assert "&lt; 24h &amp; confirmed" in closure
+
+
+def test_every_tag_we_open_is_closed() -> None:
+    """Telegram rejects unbalanced markup, so an unclosed tag is a message
+    that never arrives rather than one that looks odd."""
+
+    samples = [
+        relay.REPLY_HINT,
+        relay.OUTSTANDING_HINT,
+        relay.staff_reply_text("ACME-1", "body", sender="Sarah"),
+    ]
+    for sample in samples:
+        for tag in ("b", "i"):
+            assert sample.count(f"<{tag}>") == sample.count(f"</{tag}>"), sample
