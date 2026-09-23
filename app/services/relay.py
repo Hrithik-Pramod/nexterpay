@@ -84,7 +84,23 @@ async def counterparty_chats(session: AsyncSession, item: WorkItem) -> list[Chat
     The raising group is always first, so a caller that does not care which
     side it is talking to gets the behaviour every one-sided request has always
     had.
+
+    **An internal request reaches nobody outside, and that is checked here.**
+    `open_internal` gives it the origin's source chat so it files under the
+    same counterparty - the header names them, the reference carries their
+    code, and "everything for Acme" stays answerable. Right for filing and
+    wrong for addressing: the client is not a party to a question NexterPay
+    asked NexterPay, has never seen it, and must not receive anything about it.
+
+    Guarded here rather than in `close`, which is where it was found on
+    23 September - closing an Ask Department request sent the client a closure
+    notice quoting a colleague's words back at them as their own. Two outward
+    paths use this function and a third will be written eventually. Fixing the
+    one place a leak was noticed is how the reference leaks kept returning.
     """
+    if item.asked_from_id is not None:
+        return []
+
     source, _ = await chats_for(session, item)
     chats = [source]
     if item.bridged_chat_id is not None and item.bridged_chat_id != item.source_chat_id:

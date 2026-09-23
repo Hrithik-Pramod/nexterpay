@@ -259,6 +259,19 @@ async def cmd_reply(message: Message, command: CommandObject) -> None:
             )
             return
 
+        # An internal request has no external party at all.
+        #
+        # `counterparty_chats` already refuses this, so nothing can leak
+        # either way. This is here so the refusal names the button they
+        # actually want instead of a guard message about parties.
+        if item.asked_from_id is not None:
+            await message.reply(
+                "This request was asked by another desk, so there is nobody "
+                "outside to reply to. Use Answer — it goes back to the desk "
+                "that asked."
+            )
+            return
+
         try:
             await relay.send_client_reply(
                 session, gateway(), item, actor, text,

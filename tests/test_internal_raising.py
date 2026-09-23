@@ -554,3 +554,52 @@ async def test_closing_the_original_still_tells_the_client(
     await relay.close(session, gw, origin, Actor.of(operator))
 
     assert "is now resolved" in gw.messages_to(CLIENT_CHAT)[-1]
+
+
+async def test_a_reply_cannot_be_addressed_outward_either(
+    session, acme_support, support_ops, finance_ops, operator, gw
+):
+    """The same door, checked from the other side.
+
+    Closing was where this was found, but `send_client_reply` reaches the
+    counterparty from the same list. `/npreply` typed in an Ask Department
+    topic would have sent a colleague's answer to the client. It is refused
+    at the service layer now, not only in the handler - a guard the handler
+    owns is a guard until somebody writes a second handler.
+    """
+    from app.domain.errors import DomainError
+
+    origin = await _origin(session, gw, acme_support)
+    asked = await relay.open_internal(
+        session, gw, origin=origin, department=Department.FINANCE,
+        subject="Rate check", body="Confirm the 3 March rate?",
+        actor=Actor.of(operator),
+    )
+
+    before = list(gw.messages_to(CLIENT_CHAT))
+    with pytest.raises(DomainError):
+        await relay.send_client_reply(
+            session, gw, asked, Actor.of(operator), "the rate was 4.31",
+        )
+    assert gw.messages_to(CLIENT_CHAT) == before
+
+
+async def test_an_internal_request_has_no_counterparty(
+    session, acme_support, support_ops, finance_ops, operator, gw
+):
+    """Stated directly, because it is the property everything else rests on.
+
+    It files under the client — same header, same code — and addresses
+    nobody. Those two being different is the whole point.
+    """
+    origin = await _origin(session, gw, acme_support)
+    asked = await relay.open_internal(
+        session, gw, origin=origin, department=Department.FINANCE,
+        subject="Rate check", body="Confirm the 3 March rate?",
+        actor=Actor.of(operator),
+    )
+
+    assert await relay.counterparty_chats(session, asked) == []
+    # But still filed under them, which is why it was addressable by mistake.
+    assert asked.source_chat_id == origin.source_chat_id
+    assert await relay.counterparty_chats(session, origin) != []
