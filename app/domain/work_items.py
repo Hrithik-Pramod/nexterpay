@@ -570,6 +570,10 @@ async def open_items_for_chat(
     it was raised. A long-running request closed yesterday is recent news; one
     raised yesterday and closed the same day drops out on the same schedule as
     everything else.
+
+    Internal requests are excluded. An Ask Department request is filed under
+    the client - same source chat, same code - and is not theirs to see. See
+    the note in `relay.open_requests_for`.
     """
     if include_recent_closed:
         since = utcnow() - CLIENT_HISTORY
@@ -581,7 +585,11 @@ async def open_items_for_chat(
 
     result = await session.execute(
         select(WorkItem)
-        .where(WorkItem.source_chat_id == chat.id, condition)
+        .where(
+            WorkItem.source_chat_id == chat.id,
+            WorkItem.asked_from_id.is_(None),
+            condition,
+        )
         .order_by(WorkItem.updated_at.desc())
     )
     return list(result.scalars().all())

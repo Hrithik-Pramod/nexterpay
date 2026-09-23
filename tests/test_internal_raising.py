@@ -603,3 +603,78 @@ async def test_an_internal_request_has_no_counterparty(
     # But still filed under them, which is why it was addressable by mistake.
     assert asked.source_chat_id == origin.source_chat_id
     assert await relay.counterparty_chats(session, origin) != []
+
+
+# --------------------------------------------------------------------------
+# The third door: the client's own request list
+#
+# Found in the production records on 23 September, after the first two were
+# fixed. ACME-1039 had reached the client as an anchor reading
+#
+#     ACME-1039 · can you confirm the settlement rate for this client?
+#
+# A subject one desk typed to another, describing the client in the third
+# person, sitting in that client's own My Requests list where they could tap
+# it. Worse than the closure notice, because it persists and is browsable
+# rather than arriving once.
+#
+# Same root cause as the other two - the internal request carries the client's
+# source chat so it files under them - and not covered by the
+# `counterparty_chats` guard, because a list query does not send anything.
+# --------------------------------------------------------------------------
+
+async def test_an_internal_request_is_not_in_the_clients_list(
+    session, acme_support, support_ops, finance_ops, operator, gw
+):
+    origin = await _origin(session, gw, acme_support)
+    asked = await relay.open_internal(
+        session, gw, origin=origin, department=Department.FINANCE,
+        subject="can you confirm the settlement rate for this client?",
+        body="Finance - can you confirm before we answer them?",
+        actor=Actor.of(operator),
+    )
+
+    listed = await relay.open_requests_for(session, acme_support)
+    references = [item.id for item in listed]
+
+    assert origin.id in references, "the client's own request vanished"
+    assert asked.id not in references, (
+        "an internal cross-department request is showing in the client's "
+        "own list, with the subject one desk typed to another"
+    )
+
+
+async def test_it_is_not_in_the_recently_closed_list_either(
+    session, acme_support, support_ops, finance_ops, operator, gw
+):
+    """`recent_closed` widens the window, and a widened window is exactly
+    where something excluded from the narrow one creeps back."""
+    origin = await _origin(session, gw, acme_support)
+    asked = await relay.open_internal(
+        session, gw, origin=origin, department=Department.FINANCE,
+        subject="internal question", body="please confirm",
+        actor=Actor.of(operator),
+    )
+    await relay.close(session, gw, asked, Actor.of(operator))
+
+    listed = await relay.open_requests_for(session, acme_support, recent_closed=True)
+    assert asked.id not in [item.id for item in listed]
+
+
+async def test_the_domain_query_excludes_them_too(
+    session, acme_support, support_ops, finance_ops, operator, gw
+):
+    """Two queries answer "what has this group raised", in two modules. The
+    fix has to be in both or the list depends on which one the caller used."""
+    from app.domain.work_items import open_items_for_chat
+
+    origin = await _origin(session, gw, acme_support)
+    asked = await relay.open_internal(
+        session, gw, origin=origin, department=Department.FINANCE,
+        subject="internal question", body="please confirm",
+        actor=Actor.of(operator),
+    )
+
+    listed = await open_items_for_chat(session, acme_support)
+    assert origin.id in [i.id for i in listed]
+    assert asked.id not in [i.id for i in listed]

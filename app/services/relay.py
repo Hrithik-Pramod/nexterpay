@@ -2040,6 +2040,17 @@ async def open_requests_for(
     chose that window: long enough to answer "what happened to the thing from
     a fortnight ago", short enough that a group running for a year does not
     reply with a wall of text nobody reads.
+
+    **Internal requests are excluded.** An Ask Department request carries the
+    client's group as its source chat so it files under them - same header,
+    same code. That made it appear in their own list, showing the subject one
+    desk typed to another: "can you confirm the settlement rate for this
+    client?", talking about them in the third person, to them.
+
+    Found on 23 September in the records, after fixing the same root cause in
+    `counterparty_chats`. That guard covers the two paths that send outward;
+    this query is a third way the same requests reached a client, and it does
+    not go through it.
     """
     from sqlalchemy import select
 
@@ -2054,7 +2065,11 @@ async def open_requests_for(
 
     result = await session.execute(
         select(WorkItem)
-        .where(WorkItem.source_chat_id == source_chat.id, condition)
+        .where(
+            WorkItem.source_chat_id == source_chat.id,
+            WorkItem.asked_from_id.is_(None),
+            condition,
+        )
         .order_by(WorkItem.reference)
     )
     return list(result.scalars().all())
