@@ -473,3 +473,84 @@ async def test_an_outbound_origin_says_we_raised_it(
         t for t in gw.messages_to(FINANCE_OPS) if "asked Finance about" in t
     ][-1]
     assert "we raised it" in context
+
+
+# --------------------------------------------------------------------------
+# Closing one — the half nothing was checking
+#
+# Everything above guards the opening of an internal request. Nothing guarded
+# closing one, and closing is where it goes wrong.
+#
+# `open_internal` gives the new request the origin's `source_chat` - the
+# client's group - so that it stays filed under the same counterparty. `close`
+# then does what it does for every request: tells `counterparty_chats`, which
+# for this one resolves to the client, using `raised_it=True` because the
+# client's chat *is* the source chat. The client receives a closure notice for
+# a request they never raised, quoting NexterPay's internal question to
+# another desk back at them as though it were their own words.
+#
+# Found on 23 September while answering a question about something else.
+# --------------------------------------------------------------------------
+
+async def test_closing_an_internal_request_tells_the_client_nothing(
+    session, acme_support, support_ops, finance_ops, operator, gw
+):
+    """The property this file exists for, applied to the other end.
+
+    An internal request is NexterPay asking NexterPay. The client is not a
+    party to it, has never seen it, and must not be told when it finishes.
+    """
+    origin = await _origin(session, gw, acme_support)
+    asked = await relay.open_internal(
+        session, gw, origin=origin, department=Department.FINANCE,
+        subject="Rate check",
+        body="Can you confirm the 3 March rate before we answer Acme?",
+        actor=Actor.of(operator),
+    )
+
+    before = list(gw.messages_to(CLIENT_CHAT))
+    await relay.close(session, gw, asked, Actor.of(operator))
+
+    assert gw.messages_to(CLIENT_CHAT) == before, (
+        "closing an internal cross-department request sent the client a "
+        "message. They never raised it and have never seen it."
+    )
+
+
+async def test_the_internal_question_is_never_quoted_to_the_client(
+    session, acme_support, support_ops, finance_ops, operator, gw
+):
+    """The specific wording, because it is the worst part.
+
+    The closure notice repeats what was raised. On an internal request what
+    was raised is a member of staff asking another desk a question - often
+    about the client, and phrased for colleagues rather than for them.
+    """
+    origin = await _origin(session, gw, acme_support)
+    asked = await relay.open_internal(
+        session, gw, origin=origin, department=Department.FINANCE,
+        subject="Rate check",
+        body="Acme are querying this again - can you confirm before we reply?",
+        actor=Actor.of(operator),
+    )
+    await relay.close(session, gw, asked, Actor.of(operator))
+
+    assert "querying this again" not in gw.all_text_to(CLIENT_CHAT)
+
+
+async def test_closing_the_original_still_tells_the_client(
+    session, acme_support, support_ops, finance_ops, operator, gw
+):
+    """The other side of it, so the fix cannot be "stop telling anybody".
+
+    The client's own request must still close the way it always has.
+    """
+    origin = await _origin(session, gw, acme_support)
+    await relay.open_internal(
+        session, gw, origin=origin, department=Department.FINANCE,
+        subject="Rate check", body="Can you confirm the 3 March rate?",
+        actor=Actor.of(operator),
+    )
+    await relay.close(session, gw, origin, Actor.of(operator))
+
+    assert "is now resolved" in gw.messages_to(CLIENT_CHAT)[-1]
