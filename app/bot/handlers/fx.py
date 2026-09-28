@@ -31,10 +31,17 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     Message,
 )
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.bot import commands as cmd
-from app.bot.deps import explain, gateway, prompt_for, refusal_reason, staff_context
+from app.bot.deps import (
+    explain,
+    gateway,
+    prompt_for,
+    refusal_reason,
+    staff_context,
+    work_item_for_thread,
+)
 from app.db.base import session_scope
 from app.db.models import Chat, Client, FxOrder, WorkItem
 from app.domain import fx
@@ -929,8 +936,26 @@ async def quote(message: Message, state: FSMContext) -> None:
                 )
             )
             return
+        ops_chat, _ = ctx
+        # Standing in the deal's own topic? Then there is nothing to ask.
+        #
+        # NexterPay, 28 September. The picker was shown wherever the command
+        # was typed, including inside the one topic that already answers the
+        # question. Skipping it is the whole change - everything after the
+        # deal is identified runs through `_begin_quote` either way, so the
+        # shortcut cannot drift into a second version of the flow.
+        here = await _deal_in_this_topic(
+            session, ops_chat, message.message_thread_id
+        )
+        department = ops_chat.department
         deals = await _open_deals(session, allowed=QUOTABLE)
         markup = _pick_keyboard(deals, "qdeal") if deals else None
+
+    await state.clear()
+
+    if here is not None:
+        await _begin_quote(here, department, state, user, message.reply)
+        return
 
     if not deals:
         await message.reply(
@@ -939,44 +964,62 @@ async def quote(message: Message, state: FSMContext) -> None:
         )
         return
 
-    await state.clear()
     await message.reply("Which deal are you pricing?", reply_markup=markup)
 
 
-@router.callback_query(F.data.startswith("fx:qdeal:"))
-async def quote_pick_deal(query: CallbackQuery, state: FSMContext) -> None:
-    """Where the flow forks.
+async def _deal_in_this_topic(session, chat, thread_id) -> int | None:
+    """The deal this topic is about, when there is exactly one.
+
+    NexterPay, 28 September: running /npquote inside a deal's own topic still
+    asked which deal, "when it could just know".
+
+    Exactly one, deliberately. A topic with two quotable deals against it is
+    unusual and the picker is the honest answer there - guessing which of two
+    prices somebody meant to set is not a guess worth making silently.
+    """
+    item = await work_item_for_thread(session, chat, thread_id)
+    if item is None:
+        return None
+
+    result = await session.execute(
+        select(FxOrder).where(
+            FxOrder.status.in_(QUOTABLE),
+            or_(
+                FxOrder.client_work_item_id == item.id,
+                FxOrder.supplier_work_item_id == item.id,
+            ),
+        )
+    )
+    found = list(result.scalars().all())
+    return found[0].id if len(found) == 1 else None
+
+
+async def _begin_quote(order_id: int, department, state, user, answer) -> None:
+    """Everything after a deal has been chosen, however it was chosen.
+
+    Shared by the picker and by the shortcut that skips it, so the two cannot
+    drift. The only difference between them is how the deal is identified;
+    everything that follows - the fork below, the wording, the state - has to
+    be the same or the shortcut becomes a second, quietly different flow.
 
     A deal that has never been priced needs a supplier before it needs a rate,
     because the supplier's request is where the order will eventually be sent.
     A deal already at Rate Quoted has one, and the domain will not accept a
-    second supplier rate at that point - so this is a revision of our own price
-    and asking for theirs again would be asking for something unusable.
+    second supplier rate at that point - so this is a revision of our own
+    price and asking for theirs again would be asking for something unusable.
     """
-    order_id = int((query.data or "").split(":")[2])
-
     async with session_scope() as session:
-        ctx = await staff_context(
-            session, query.message.chat.id,
-            query.from_user.id if query.from_user else None,
-        )
-        if ctx is None:
-            await query.answer("You are not registered as staff.", show_alert=True)
-            return
-        ops_chat, _ = ctx
         order = await session.get(FxOrder, order_id)
         if order is None:
-            await query.answer("That deal no longer exists.", show_alert=True)
+            await answer("That deal no longer exists.")
             return
         reference = order.display_reference
         already_quoted = order.status is FxOrderStatus.RATE_QUOTED
         supplier_rate = order.supplier_rate
         requests = [] if already_quoted else await _supplier_requests(
-            session, ops_chat.department
+            session, department
         )
         markup = _supplier_keyboard(order_id, requests) if requests else None
-
-    await query.answer()
 
     if already_quoted:
         # Our price only. Said plainly rather than silently skipping a step,
@@ -988,18 +1031,18 @@ async def quote_pick_deal(query: CallbackQuery, state: FSMContext) -> None:
             supplier_work_item_id=None,
             supplier_rate=str(supplier_rate) if supplier_rate is not None else None,
         )
-        text, markup, mode = prompt_for(
-            query.from_user,
+        text, prompt_markup, mode = prompt_for(
+            user,
             f"{reference} already has the supplier's rate recorded "
             f"({fx.format_money(supplier_rate)}), so this changes our price to "
             f"the client only. What are we quoting?",
             placeholder="Our rate",
         )
-        await query.message.answer(text, reply_markup=markup, parse_mode=mode)
+        await answer(text, reply_markup=prompt_markup, parse_mode=mode)
         return
 
     if markup is None:
-        await query.message.answer(
+        await answer(
             f"{reference} has no supplier request to price against. Raise one "
             f"with /{cmd.NEW_SUPPLIER} first — that is the message asking them "
             f"for a rate, and the deal is priced against it."
@@ -1007,9 +1050,31 @@ async def quote_pick_deal(query: CallbackQuery, state: FSMContext) -> None:
         return
 
     await state.clear()
-    await query.message.answer(
+    await answer(
         f"{reference} — which supplier request is this price against?",
         reply_markup=markup,
+    )
+
+
+@router.callback_query(F.data.startswith("fx:qdeal:"))
+async def quote_pick_deal(query: CallbackQuery, state: FSMContext) -> None:
+    """The deal was chosen from the picker."""
+    order_id = int((query.data or "").split(":")[2])
+
+    async with session_scope() as session:
+        ctx = await staff_context(
+            session, query.message.chat.id,
+            query.from_user.id if query.from_user else None,
+        )
+        if ctx is None:
+            await query.answer("You are not registered as staff.", show_alert=True)
+            return
+        ops_chat, _ = ctx
+        department = ops_chat.department
+
+    await query.answer()
+    await _begin_quote(
+        order_id, department, state, query.from_user, query.message.answer
     )
 
 
