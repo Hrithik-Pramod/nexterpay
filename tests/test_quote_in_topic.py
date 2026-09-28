@@ -162,3 +162,70 @@ def test_the_helpers_exist_under_the_names_the_tests_use(name: str) -> None:
     """These are private, and a rename that left the tests importing the old
     name would fail confusingly rather than clearly."""
     assert hasattr(handlers, name)
+
+
+# --------------------------------------------------------------------------
+# Earning the silent-refusal exemption
+#
+# `quote()` now ends by handing off to `_begin_quote` and returning, which
+# `test_silent_refusals` read as a handler giving up without a word. It is
+# not - the work moved one function along - but the guard cannot see through
+# the indirection, and widening it to assume helpers speak would blunt the
+# thing that has caught real silence twice.
+#
+# So `_begin_quote` is on SPEAKING_HELPERS and this is the test that earns it,
+# the same arrangement `_ask_reason` has. If a silent path is ever added, this
+# fails rather than the exemption quietly becoming untrue.
+# --------------------------------------------------------------------------
+
+def test_the_quote_step_always_speaks() -> None:
+    """Every return in `_begin_quote` is immediately preceded by a reply.
+
+    Checked as "the statement before it answers" rather than by walking paths,
+    because that is the shape the function is written in - answer, return -
+    and a looser check would pass on a version that is not.
+    """
+    import ast
+
+    tree = ast.parse(pathlib.Path("app/bot/handlers/fx.py").read_text(encoding="utf-8"))
+    fn = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
+        and node.name == "_begin_quote"
+    )
+
+    def answers(stmt) -> bool:
+        return any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "answer"
+            for node in ast.walk(stmt)
+        )
+
+    silent = []
+
+    def walk(body) -> None:
+        previous = None
+        for stmt in body:
+            if isinstance(stmt, ast.Return) and not (previous and answers(previous)):
+                silent.append(stmt.lineno)
+            for attr in ("body", "orelse", "finalbody"):
+                inner = getattr(stmt, attr, None)
+                if inner:
+                    walk(inner)
+            previous = stmt
+
+    walk(fn.body)
+
+    assert not silent, (
+        f"_begin_quote returns without replying at line(s) {silent}. It is "
+        f"listed in SPEAKING_HELPERS in test_silent_refusals.py on the promise "
+        f"that it always answers — either keep that true or take it off the list."
+    )
+
+
+def test_the_exemption_is_actually_registered() -> None:
+    """The two halves have to stay together: the promise in one file and the
+    proof in another are only worth something as a pair."""
+    listed = pathlib.Path("tests/test_silent_refusals.py").read_text(encoding="utf-8")
+    assert '"_begin_quote"' in listed

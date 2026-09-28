@@ -56,6 +56,11 @@ SPEAKING_HELPERS = (
                           # test_the_rejection_prompt_helper_always_speaks in
                           # test_fx_rate_entry.py, which fails if a silent path
                           # is ever added to it.
+    "_begin_quote",       # fx.py - the step after a deal is chosen. Every path
+                          # through it ends in `answer(...)`, including both
+                          # refusals. Earned the same way: see
+                          # test_the_quote_step_always_speaks in
+                          # test_quote_in_topic.py.
 )
 
 # Bare returns that are correct, each with the reason written down. This list
