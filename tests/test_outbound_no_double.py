@@ -141,3 +141,90 @@ def test_the_preview_composes_through_the_shared_function() -> None:
     assert "outbound_body" in source, (
         "the preview builds the message itself instead of asking the relay"
     )
+
+
+# --------------------------------------------------------------------------
+# And not sent twice either
+#
+# NexterPay, 27 September: "seeing this happen a few times, duplicate
+# messages". SPEX-1109 and SPEX-1110, one minute apart, the same rate request
+# opened with the same supplier twice.
+#
+# Not a duplicated string this time - two real requests, from two taps.
+# `open_outbound` creates a topic, posts a header and messages the
+# counterparty, which is seconds of Telegram calls. The draft was cleared and
+# the buttons stripped only after all of that, so Send stayed live on screen
+# throughout and a second tap ran the whole thing again.
+#
+# The reply flow had the identical race, and its guard even claimed to cover
+# "a second tap on the same preview" - which it did, but only once the first
+# tap had finished, which is the one moment it was needed. That one matters
+# more: a duplicate request is untidy, a client reading the same answer twice
+# is not.
+#
+# Checked on the source because the failure is an ordering, and an ordering is
+# what a test for it has to look at. Exercising a double tap against a fake
+# would need the two taps to interleave, which is the part that is hard to
+# arrange and easy to arrange wrongly.
+# --------------------------------------------------------------------------
+
+def _branch(path: str, start: str, end: str) -> str:
+    import pathlib
+
+    source = pathlib.Path(path).read_text(encoding="utf-8")
+    body = source[source.index(start):]
+    return body[: body.index(end)]
+
+
+def test_the_outbound_draft_is_claimed_before_it_is_sent() -> None:
+    branch = _branch(
+        "app/bot/handlers/outbound.py",
+        'F.data.startswith("ob:send")',
+        '@router.callback_query(F.data == "ob:cancel")',
+    )
+    assert branch.index("await state.clear()") < branch.index("relay.open_outbound"), (
+        "the draft is still live while open_outbound runs, so a second tap "
+        "opens a second request with the counterparty"
+    )
+
+
+def test_the_outbound_draft_is_only_claimed_once() -> None:
+    """A second clear left at the end is harmless until somebody moves the
+    first one back, which is exactly the change this guards."""
+    branch = _branch(
+        "app/bot/handlers/outbound.py",
+        'F.data.startswith("ob:send")',
+        '@router.callback_query(F.data == "ob:cancel")',
+    )
+    assert branch.count("await state.clear()") == 1
+
+
+def test_the_reply_draft_is_claimed_before_it_is_sent() -> None:
+    """The one that would reach a client twice."""
+    branch = _branch(
+        "app/bot/handlers/staff.py",
+        'if action in ("sendreply", "sendbridged")',
+        'if action == "cancelreply"',
+    )
+    after_target = branch.index("to_chat = await session.get")
+    claim = branch.index("await state.clear()", after_target)
+
+    assert claim < branch.index("relay.send_client_reply"), (
+        "the draft is still live while the reply is being sent, so a second "
+        "tap sends the client the same message again"
+    )
+
+
+def test_both_strip_the_buttons_before_the_work() -> None:
+    """Belt as well as braces. Clearing the draft makes the second tap
+    harmless; removing the button makes the second tap less likely, which
+    matters because the reason people tap twice is that nothing has visibly
+    happened yet."""
+    for path, start, end, work in (
+        ("app/bot/handlers/outbound.py", 'F.data.startswith("ob:send")',
+         '@router.callback_query(F.data == "ob:cancel")', "relay.open_outbound"),
+        ("app/bot/handlers/staff.py", 'if action in ("sendreply", "sendbridged")',
+         'if action == "cancelreply"', "relay.send_client_reply"),
+    ):
+        branch = _branch(path, start, end)
+        assert branch.index("edit_reply_markup(reply_markup=None)") < branch.index(work), path

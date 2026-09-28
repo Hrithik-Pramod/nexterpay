@@ -267,8 +267,31 @@ async def send(query: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     body, to_chat_id = data.get("body"), data.get("to_chat_id")
     if not body or not to_chat_id:
-        await query.answer("That draft has expired. Start again.", show_alert=True)
+        await query.answer(
+            "That draft has already been sent, or it expired.", show_alert=True
+        )
         return
+
+    # The draft is claimed here, before any of the work below.
+    #
+    # NexterPay, 27 September: "seeing this happen a few times, duplicate
+    # messages" - SPEX-1109 and SPEX-1110 a minute apart, the same request
+    # opened with the same supplier twice.
+    #
+    # `open_outbound` creates a topic, posts a header and messages the
+    # counterparty: several seconds of Telegram calls. The state was cleared
+    # and the buttons stripped only after all of it, so Send stayed live on
+    # screen the whole time. Somebody tapping again because nothing appeared
+    # to happen ran the whole thing a second time, and the check above could
+    # not catch it because the first tap had not cleared anything yet.
+    #
+    # Clearing first turns the second tap into the message above, which is
+    # true: it has been sent.
+    await state.clear()
+    try:
+        await query.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        logger.debug("Could not clear the outbound buttons", exc_info=True)
 
     async with session_scope() as session:
         ctx = await staff_context(
@@ -296,10 +319,18 @@ async def send(query: CallbackQuery, state: FSMContext) -> None:
                 item.display_reference, item.id, item.topic_id
             )
         except Exception as exc:
+            # The draft was claimed before this ran, so it cannot be retried by
+            # tapping again - and it should not be, because we do not know how
+            # far `open_outbound` got. The text goes back so nothing has to be
+            # retyped.
             await query.answer(explain(exc)[:190], show_alert=True)
+            await query.message.answer(
+                f"That did not send, and the draft has been cleared so it "
+                f"cannot go out twice. Nothing was opened with "
+                f"{data.get('to_title')}. Your text:\n\n— — —\n{body}"[:4000]
+            )
             return
 
-    await state.clear()
     await gateway().send_message(
         query.message.chat.id,
         "Actions:",

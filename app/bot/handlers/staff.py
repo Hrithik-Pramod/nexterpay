@@ -797,12 +797,30 @@ async def _apply(
                 return "Not a two-sided request"
             to_chat = await session.get(Chat, item.bridged_chat_id)
 
+        # Claimed before the send, not after it.
+        #
+        # The check at the top of this branch says it covers "a second tap on
+        # the same preview", and it only did once the first tap had finished -
+        # which is the one moment it needed to. `send_client_reply` is several
+        # Telegram calls, and the buttons stayed live for all of them, so a
+        # second tap during that window found the draft still there and sent
+        # the client the same message again.
+        #
+        # Found on the outbound flow on 27 September, where NexterPay saw two
+        # requests opened with a supplier a minute apart. This is the same
+        # race in the path that matters more: a duplicate request is untidy,
+        # a client reading the same answer twice is not.
+        await state.clear()
+        try:
+            await query.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            logger.debug("Could not clear the reply buttons", exc_info=True)
+
         await relay.send_client_reply(
             session, gw, item, actor, body,
             attachment=attachment, tag_lead=tag, to_chat=to_chat,
             origin_message_id=data.get("draft_message_id"),
         )
-        await state.clear()
         where = (to_chat.title if to_chat else None) or "the client"
         sealed = f"Sent to {where}:\n\n{body}"
         if attachment is not None:
