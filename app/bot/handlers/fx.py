@@ -749,9 +749,19 @@ async def counterparty_confirms(query: CallbackQuery) -> None:
             # Already confirmed, most likely. Saying so is kinder than silence
             # and safer than confirming twice.
             await query.answer("That has already been confirmed, thank you.")
+            await _clear_buttons(query)
             return
 
+        # The desk hears it here too. Same omission the rate buttons had:
+        # everything this platform sent outward announced itself into the
+        # topic and nothing that came back did.
+        await fx_relay.announce_counterparty_reply(
+            session, gateway(), order, side,
+            f"{who} confirmed the order on the {side.value} side.",
+        )
+
     await query.answer("Confirmed.")
+    await _clear_buttons(query)
     await query.message.answer("Thank you — confirmed.")
 
 
@@ -793,9 +803,16 @@ async def client_confirms_receipt(query: CallbackQuery) -> None:
             await query.answer(
                 "That has already been confirmed, thank you.", show_alert=True
             )
+            await _clear_buttons(query)
             return
 
+        await fx_relay.announce_counterparty_reply(
+            session, gateway(), order, FxSide.CLIENT,
+            f"{who} confirmed receipt. The deal is closed.",
+        )
+
     await query.answer("Confirmed.")
+    await _clear_buttons(query)
     await query.message.answer("Thank you — this order is now closed.")
 
 
@@ -1313,6 +1330,24 @@ async def tell_client_the_rate(query: CallbackQuery) -> None:
     await query.message.answer("Sent. The client has Yes and No to tap.")
 
 
+async def _clear_buttons(query: CallbackQuery) -> None:
+    """Take the buttons off a message a counterparty has just answered.
+
+    NexterPay's tester tapped "Yes, proceed" twice, a minute apart, and was
+    thanked twice - the buttons were still sitting there, so tapping again was
+    the obvious thing to do. The domain refuses the second answer now; this is
+    the half that stops it being offered.
+
+    Best effort. A message whose buttons could not be removed is untidy, and
+    failing the answer over it would be worse - the client has already said
+    yes and the desk has already been told.
+    """
+    try:
+        await query.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        logger.debug("Could not clear the buttons", exc_info=True)
+
+
 @router.callback_query(F.data.startswith("fx:rateyes:"))
 async def client_accepts_the_rate(query: CallbackQuery) -> None:
     """The client saying yes to a price, in their own group.
@@ -1356,11 +1391,34 @@ async def client_accepts_the_rate(query: CallbackQuery) -> None:
             await fx.client_accepts_rate(session, order, actor=actor)
         except fx.FxError:
             await query.answer("That has already been answered, thank you.")
+            await _clear_buttons(query)
             return
 
+        # The desk hears about it. NexterPay, 29 September: "I didn't receive
+        # any sort of confirmation that client accepted the rate or so."
+        await fx_relay.announce_counterparty_reply(
+            session, gateway(), order, FxSide.CLIENT,
+            f"{who} accepted the rate of "
+            f"{fx.format_money(order.client_rate)}"
+            f"{f' {order.currency_code}' if order.currency_code else ''}. "
+            f"Build the order with /{cmd.ORDER_CLIENT} once you have the "
+            f"amount.",
+        )
+
     await query.answer("Thank you.")
+    await _clear_buttons(query)
+    # Not "we will send the order through shortly".
+    #
+    # NexterPay, 29 September: "It's stating up here we will send your order
+    # shortly, but we do not have a value they wish to trade." They are right,
+    # and it was a promise the platform could not keep - accepting a rate is
+    # agreeing a price, and there is no order to send until somebody says how
+    # much. Asking for the amount is the step that was missing from the
+    # sentence as well as from the conversation.
     await query.message.answer(
-        "Thank you — we will send the order through shortly."
+        "Thank you — that rate is agreed.\n\n"
+        "How much would you like to trade at this rate? Reply here and we "
+        "will send the order through for you to confirm."
     )
 
 
@@ -1402,9 +1460,20 @@ async def client_declines_the_rate(query: CallbackQuery) -> None:
             )
         except fx.FxError:
             await query.answer("That has already been answered, thank you.")
+            await _clear_buttons(query)
             return
 
+        # Same omission as Yes had. A declined rate is the one the desk most
+        # needs to hear about, because it is the one with work attached: back
+        # to the supplier for another price.
+        await fx_relay.announce_counterparty_reply(
+            session, gateway(), order, FxSide.CLIENT,
+            f"{who} declined the rate. The deal is unpriced again — go back "
+            f"to the supplier, then record the new price with /{cmd.QUOTE}.",
+        )
+
     await query.answer("Understood.")
+    await _clear_buttons(query)
     await query.message.answer(
         "Understood — we will come back to you with another rate."
     )

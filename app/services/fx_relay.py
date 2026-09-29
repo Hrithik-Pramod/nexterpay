@@ -261,6 +261,32 @@ async def notify_rejected(
     )
 
 
+async def announce_counterparty_reply(
+    session: AsyncSession,
+    gateway: TelegramGateway,
+    order: FxOrder,
+    side: FxSide,
+    line: str,
+) -> None:
+    """A counterparty answered one of our buttons. Tell the desk.
+
+    NexterPay, 29 September, after accepting a rate from the client group:
+    "I didn't receive any sort of confirmation that client accepted the rate
+    or so."
+
+    Everything this module sent *outward* announced itself into the Operations
+    topic - rate sent, order sent, settlement passed, rejection notified - and
+    nothing announced what came *back*. The events were recorded, so the
+    history was complete and `/npfx` could be asked; but a desk waiting on a
+    client is not going to poll a command, and the whole point of the topic is
+    that the conversation appears in it.
+
+    Internal only, like every other line here, so it may name both sides.
+    """
+    _, ops = await _chat_for_side(session, order, side)
+    await _announce(session, gateway, order, ops, line)
+
+
 # --------------------------------------------------------------------------
 # Internal commentary
 # --------------------------------------------------------------------------

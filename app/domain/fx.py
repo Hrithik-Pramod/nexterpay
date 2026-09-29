@@ -258,6 +258,41 @@ def view_for(order: FxOrder, side: FxSide) -> OrderView:
 # The audit trail
 # --------------------------------------------------------------------------
 
+async def has_event(
+    session: AsyncSession, order: FxOrder, event_type: EventType
+) -> bool:
+    """Has this already happened to this deal?
+
+    The idempotency check for the steps that deliberately do not move the
+    deal's status. Where the status does move, `_require_state` is the better
+    guard and this is not needed; where it does not, this is the only thing
+    that can tell a second answer from a first.
+
+    Matched on the deal's reference as well as the work item, because a client
+    request can carry more than one deal and the events all live against that
+    one work item - so "has this been accepted" has to mean this deal rather
+    than any deal on the request.
+
+    The reference is matched in Python rather than in the query. `payload` is a
+    generic JSON column, and querying inside it is one of the few things that
+    genuinely differs between SQLite and Postgres - which is the divergence
+    this project is least able to see, since the tests run on one and the
+    clients on the other. The rows here are the events of one type on one
+    request; there is nothing to gain by being clever with them.
+    """
+    result = await session.execute(
+        select(Event).where(
+            Event.work_item_id == order.client_work_item_id,
+            Event.event_type == event_type,
+        )
+    )
+    reference = order.display_reference
+    return any(
+        (event.payload or {}).get("fx_reference") == reference
+        for event in result.scalars().all()
+    )
+
+
 async def record_event(
     session: AsyncSession,
     order: FxOrder,
@@ -492,8 +527,21 @@ async def client_accepts_rate(
     agreeing to figures. Six weeks later, a dispute turns on which of those two
     promises was actually given, so the history has to be able to tell them
     apart.
+
+    **Answering twice is refused, and the guard has to be the event rather than
+    the status.** Everywhere else on this deal, doing something twice is caught
+    by `_require_state` - the first action moves the deal and the second finds
+    the wrong state. This one deliberately does not move the deal, so that
+    check can never fire, and the client could tap Yes as many times as they
+    liked and be thanked each time. NexterPay's tester did exactly that on
+    29 September, a minute apart, and got two "we will send the order through
+    shortly".
     """
     _require_state(order, FxOrderStatus.RATE_QUOTED)
+    if await has_event(session, order, EventType.FX_RATE_ACCEPTED):
+        raise FxError(
+            f"{order.display_reference} has already been accepted at that rate."
+        )
     await record_event(
         session, order, EventType.FX_RATE_ACCEPTED, actor,
         rate=order.client_rate, currency=order.currency_code,
