@@ -278,6 +278,91 @@ async def leads_for(session: AsyncSession, chat: Chat) -> list[GroupLead]:
     return list(result.scalars().all())
 
 
+async def preferred_lead_for(
+    session: AsyncSession, chat: Chat, *, currency: str | None = None
+) -> GroupLead | None:
+    """The person this desk always asks in this group.
+
+    Jason, 3 October: "there will be key people in some group he always ask,
+    so we can use lead to identify."
+
+    Resolved from the most specific preference to the least: somebody marked
+    for this currency, then somebody marked for the group generally, then
+    nobody. Narrower wins because that is the only ordering that makes
+    setting a narrower one mean anything - a general preference that
+    overrode "for XOF ask Marco" would make the second setting pointless.
+
+    Returns None rather than falling back to any lead at all. The question is
+    "who do we always ask", and the answer when nobody has said is not a
+    name picked off a list.
+    """
+    result = await session.execute(
+        select(GroupLead).where(
+            GroupLead.chat_id == chat.id,
+            GroupLead.is_active.is_(True),
+            GroupLead.is_preferred.is_(True),
+        )
+    )
+    preferred = list(result.scalars().all())
+    if not preferred:
+        return None
+
+    if currency:
+        wanted = currency.strip().upper()
+        for lead in preferred:
+            if (lead.for_currency or "").upper() == wanted:
+                return lead
+
+    for lead in preferred:
+        if not lead.for_currency:
+            return lead
+    return None
+
+
+async def set_preferred_lead(
+    session: AsyncSession,
+    chat: Chat,
+    telegram_user_id: int,
+    *,
+    currency: str | None = None,
+) -> GroupLead | None:
+    """Mark somebody as the one this desk always asks.
+
+    One preference per scope. Setting a new general preference clears the old
+    one, and setting one for a currency clears only the old one for that
+    currency - otherwise "always ask Marco for XOF" would quietly unseat
+    "always ask Amina" for everything else, which is not what anybody meant.
+    """
+    result = await session.execute(
+        select(GroupLead).where(
+            GroupLead.chat_id == chat.id,
+            GroupLead.telegram_user_id == telegram_user_id,
+        )
+    )
+    lead = result.scalar_one_or_none()
+    if lead is None:
+        return None
+
+    scope = (currency or "").strip().upper() or None
+
+    existing = await session.execute(
+        select(GroupLead).where(
+            GroupLead.chat_id == chat.id,
+            GroupLead.is_preferred.is_(True),
+        )
+    )
+    for other in existing.scalars().all():
+        if (other.for_currency or None) == scope and other.id != lead.id:
+            other.is_preferred = False
+            other.for_currency = None
+
+    lead.is_preferred = True
+    lead.for_currency = scope
+    lead.is_active = True
+    await session.flush()
+    return lead
+
+
 async def remove_group_lead(
     session: AsyncSession, chat: Chat, telegram_user_id: int
 ) -> GroupLead | None:

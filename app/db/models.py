@@ -803,6 +803,28 @@ class GroupLead(Base, TimestampMixin):
     display_name: Mapped[str] = mapped_column(String(200), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
+    # The person this desk always asks.
+    #
+    # Jason, 3 October: "there will be key people in some group he always
+    # ask, so we can use lead to identify". A group can have several leads -
+    # that is what the table was for - but one of them is usually *the* one,
+    # and a platform that knows which can offer to address them rather than
+    # making somebody choose from a list every time.
+    is_preferred: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+
+    # Narrower still: the person asked about a particular currency.
+    #
+    # "For XOF I always ask Marco at BBS" is how the desk actually works, and
+    # a supplier large enough to quote several corridors usually has somebody
+    # different on each. Null means this preference applies whatever is being
+    # asked about.
+    #
+    # Currency rather than country on purpose - a rate is quoted per currency,
+    # so one XOF contact covers all eight XOF countries. See `corridors`.
+    for_currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
+
     chat: Mapped[Chat] = relationship()
 
     __table_args__ = (
