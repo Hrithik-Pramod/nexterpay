@@ -193,6 +193,68 @@ async def test_the_thresholds(
 
 
 # --------------------------------------------------------------------------
+# A deal out for a quote with nobody asked
+#
+# Found by running the book against real deals on 3 October, which is the
+# whole argument for building it: FXACME-1002 sat under "waiting on suppliers"
+# for five days with no supplier on it. `open_order` sets RATE_REQUESTED the
+# moment a client asks, which is before anybody has chosen who to ask.
+#
+# The status is honest in general - the next thing that happens is a supplier
+# quoting us. On a chase list it is a lie, and an expensive one: a deal nobody
+# is working looks exactly like a deal somebody owes us an answer on.
+# --------------------------------------------------------------------------
+
+async def test_a_deal_with_no_supplier_is_ours_to_move(
+    session, acme_support, support_ops, operator
+):
+    _, order = await _deal(session, acme_support, operator)
+    assert order.status is FxOrderStatus.RATE_REQUESTED
+    assert order.supplier_code is None
+
+    entry = (await fx.outstanding_book(session))[0]
+
+    assert order.status.waiting_on == "Supplier"   # the status is unchanged
+    assert entry.waiting_on == "NexterPay"         # the book disagrees, on purpose
+    assert entry.needs_a_supplier
+
+
+async def test_once_a_supplier_is_chosen_it_is_theirs(
+    session, acme_support, support_ops, operator
+):
+    """The correction must not swallow the ordinary case."""
+    _, order = await _deal(session, acme_support, operator)
+    order.supplier_code = "SPEX"
+    await session.flush()
+
+    entry = (await fx.outstanding_book(session))[0]
+    assert entry.waiting_on == "Supplier"
+    assert not entry.needs_a_supplier
+
+
+async def test_the_line_says_what_the_next_move_is(
+    session, acme_support, support_ops, operator
+):
+    """"Rate requested" on its own reads like we are owed an answer. The desk
+    needs to see that we owe a question."""
+    _, order = await _deal(session, acme_support, operator)
+
+    entry = (await fx.outstanding_book(session))[0]
+    assert "no supplier asked" in handlers.book_line(entry, utcnow())
+
+
+async def test_it_is_filed_under_ours_rather_than_suppliers(
+    session, acme_support, support_ops, operator
+):
+    _, order = await _deal(session, acme_support, operator)
+
+    text = handlers.book_text(await fx.outstanding_book(session), utcnow())
+
+    assert "Ours to move" in text
+    assert "Waiting on suppliers" not in text
+
+
+# --------------------------------------------------------------------------
 # How it reads
 # --------------------------------------------------------------------------
 

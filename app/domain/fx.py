@@ -785,7 +785,31 @@ class BookEntry:
 
     @property
     def waiting_on(self) -> str:
-        return self.order.status.waiting_on
+        """Whose move it is, as a chase list has to mean it.
+
+        Usually the status knows. One case where it does not, found by running
+        this against real deals on 3 October: `open_order` sets
+        `RATE_REQUESTED` the moment a client asks about a rate, which is
+        before anybody has chosen a supplier to ask. The status is honest in
+        general - the next thing that happens is a supplier quoting us - but
+        on a chase list it is a lie, because there is no supplier to chase.
+
+        That deal is ours. Nobody outside this building is going to move it,
+        and five days of it sitting under "waiting on suppliers" is five days
+        of a deal nobody is working looking like a deal somebody owes us.
+        """
+        waiting = self.order.status.waiting_on
+        if waiting == "Supplier" and self.order.supplier_code is None:
+            return "NexterPay"
+        return waiting
+
+    @property
+    def needs_a_supplier(self) -> bool:
+        """Out for a quote with nobody asked. The reason it is ours."""
+        return (
+            self.order.status.waiting_on == "Supplier"
+            and self.order.supplier_code is None
+        )
 
     def age(self, now: datetime | None = None) -> timedelta:
         return (now or utcnow()) - self.waiting_since

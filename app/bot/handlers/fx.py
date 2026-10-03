@@ -2073,6 +2073,10 @@ def book_line(entry: fx.BookEntry, now: datetime) -> str:
     ]
     if who:
         parts.append(html.escape(who))
+    # Says what the next move is, because "Rate requested" with nobody asked
+    # reads like we are owed an answer rather than like we owe a question.
+    if entry.needs_a_supplier:
+        parts.append("no supplier asked")
     return marker + " · ".join(parts)
 
 
