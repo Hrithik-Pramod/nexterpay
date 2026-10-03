@@ -628,6 +628,144 @@ class FxReferenceCounter(Base):
     next_value: Mapped[int] = mapped_column(Integer, nullable=False, default=1000)
 
 
+class Settlement(Base, TimestampMixin):
+    """One payment, covering one or more orders.
+
+    NexterPay, through Jason on 3 October, with a week of their real supplier
+    chat behind it. A settlement in their hands looks like this:
+
+        XAF: 3000000/606  = 4,950.495
+        XOF: 20100000/585 = 34,358.974
+        ≡ 39 309,469 USDT ✅
+        51c86654d87af90109a33bead642ca329771a4669d4bdc749219a49b78d80474
+
+    Two orders, two countries, two currencies, one payment, one hash.
+
+    The shape that follows is the whole reason this table exists. Jason asked
+    for settlements that "can combine many currencies", which sounded like a
+    payment with no single denomination - and the real messages show it is not
+    that at all. **The payment is always USDT.** It is the orders underneath
+    that are in different currencies, each with its own local amount and its
+    own rate, each converted to USDT, and the payment is the sum.
+
+    So the currency lives on the allocation and never on the settlement, and
+    all three cases NexterPay described fall out of one shape with nothing
+    special about any of them: one allocation is a payment for a single order,
+    several allocations is a lump sum, and allocations in different currencies
+    is the third case.
+
+    `amount_usdt` is what was actually paid, which is deliberately not the sum
+    of the allocations. On 7 September they wrote `86192 + 77186 = 163 378`,
+    having rounded both lines down before adding, and sent about one USDT less
+    than the orders came to. Jason confirmed that was a slip. Storing the two
+    separately is what lets the platform say so.
+    """
+
+    __tablename__ = "settlements"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    reference: Mapped[int] = mapped_column(Integer, unique=True, nullable=False, index=True)
+
+    # Tron only, as everywhere else in this project. Stored rather than
+    # assumed so the explorer link does not have to be guessed later.
+    chain: Mapped[str] = mapped_column(String(16), nullable=False, default="tron")
+    tx_hash: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+
+    # What actually moved. Compare against the allocations to find a slip.
+    amount_usdt: Mapped[Decimal | None] = mapped_column(Numeric(24, 8), nullable=True)
+
+    # Which NexterPay account the supplier settled against - the "Nexterpay 1",
+    # "Nexterpay 5" that ends every line of their settlement lists. Nullable
+    # because Jason is still confirming what it refers to, and a label on a
+    # line is not a reason to hold up the model it sits on.
+    nexterpay_account: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    recorded_by_staff_id: Mapped[int | None] = mapped_column(
+        ForeignKey("staff.id"), nullable=True
+    )
+    recorded_by_name: Mapped[str] = mapped_column(String(200), nullable=False, default="System")
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    allocations: Mapped[list[SettlementAllocation]] = relationship(
+        back_populates="settlement", cascade="all, delete-orphan"
+    )
+
+    @property
+    def display_reference(self) -> str:
+        return f"SET-{self.reference}"
+
+    def __repr__(self) -> str:
+        return f"<Settlement {self.display_reference} {self.tx_hash}>"
+
+
+class SettlementAllocation(Base):
+    """One order's share of a settlement.
+
+    Carries the figures exactly as NexterPay write them on a settlement line:
+
+        CI - 50250000/583 = 86,192.11   (07/09/2026) Nexterpay 5
+
+    the country, the local amount, the rate it was converted at, and the USDT
+    that came to. The country rather than the currency, because XOF covers
+    eight countries and XAF six - see `app.domain.corridors` for why that
+    direction is the only one that keeps the information.
+
+    The rate is copied here rather than read back off the order. A settlement
+    is the record of what was actually paid and at what price; re-reading a
+    rate that has since been requoted would quietly rewrite history, and this
+    is the row a dispute comes back to.
+
+    An order may appear in only one settlement, enforced by the storage rather
+    than by the code. NexterPay were asked directly what happens when a
+    settlement does not match the orders it covers, and the answer was that it
+    should match, or the order amount changes - so there is no partial
+    settlement to model, and a second allocation against an order would be a
+    bug rather than a case.
+    """
+
+    __tablename__ = "settlement_allocations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    settlement_id: Mapped[int] = mapped_column(
+        ForeignKey("settlements.id", ondelete="CASCADE"), nullable=False
+    )
+    fx_order_id: Mapped[int] = mapped_column(
+        ForeignKey("fx_orders.id"), nullable=False, unique=True
+    )
+
+    country_code: Mapped[str] = mapped_column(String(2), nullable=False)
+    local_amount: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    rate: Mapped[Decimal] = mapped_column(Numeric(20, 10), nullable=False)
+    usdt_amount: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+
+    settlement: Mapped[Settlement] = relationship(back_populates="allocations")
+    fx_order: Mapped[FxOrder] = relationship()
+
+    __table_args__ = (
+        Index("ix_settlement_allocations_settlement", "settlement_id"),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<SettlementAllocation order={self.fx_order_id} "
+            f"{self.country_code} {self.usdt_amount}>"
+        )
+
+
+class SettlementReferenceCounter(Base):
+    """Backs the settlement number, separately again.
+
+    Same reasoning as `FxReferenceCounter`: SET-1000, 1001, 1002 reads like a
+    sequence, and taking every fifth number from a shared pool reads like
+    something has gone missing.
+    """
+
+    __tablename__ = "settlement_reference_counter"
+
+    id: Mapped[int] = mapped_column(primary_key=True, default=1)
+    next_value: Mapped[int] = mapped_column(Integer, nullable=False, default=1000)
+
+
 class GroupLead(Base, TimestampMixin):
     """A named contact inside a client or supplier group.
 
