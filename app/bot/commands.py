@@ -125,6 +125,16 @@ ORDER_CLIENT = _c("ordercl")
 ORDER_SUPPLIER = _c("ordersu")
 FX_DEALS = _c("fx")
 
+# The outstanding book. NexterPay's FX desk, through Jason on 2 October: the
+# part of the job that hurts is "keeping track of all the outstanding orders,
+# reauditing and following up, and updating his list".
+#
+# Separate from `/npfx` rather than replacing it, because they answer
+# different questions. `/npfx` is "what is live" - flat, in reference order.
+# `/npbook` is "what do I do next" - grouped by whose move it is and aged, so
+# the top of the list is the thing to chase.
+BOOK = _c("book")
+
 # The rest of the FX route. These three exist because the twelve steps
 # NexterPay described are not all order creation: a deal spends most of its
 # life between the rate being asked for and the money arriving, and every one
@@ -170,7 +180,7 @@ ALL = [
     WORKLOAD, SETCODE, ADDPARTY, BROADCAST,
     SETLEAD, LEADS, REMOVELEAD, SETUP, HELP, ROLE,
     NEW_CLIENT, NEW_SUPPLIER,
-    ORDER_CLIENT, ORDER_SUPPLIER, FX_DEALS, QUOTE, HASH, REJECT, RATE_CHECK,
+    ORDER_CLIENT, ORDER_SUPPLIER, FX_DEALS, BOOK, QUOTE, HASH, REJECT, RATE_CHECK,
     BRIDGE,
     START, START_ALIAS, WHOAMI,
 ]

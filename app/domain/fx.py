@@ -38,12 +38,13 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.base import utcnow
+from app.db.base import as_utc, utcnow
 from app.db.models import Client, Event, FxOrder, FxReferenceCounter, WorkItem
 from app.domain.enums import EventType, FxOrderStatus, FxSide, StaffRole
 from app.domain.errors import DomainError
@@ -735,3 +736,133 @@ async def open_orders(session: AsyncSession) -> list[FxOrder]:
         .order_by(FxOrder.reference)
     )
     return list(result.scalars())
+
+
+# --------------------------------------------------------------------------
+# The outstanding book
+#
+# NexterPay's FX desk, through Jason on 2 October. The description of the job
+# is worth keeping, because it says where the pain is and it is not where this
+# module had assumed:
+#
+#     After that, he has to keep track of all the outstanding orders, keep
+#     reauditing and following up, and updating his list, whilst dealing with
+#     client chasers and supplier chasing.
+#
+# Everything before that sentence - asking for a rate, negotiating, quoting -
+# he never calls painful. It is his craft. So the eleven steps above are not
+# the problem; carrying the consequences of forty of them in your head is.
+#
+# `/npfx` already lists open deals, and it is not this. It answers "what is
+# live", flat and in reference order. The book answers "what do I do next",
+# which needs two things that list does not have: whose move it is as the
+# organising fact, and how long it has been theirs. A list without ageing is
+# the spreadsheet he is already updating by hand.
+# --------------------------------------------------------------------------
+
+# How long a deal may sit on one side before the book says so out loud.
+#
+# Deliberately not configurable yet. These are a guess at a desk whose real
+# rhythm nobody here has seen - settlement can legitimately take days, a rate
+# cannot. The moment the FX desk uses this in anger they will tell us the real
+# numbers, and that is the point at which they should become settings rather
+# than before.
+STALE_AFTER = timedelta(days=2)
+OVERDUE_AFTER = timedelta(days=5)
+
+
+@dataclass(frozen=True)
+class BookEntry:
+    """One live deal, and how long it has been somebody's move.
+
+    Holds the order rather than copying its figures out, so that nothing here
+    has to decide which side's numbers it is carrying. The renderer asks for
+    the codes it needs; the margin never passes through this object.
+    """
+
+    order: FxOrder
+    waiting_since: datetime
+
+    @property
+    def waiting_on(self) -> str:
+        return self.order.status.waiting_on
+
+    def age(self, now: datetime | None = None) -> timedelta:
+        return (now or utcnow()) - self.waiting_since
+
+    def is_stale(self, now: datetime | None = None) -> bool:
+        return self.age(now) >= STALE_AFTER
+
+    def is_overdue(self, now: datetime | None = None) -> bool:
+        return self.age(now) >= OVERDUE_AFTER
+
+
+async def _last_movement(
+    session: AsyncSession, orders: list[FxOrder]
+) -> dict[str, datetime]:
+    """When each deal last did anything, keyed by its internal reference.
+
+    Read from the event log rather than from a column on the order. Every
+    transition in this module records an event carrying `fx_reference`, so the
+    log already knows this and a `status_since` column would be a second,
+    weaker record of the same fact - weaker because it would start life wrong
+    for every deal already open on the day it shipped.
+
+    The reference is matched in Python for the same reason `has_event` does
+    it: `payload` is a generic JSON column and querying inside it is one of
+    the few places SQLite and Postgres genuinely diverge, which is the
+    divergence this project is least able to see.
+    """
+    item_ids = {order.client_work_item_id for order in orders}
+    if not item_ids:
+        return {}
+
+    result = await session.execute(
+        select(Event).where(Event.work_item_id.in_(item_ids))
+    )
+
+    latest: dict[str, datetime] = {}
+    for event in result.scalars().all():
+        reference = (event.payload or {}).get("fx_reference")
+        if reference is None:
+            continue
+        when = as_utc(event.created_at)
+        if when > latest.get(reference, when - timedelta(seconds=1)):
+            latest[reference] = when
+    return latest
+
+
+async def outstanding_book(session: AsyncSession) -> list[BookEntry]:
+    """Every deal still alive, oldest move first.
+
+    Sorted by how long it has been waiting rather than by reference, because
+    the order of this list is the order to work it in. A book sorted by
+    reference is a book you have to read all of.
+    """
+    orders = await open_orders(session)
+    if not orders:
+        return []
+
+    moved = await _last_movement(session, orders)
+
+    item_ids = {order.client_work_item_id for order in orders}
+    result = await session.execute(
+        select(WorkItem).where(WorkItem.id.in_(item_ids))
+    )
+    raised = {item.id: as_utc(item.created_at) for item in result.scalars().all()}
+
+    entries = [
+        BookEntry(
+            order=order,
+            # A deal with no events at all has only just been opened, so the
+            # request it hangs off is the honest answer. Falling back to "now"
+            # would quietly reset the age of anything the log cannot explain.
+            waiting_since=moved.get(
+                order.display_reference,
+                raised.get(order.client_work_item_id, utcnow()),
+            ),
+        )
+        for order in orders
+    ]
+    entries.sort(key=lambda entry: entry.waiting_since)
+    return entries

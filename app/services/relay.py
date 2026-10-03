@@ -37,12 +37,12 @@ from __future__ import annotations
 import html
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.base import utcnow
+from app.db.base import as_utc, utcnow
 from app.db.models import Attachment, Chat, Client, Event, Message, Staff, WorkItem
 from app.domain import work_items as wi
 from app.domain.enums import (
@@ -1203,20 +1203,9 @@ RETRACTION_WINDOW = timedelta(hours=48)
 RETRACTED_TEXT = "This message was withdrawn by NexterPay."
 
 
-def _as_utc(value: datetime) -> datetime:
-    """A stored timestamp, made safe to subtract.
-
-    The column is `DateTime(timezone=True)` and Postgres honours that. SQLite
-    does not — it hands back a naive datetime, and subtracting one from an
-    aware one raises rather than quietly giving a wrong answer, which is the
-    one mercy in it.
-
-    Tests run on SQLite and production is Postgres, so this is exactly the
-    class of fault the suite is structurally placed to catch late: it passed
-    ruff, it passed review, and it failed on the first test that did real
-    arithmetic on a stored time.
-    """
-    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+# `_as_utc` used to live here. It moved to app.db.base when the FX book needed
+# the same thing, because the second module to need it is where the copy would
+# otherwise have gone.
 
 
 async def relayed_copies_of(
@@ -1322,7 +1311,7 @@ async def retract_relayed_reply(
 
     deleted = withdrawn = 0
     for copy in copies:
-        within_window = (now - _as_utc(copy.sent_at)) < RETRACTION_WINDOW
+        within_window = (now - as_utc(copy.sent_at)) < RETRACTION_WINDOW
         try:
             if within_window:
                 await gateway.delete_message(

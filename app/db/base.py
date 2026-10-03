@@ -23,6 +23,25 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)  # noqa: UP017
 
 
+def as_utc(value: datetime) -> datetime:
+    """A stored timestamp, made safe to subtract.
+
+    Every timestamp column here is `DateTime(timezone=True)` and Postgres
+    honours that. SQLite does not - it hands back a naive datetime, and
+    subtracting one from an aware one raises rather than quietly giving a
+    wrong answer, which is the one mercy in it.
+
+    Tests run on SQLite and production is Postgres, so this is exactly the
+    class of fault this suite is structurally placed to catch late: it passes
+    ruff, it passes review, and it fails on the first test that does real
+    arithmetic on a stored time.
+
+    It lives here rather than in whichever module first needed it, because the
+    second module to need it is where the copy would have gone.
+    """
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)  # noqa: UP017
+
+
 class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
 

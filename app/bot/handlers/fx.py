@@ -18,8 +18,10 @@ is where this project's last three bugs lived.
 
 from __future__ import annotations
 
+import html
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from aiogram import F, Router
@@ -42,7 +44,7 @@ from app.bot.deps import (
     staff_context,
     work_item_for_thread,
 )
-from app.db.base import session_scope
+from app.db.base import session_scope, utcnow
 from app.db.models import Chat, Client, FxOrder, WorkItem
 from app.domain import fx
 from app.domain.enums import ChatKind, FxOrderStatus, FxSide, WorkItemStatus
@@ -2009,6 +2011,124 @@ async def list_deals(message: Message) -> None:
     await message.reply("Open FX deals:\n\n" + "\n".join(lines))
 
 
+# --------------------------------------------------------------------------
+# The outstanding book
+# --------------------------------------------------------------------------
+
+# Whose move it is, in the order the desk should read them. Our own move
+# first: those are the deals nobody else is going to progress, and a chase
+# list that opens with somebody else's homework buries them.
+_BOOK_ORDER = ("NexterPay", "Supplier", "Client")
+
+_BOOK_HEADINGS = {
+    "NexterPay": "Ours to move",
+    "Supplier": "Waiting on suppliers",
+    "Client": "Waiting on clients",
+}
+
+MARK_STALE = "⏳"
+MARK_OVERDUE = "🔴"
+
+
+def age_text(age: timedelta) -> str:
+    """How long, in the shortest honest form.
+
+    Days once there is a day, hours before that, "just now" under the hour.
+    Nobody chasing a settlement needs it to the minute, and a column of
+    "1 day, 4:17:09" is a column nobody reads.
+    """
+    days = age.days
+    if days >= 1:
+        return f"{days}d"
+    hours = age.seconds // 3600
+    return f"{hours}h" if hours >= 1 else "new"
+
+
+def book_line(entry: fx.BookEntry, now: datetime) -> str:
+    """One deal, as the desk reads it.
+
+    Carries the internal reference, which holds both codes - this is the
+    Operations Group and the whole point is to see both sides at once. It
+    carries no rate, on either side. The book is about time, and a line with a
+    rate on it is one forward of a message that should not have one.
+    """
+    order = entry.order
+    marker = ""
+    if entry.is_overdue(now):
+        marker = f"{MARK_OVERDUE} "
+    elif entry.is_stale(now):
+        marker = f"{MARK_STALE} "
+
+    # The counterparty we are actually waiting on, so the line names who to
+    # chase rather than making the reader decode the reference.
+    if entry.waiting_on == "Supplier":
+        who = order.supplier_code
+    else:
+        who = order.client_code
+
+    parts = [
+        f"<b>{html.escape(order.display_reference)}</b>",
+        html.escape(order.status.label),
+        age_text(entry.age(now)),
+    ]
+    if who:
+        parts.append(html.escape(who))
+    return marker + " · ".join(parts)
+
+
+def book_text(entries: list[fx.BookEntry], now: datetime) -> str:
+    """The whole book, grouped by whose move it is.
+
+    Internal only, and the margin is the reason. A deal's internal reference
+    carries both the client's code and the supplier's, which is exactly what
+    `client_reference` and `supplier_reference` exist to keep apart. This
+    function composes the two together on purpose, so it must never be handed
+    to anything that writes to a counterparty - see the structural test in
+    tests/test_fx_book.py, which is what holds that rather than this comment.
+    """
+    if not entries:
+        return "Nothing outstanding. Every deal is closed."
+
+    overdue = sum(1 for entry in entries if entry.is_overdue(now))
+    header = f"<b>Outstanding book</b> — {len(entries)} open"
+    if overdue:
+        header += f", {overdue} overdue"
+
+    blocks = [header]
+    for waiting_on in _BOOK_ORDER:
+        group = [entry for entry in entries if entry.waiting_on == waiting_on]
+        if not group:
+            continue
+        lines = "\n".join(book_line(entry, now) for entry in group)
+        blocks.append(f"<b>{_BOOK_HEADINGS[waiting_on]}</b>\n{lines}")
+
+    return "\n\n".join(blocks)
+
+
+@router.message(cmd.any_case(cmd.BOOK))
+async def outstanding_book(message: Message) -> None:
+    """`/npbook` - what to do next, oldest first.
+
+    The Operations Group only, and refused rather than trimmed anywhere else.
+    Same rule as `/npfx` and for the same reason: the lines carry internal
+    references holding both counterparties' codes.
+    """
+    user = message.from_user
+    async with session_scope() as session:
+        ctx = await staff_context(session, message.chat.id, user.id if user else None)
+        if ctx is None:
+            await message.reply(
+                await refusal_reason(
+                    user.id if user else None, session, message.chat.id
+                )
+            )
+            return
+        entries = await fx.outstanding_book(session)
+        text = book_text(entries, utcnow())
+
+    await message.reply(text, parse_mode="HTML")
+
+
 async def start_deal(session, item: WorkItem, actor: Actor) -> FxOrder:
     """Open a deal against a client request. Used by the More menu.
 
@@ -2031,6 +2151,9 @@ async def start_deal(session, item: WorkItem, actor: Actor) -> FxOrder:
 __all__ = [
     "QUOTABLE",
     "Figures",
+    "age_text",
+    "book_line",
+    "book_text",
     "check_consistent",
     "check_margin",
     "confirm_keyboard",

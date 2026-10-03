@@ -233,6 +233,8 @@ _FX: list[tuple[str, str, StaffRole]] = [
     (cmd.REJECT, "a rate turned down - theirs by us, or ours by the client",
      StaffRole.OPERATOR),
     (cmd.FX_DEALS, "every open deal, and whose move it is", StaffRole.OPERATOR),
+    (cmd.BOOK, "the outstanding book - what to chase, oldest first",
+     StaffRole.OPERATOR),
 ]
 
 _ADMIN: list[tuple[str, str]] = [
