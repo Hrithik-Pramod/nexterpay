@@ -228,3 +228,149 @@ def test_both_strip_the_buttons_before_the_work() -> None:
     ):
         branch = _branch(path, start, end)
         assert branch.index("edit_reply_markup(reply_markup=None)") < branch.index(work), path
+
+
+# --------------------------------------------------------------------------
+# The third door: sending the client a rate
+#
+# Found live on 3 October, driving a real deal through UAT. `tell_client_the
+# _rate` had no guard and never cleared its button, so "✉ Send the rate to the
+# client" stayed tappable for ever. Tapping it a second time sent the client a
+# second copy of a price they had already agreed, carrying a second live pair
+# of Yes and No buttons.
+#
+# This is the same complaint NexterPay made on 29 September about duplicate
+# messages. That round fixed the two handlers where the fault had been noticed
+# - outbound drafts and staff replies - and not the third, which is the habit
+# this project keeps repeating: fixing a fault where it was seen rather than
+# where it lives. Three reference leaks and three internal-request doors went
+# the same way.
+#
+# So these tests are written against the shape rather than the instance.
+# --------------------------------------------------------------------------
+
+def test_the_rate_send_strips_its_button_before_the_work() -> None:
+    """Same order as the other two: claim, then work.
+
+    The button is the only thing between one tap and two identical prices in
+    a client's group, so it goes first.
+    """
+    branch = _branch(
+        "app/bot/handlers/fx.py",
+        "async def tell_client_the_rate",
+        "async def _clear_buttons",
+    )
+    assert branch.index("_clear_buttons(query)") < branch.index(
+        "fx_relay.send_rate_quote"
+    ), (
+        "the button is still live while the rate is being sent, so a second "
+        "tap sends the client the same price again"
+    )
+
+
+def test_the_rate_send_refuses_a_repeat() -> None:
+    """Clearing the button makes a second tap unlikely. It does not make it
+    impossible - Telegram will happily deliver a tap queued before the markup
+    was removed - so the send itself has to refuse as well."""
+    branch = _branch(
+        "app/bot/handlers/fx.py",
+        "async def tell_client_the_rate",
+        "async def _clear_buttons",
+    )
+    assert "rate_quote_already_sent(" in branch
+    assert branch.index("rate_quote_already_sent(") < branch.index(
+        "fx_relay.send_rate_quote"
+    )
+
+
+async def test_an_identical_rate_is_not_sent_twice(
+    session, acme_support, support_ops, operator
+):
+    """The behaviour behind the two source checks above."""
+    from decimal import Decimal
+
+    from app.db.models import Client
+    from app.domain import fx
+    from app.domain import work_items as wi
+    from app.domain.work_items import Actor
+    from app.services import fx_relay
+    from app.services.gateway import FakeGateway
+
+    item = await wi.create_work_item(
+        session,
+        source_chat=acme_support,
+        subject="EUR to XOF",
+        original_message="Please provide a rate.",
+        raised_by_name="Gavs D",
+    )
+    client = await session.get(Client, item.client_id)
+    if client.code is None:
+        client.code = "ACME"
+        await session.flush()
+    order = await fx.open_order(
+        session, client=client, client_work_item=item, actor=Actor.of(operator)
+    )
+    await fx.quote_client(
+        session, order, rate=Decimal("612"),
+        actor=Actor.of(operator), currency_code="XOF",
+    )
+
+    assert not await fx_relay.rate_quote_already_sent(session, order)
+
+    await fx_relay.send_rate_quote(
+        session, FakeGateway(), order, actor=Actor.of(operator)
+    )
+
+    assert await fx_relay.rate_quote_already_sent(session, order)
+
+
+async def test_a_new_price_still_goes_through(
+    session, acme_support, support_ops, operator
+):
+    """The guard must not block a requote.
+
+    A client turns a price down, the desk prices it again, and the same path
+    sends it. Refusing that would be worse than the fault being fixed - it
+    would mean the only way to requote is to open a new deal and lose the
+    history of the negotiation.
+    """
+    from decimal import Decimal
+
+    from app.db.models import Client
+    from app.domain import fx
+    from app.domain import work_items as wi
+    from app.domain.work_items import Actor
+    from app.services import fx_relay
+    from app.services.gateway import FakeGateway
+
+    item = await wi.create_work_item(
+        session,
+        source_chat=acme_support,
+        subject="EUR to XOF",
+        original_message="Please provide a rate.",
+        raised_by_name="Gavs D",
+    )
+    client = await session.get(Client, item.client_id)
+    if client.code is None:
+        client.code = "ACME"
+        await session.flush()
+    order = await fx.open_order(
+        session, client=client, client_work_item=item, actor=Actor.of(operator)
+    )
+    await fx.quote_client(
+        session, order, rate=Decimal("612"),
+        actor=Actor.of(operator), currency_code="XOF",
+    )
+    await fx_relay.send_rate_quote(
+        session, FakeGateway(), order, actor=Actor.of(operator)
+    )
+
+    # The desk comes back with a better price.
+    order.status = fx.FxOrderStatus.RATE_REJECTED
+    await session.flush()
+    await fx.quote_client(
+        session, order, rate=Decimal("615"),
+        actor=Actor.of(operator), currency_code="XOF",
+    )
+
+    assert not await fx_relay.rate_quote_already_sent(session, order)

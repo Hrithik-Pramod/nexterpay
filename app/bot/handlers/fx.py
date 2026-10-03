@@ -1306,6 +1306,12 @@ async def tell_client_the_rate(query: CallbackQuery) -> None:
     order_id = int((query.data or "").split(":")[2])
     await query.answer()
 
+    # Claimed before the work, not after. The button is the only thing
+    # standing between one tap and two identical prices in a client's group,
+    # so it is taken away first and the sending happens afterwards - the same
+    # order the outbound and reply drafts were put into on 29 September.
+    await _clear_buttons(query)
+
     async with session_scope() as session:
         ctx = await staff_context(
             session, query.message.chat.id,
@@ -1318,6 +1324,13 @@ async def tell_client_the_rate(query: CallbackQuery) -> None:
         order = await session.get(FxOrder, order_id)
         if order is None:
             await query.message.answer("That deal no longer exists.")
+            return
+        if await fx_relay.rate_quote_already_sent(session, order):
+            await query.message.answer(
+                f"{order.display_reference} — that rate has already gone to "
+                f"the client, so nothing was sent again. Price it afresh with "
+                f"{cmd.QUOTE} if the rate has moved."
+            )
             return
         try:
             await fx_relay.send_rate_quote(

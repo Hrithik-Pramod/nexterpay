@@ -32,9 +32,10 @@ from __future__ import annotations
 
 import logging
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Chat, FxOrder, WorkItem
+from app.db.models import Chat, FxOrder, Message, WorkItem
 from app.domain import fx
 from app.domain.enums import FxSide, MessageDirection
 from app.domain.work_items import Actor
@@ -132,6 +133,36 @@ def rate_quote_text(order: FxOrder) -> str:
 # --------------------------------------------------------------------------
 # The four ways out
 # --------------------------------------------------------------------------
+
+async def rate_quote_already_sent(session: AsyncSession, order: FxOrder) -> bool:
+    """Has this exact rate already gone to this client?
+
+    Found live on 3 October. `tell_client_the_rate` had no guard and never
+    cleared its button, so "✉ Send the rate to the client" stayed tappable for
+    ever - and tapping it again sent the client a second copy of a price they
+    had already agreed, carrying a second live pair of Yes and No buttons.
+
+    This is the same fault NexterPay reported on 29 September as duplicate
+    messages. That round fixed the two handlers where it had been noticed and
+    not the third, which is a habit this project has: fixing a fault where it
+    was seen rather than where it lives.
+
+    Matched on the rendered text rather than on an event, because a requote is
+    legitimate - a client turns a price down, the desk prices it again, and
+    the same path sends it. A new price produces different text and goes
+    through. A request to send a client a message identical to one they have
+    already had is the thing being refused, and refusing that is correct even
+    when it was deliberate.
+    """
+    result = await session.execute(
+        select(Message).where(
+            Message.work_item_id == order.client_work_item_id,
+            Message.direction == MessageDirection.OUTBOUND,
+            Message.text == rate_quote_text(order),
+        )
+    )
+    return result.scalars().first() is not None
+
 
 async def send_rate_quote(
     session: AsyncSession,
