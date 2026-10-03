@@ -166,6 +166,12 @@ def _fmt(event: Event, *, verbose: bool = False) -> str:
         return f"Settled by {actor} — {p.get('tx_hash', 'no hash')}"
     if t is EventType.FX_RECEIPT_CONFIRMED:
         return "Client confirmed receipt — order closed"
+    if t is EventType.FX_ORDER_AMENDED:
+        line = (
+            f"Amended by {actor} — was {p.get('was_client_pays', '?')}, "
+            f"now {p.get('client_pays', '?')}; client to confirm again"
+        )
+        return line + (_quote(p.get("reason")) if verbose and p.get("reason") else "")
 
     raise NotImplementedError(f"No renderer for event type {t!r}")
 

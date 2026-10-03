@@ -285,3 +285,15 @@ class EventType(str, enum.Enum):
     FX_SUPPLIER_ACCEPTED = "fx_supplier_accepted"
     FX_HASH_RECORDED = "fx_hash_recorded"
     FX_RECEIPT_CONFIRMED = "fx_receipt_confirmed"
+
+    # An order's figures changed after both sides had agreed them.
+    #
+    # NexterPay, through Jason on 3 October, asked what happens when a
+    # settlement does not match the orders it covers: "No it should match, or
+    # if the supplier does not have enough, the order amount may change."
+    #
+    # That one sentence is the whole reason this exists. Until it was said,
+    # an order was fixed the moment the client confirmed it - that is what
+    # the confirm step is for - and there was no way back to the figures
+    # short of cancelling the deal and losing its history.
+    FX_ORDER_AMENDED = "fx_order_amended"

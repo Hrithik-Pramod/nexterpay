@@ -612,6 +612,102 @@ async def create_client_order(
     return order
 
 
+# The states an order can still be amended from.
+#
+# Everything after the client has confirmed and before the money has moved.
+# Earlier than that there is nothing to amend - the figures are still being
+# built - and once a settlement exists the amount is no longer a question of
+# what was agreed but a matter of what was paid, which is a different record
+# and not one to rewrite.
+AMENDABLE = (
+    FxOrderStatus.AWAITING_CLIENT_CONFIRMATION,
+    FxOrderStatus.AWAITING_SUPPLIER_ACCEPTANCE,
+    FxOrderStatus.AWAITING_SETTLEMENT,
+)
+
+
+async def amend_order(
+    session: AsyncSession,
+    order: FxOrder,
+    *,
+    client_pays: Decimal,
+    client_receives: Decimal,
+    supplier_pays: Decimal | None = None,
+    supplier_receives: Decimal | None = None,
+    reason: str,
+    actor: Actor,
+) -> FxOrder:
+    """The amount changed after both sides had agreed it.
+
+    NexterPay, through Jason on 3 October, asked what happens when a payment
+    does not cover the orders it is meant to: "No it should match, or if the
+    supplier does not have enough, the order amount may change."
+
+    So this exists, and three things about it are deliberate.
+
+    **The rate does not move.** A rate is a price that was agreed, and the
+    supplier being short of liquidity is not a reason for the client to get a
+    different one. Only the amounts change. If NexterPay ever want the rate
+    to move too, that is a different conversation and a different function -
+    it would mean repricing a deal the client has already said yes to.
+
+    **The client confirms again.** What they receive has changed, so their
+    agreement to the old figure is not agreement to this one. The order goes
+    back to awaiting their confirmation rather than quietly carrying on,
+    which is slower and is the only version of this that is honest.
+
+    **The reason is required.** An amount that changed with no record of why
+    is the thing somebody will be asked about in three months, and "the
+    supplier was short" is a different answer from "we typed it wrong".
+    """
+    actor.require(ROLE_REQUIRED_TO_CREATE_ORDER)
+    _require_state(order, *AMENDABLE)
+
+    cleaned = (reason or "").strip()
+    if not cleaned:
+        raise FxError(
+            "An amendment needs a reason. Say why the amount changed - the "
+            "supplier being short reads differently from a correction."
+        )
+    if client_pays <= 0 or client_receives <= 0:
+        raise FxError("An amended order still has to be for something.")
+
+    before = {
+        "client_pays": order.client_pays,
+        "client_receives": order.client_receives,
+        "supplier_pays": order.supplier_pays,
+        "supplier_receives": order.supplier_receives,
+    }
+
+    order.client_pays = client_pays
+    order.client_receives = client_receives
+    if supplier_pays is not None:
+        order.supplier_pays = supplier_pays
+    if supplier_receives is not None:
+        order.supplier_receives = supplier_receives
+
+    # Back to the client. Their agreement was to the figure that has just
+    # changed, so it does not carry.
+    _move(order, FxOrderStatus.AWAITING_CLIENT_CONFIRMATION)
+    order.client_confirmed_at = None
+    order.supplier_confirmed_at = None
+
+    await record_event(
+        session, order, EventType.FX_ORDER_AMENDED, actor,
+        reason=cleaned,
+        was_client_pays=before["client_pays"],
+        was_client_receives=before["client_receives"],
+        was_supplier_pays=before["supplier_pays"],
+        was_supplier_receives=before["supplier_receives"],
+        client_pays=client_pays,
+        client_receives=client_receives,
+        supplier_pays=order.supplier_pays,
+        supplier_receives=order.supplier_receives,
+    )
+    await session.flush()
+    return order
+
+
 async def client_confirms(
     session: AsyncSession, order: FxOrder, *, actor: Actor
 ) -> FxOrder:
