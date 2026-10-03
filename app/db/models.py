@@ -496,6 +496,18 @@ class FxOrder(Base, TimestampMixin):
     # figure a client is shown has to carry it.
     currency_code: Mapped[str | None] = mapped_column(String(3), nullable=True)
 
+    # Where the payout lands. Two letters - CI, SN, CM - as NexterPay write
+    # them on every settlement line.
+    #
+    # Separate from the currency rather than derived from it, because the
+    # derivation only runs one way: XOF covers eight countries and XAF six,
+    # so a deal that knows only its currency cannot say where the money went.
+    # See `app.domain.corridors`.
+    #
+    # Nullable because every deal raised before 3 October has a currency and
+    # no country, and inventing one would be picking between eight answers.
+    country_code: Mapped[str | None] = mapped_column(String(2), nullable=True)
+
     # The two requests this deal is conducted through. The supplier half does
     # not exist until we go out for a quote.
     client_work_item_id: Mapped[int] = mapped_column(

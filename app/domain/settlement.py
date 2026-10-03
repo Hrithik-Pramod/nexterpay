@@ -243,8 +243,121 @@ async def settlement_for(
     return result.scalars().first()
 
 
+# --------------------------------------------------------------------------
+# Matching a pasted block to the deals it is about
+# --------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Match:
+    """One pasted line, and the order it belongs to - or why it does not.
+
+    A line that cannot be matched is carried rather than dropped. A settlement
+    where three of four lines were understood and the fourth vanished silently
+    is the worst possible outcome: the desk sees a plausible total and a
+    client waits for money against a deal nobody recorded.
+    """
+
+    line_number: int
+    parsed: object            # settlement_text.ParsedLine
+    order: FxOrder | None
+    problem: str | None = None
+
+    @property
+    def matched(self) -> bool:
+        return self.order is not None and self.problem is None
+
+
+async def _settleable_orders(session: AsyncSession) -> list[FxOrder]:
+    result = await session.execute(
+        select(FxOrder)
+        .where(FxOrder.status == FxOrderStatus.AWAITING_SETTLEMENT)
+        .order_by(FxOrder.reference)
+    )
+    return list(result.scalars().all())
+
+
+async def match_lines(session: AsyncSession, parsed_lines: list) -> list[Match]:
+    """Work out which open deal each pasted line is about.
+
+    Matched on the currency and the local amount the supplier is sending,
+    because that is all their lines carry - there is no reference on them.
+    `CI - 50250000/583` says fifty million two hundred and fifty thousand XOF,
+    and if exactly one deal awaiting settlement is for that, the line is about
+    that deal.
+
+    Deliberately refuses to choose when two deals fit. Two clients sending the
+    same amount in the same currency on the same day is not rare on a desk
+    doing volume, and picking one would attach a payment to the wrong client's
+    deal - which is a client told their money has arrived when it has not, and
+    another left waiting with the platform insisting they were paid.
+
+    Each order is claimed by at most one line, so two identical lines in one
+    block do not both land on the same deal.
+    """
+    candidates = await _settleable_orders(session)
+    taken: set[int] = set()
+    matches: list[Match] = []
+
+    for number, line in enumerate(parsed_lines, start=1):
+        currency = line.currency_code
+        if currency is None:
+            matches.append(Match(number, line, None, "unknown currency"))
+            continue
+
+        fits = [
+            order for order in candidates
+            if order.id not in taken
+            and order.currency_code == currency
+            and order.supplier_receives is not None
+            and order.supplier_receives == line.local_amount
+        ]
+        if not fits:
+            matches.append(
+                Match(number, line, None, "no open deal for that amount")
+            )
+        elif len(fits) > 1:
+            matches.append(
+                Match(
+                    number, line, None,
+                    f"{len(fits)} open deals are for that amount - "
+                    f"{', '.join(o.display_reference for o in fits)}",
+                )
+            )
+        else:
+            taken.add(fits[0].id)
+            matches.append(Match(number, line, fits[0]))
+
+    return matches
+
+
+def lines_from(matches: list[Match]) -> list[Line]:
+    """The matched rows, as something `record` can take.
+
+    The country is taken from the line when it names one and from the order
+    when it does not - their older blocks label by currency, and XOF names
+    eight countries, so the order is the only thing that knows which.
+    """
+    built = []
+    for match in matches:
+        if not match.matched:
+            continue
+        country = match.parsed.country_code or match.order.country_code
+        built.append(
+            Line(
+                order=match.order,
+                country_code=country,
+                local_amount=match.parsed.local_amount,
+                rate=match.parsed.rate,
+            )
+        )
+    return built
+
+
 __all__ = [
     "TOLERANCE_USDT",
+    "Match",
+    "lines_from",
+    "match_lines",
     "Line",
     "SettlementError",
     "allocations_of",

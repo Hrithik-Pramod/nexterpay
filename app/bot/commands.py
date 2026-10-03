@@ -148,6 +148,16 @@ QUOTE = _c("quote")
 HASH = _c("hash")
 REJECT = _c("reject")
 
+# One payment against the orders it covers. NexterPay, through Jason on
+# 3 October, with a week of their real supplier chat behind it: a settlement
+# routinely covers several deals at once, across several countries, on one
+# transaction hash.
+#
+# `/nphash` stays, because a single deal settling on its own is still the
+# common case and it is two taps. This is for the block the desk is already
+# sent - pasted as it arrived rather than retyped, which is the whole point.
+SETTLE = _c("settle")
+
 # Asking every supplier on the desk for today's rate, in one go. NexterPay,
 # 16 September: "we need to be able to initiate rate checks". Manual for now -
 # the automated half needs a time of day and a list of desks, which is a
@@ -180,7 +190,8 @@ ALL = [
     WORKLOAD, SETCODE, ADDPARTY, BROADCAST,
     SETLEAD, LEADS, REMOVELEAD, SETUP, HELP, ROLE,
     NEW_CLIENT, NEW_SUPPLIER,
-    ORDER_CLIENT, ORDER_SUPPLIER, FX_DEALS, BOOK, QUOTE, HASH, REJECT, RATE_CHECK,
+    ORDER_CLIENT, ORDER_SUPPLIER, FX_DEALS, BOOK, QUOTE, HASH, SETTLE, REJECT,
+    RATE_CHECK,
     BRIDGE,
     START, START_ALIAS, WHOAMI,
 ]

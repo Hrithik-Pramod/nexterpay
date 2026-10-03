@@ -46,10 +46,11 @@ from app.bot.deps import (
 )
 from app.db.base import session_scope, utcnow
 from app.db.models import Chat, Client, FxOrder, WorkItem
-from app.domain import fx
+from app.domain import fx, settlement, settlement_text
 from app.domain.enums import ChatKind, FxOrderStatus, FxSide, WorkItemStatus
 from app.domain.work_items import Actor
 from app.services import fx_relay, relay
+from app.services.relay import _e
 
 logger = logging.getLogger(__name__)
 router = Router(name="fx")
@@ -2052,6 +2053,233 @@ async def list_deals(message: Message) -> None:
         await message.reply("No open FX deals.")
         return
     await message.reply("Open FX deals:\n\n" + "\n".join(lines))
+
+
+# --------------------------------------------------------------------------
+# `/npsettle` - one payment, pasted as it arrived
+#
+# NexterPay already send and receive settlements as a block of text. Asking
+# them to retype it into a wizard would be slower than what they do now, and
+# the thing they complained about was being made to work differently. So the
+# block is pasted and read.
+#
+# Nothing is saved until the desk has seen what the platform made of it. The
+# preview is the point of the flow, not a politeness: this attaches payments
+# to clients' deals, and a line matched to the wrong one tells a client their
+# money has arrived when it has not.
+# --------------------------------------------------------------------------
+
+class FxSettle(StatesGroup):
+    awaiting_block = State()
+
+
+def settlement_preview(
+    matches: list[settlement.Match], stated_total: Decimal | None, tx_hash: str | None
+) -> str:
+    """What the platform understood, before anything is written down."""
+    lines = ["<b>Settlement — nothing saved yet</b>", ""]
+
+    for match in matches:
+        if match.matched:
+            lines.append(
+                f"✅ <b>{_e(match.order.display_reference)}</b> · "
+                f"{_e(match.parsed.label)} {fx.format_money(match.parsed.local_amount)}"
+                f" / {fx.format_money(match.parsed.rate)} = "
+                f"{fx.format_money(match.parsed.computed_usdt)} USDT"
+            )
+        else:
+            lines.append(
+                f"⚠️ <b>Line {match.line_number}</b> · "
+                f"{_e(match.parsed.label)} "
+                f"{fx.format_money(match.parsed.local_amount)} — "
+                f"{_e(match.problem or 'could not be matched')}"
+            )
+
+    good = [m for m in matches if m.matched]
+    expected = settlement.expected_total(settlement.lines_from(matches))
+    lines += ["", f"<b>Deals covered:</b> {len(good)} of {len(matches)}"]
+    lines.append(f"<b>They come to:</b> {fx.format_money(expected)} USDT")
+
+    if stated_total is not None:
+        lines.append(f"<b>Payment says:</b> {fx.format_money(stated_total)} USDT")
+        difference = stated_total - expected
+        if settlement.is_material(difference):
+            direction = "short" if difference < 0 else "over"
+            lines += [
+                "",
+                f"🔴 <b>The payment is {fx.format_money(abs(difference))} USDT "
+                f"{direction} of what these deals come to.</b> Worth checking "
+                f"before this is recorded.",
+            ]
+
+    if tx_hash:
+        lines += ["", f"<code>{_e(tx_hash)}</code>"]
+    else:
+        lines += ["", "<i>No transaction hash in that block.</i>"]
+
+    return "\n".join(lines)
+
+
+@router.message(cmd.any_case(cmd.SETTLE))
+async def settle_block(message: Message, state: FSMContext) -> None:
+    """`/npsettle` - paste the settlement the supplier sent."""
+    user = message.from_user
+    async with session_scope() as session:
+        ctx = await staff_context(session, message.chat.id, user.id if user else None)
+        if ctx is None:
+            await message.reply(
+                await refusal_reason(
+                    user.id if user else None, session, message.chat.id
+                )
+            )
+            return
+        waiting = await _open_deals(
+            session, allowed=(FxOrderStatus.AWAITING_SETTLEMENT,)
+        )
+
+    if not waiting:
+        await message.reply(
+            "No deal is waiting on settlement, so there is nothing for a "
+            "payment to cover yet."
+        )
+        return
+
+    await state.clear()
+    await state.set_state(FxSettle.awaiting_block)
+    await message.reply(
+        "Paste the settlement, exactly as it came in — the lines, the total "
+        "and the hash.\n\n"
+        "Something like:\n"
+        "<code>XOF: 20100000/585=34 358,974\n"
+        "XAF: 3000000/606=4 950,495\n"
+        "= 39 309,469 USDT\n"
+        "51c86654…</code>",
+        parse_mode="HTML",
+    )
+
+
+@router.message(FxSettle.awaiting_block)
+async def settle_capture_block(message: Message, state: FSMContext) -> None:
+    pasted = message.text or message.caption or ""
+    user = message.from_user
+
+    async with session_scope() as session:
+        ctx = await staff_context(session, message.chat.id, user.id if user else None)
+        if ctx is None:
+            await state.clear()
+            await message.reply("You are not registered as staff.")
+            return
+
+        try:
+            parsed = settlement_text.parse(pasted)
+        except settlement_text.SettlementTextError as exc:
+            await message.reply(explain(exc))
+            return
+
+        matches = await settlement.match_lines(session, parsed.lines)
+        preview = settlement_preview(matches, parsed.stated_total, parsed.tx_hash)
+
+    if not any(match.matched for match in matches):
+        await state.clear()
+        await message.reply(
+            preview + "\n\n<i>Nothing here matched an open deal, so there is "
+            "nothing to record.</i>",
+            parse_mode="HTML",
+        )
+        return
+
+    await state.update_data(
+        settle_order_ids=[m.order.id for m in matches if m.matched],
+        settle_countries=[
+            (m.parsed.country_code or "") for m in matches if m.matched
+        ],
+        settle_amounts=[str(m.parsed.local_amount) for m in matches if m.matched],
+        settle_rates=[str(m.parsed.rate) for m in matches if m.matched],
+        settle_hash=parsed.tx_hash,
+        settle_total=str(parsed.stated_total) if parsed.stated_total else None,
+        settle_account=next(
+            (m.parsed.account for m in matches if m.matched and m.parsed.account),
+            None,
+        ),
+    )
+    await message.reply(
+        preview,
+        parse_mode="HTML",
+        reply_markup=_action_keyboard("✅ Record this settlement", "fx:setsave"),
+    )
+
+
+@router.callback_query(F.data == "fx:setsave")
+async def settle_save(query: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    await query.answer()
+
+    order_ids = data.get("settle_order_ids") or []
+    if not order_ids:
+        await state.clear()
+        await query.message.answer("That settlement has already been recorded, or it expired.")
+        return
+
+    # Claimed before the work, like every other door that writes outward.
+    await state.clear()
+    await _clear_buttons(query)
+
+    async with session_scope() as session:
+        ctx = await staff_context(
+            session, query.message.chat.id,
+            query.from_user.id if query.from_user else None,
+        )
+        if ctx is None:
+            await query.message.answer("You are not registered as staff.")
+            return
+        _, actor = ctx
+
+        lines = []
+        for order_id, country, amount, rate in zip(
+            order_ids,
+            data.get("settle_countries") or [],
+            data.get("settle_amounts") or [],
+            data.get("settle_rates") or [],
+            strict=False,
+        ):
+            order = await session.get(FxOrder, order_id)
+            if order is None:
+                await query.message.answer(
+                    "One of those deals no longer exists. Nothing was recorded."
+                )
+                return
+            lines.append(
+                settlement.Line(
+                    order=order,
+                    country_code=country or order.country_code or "",
+                    local_amount=Decimal(amount),
+                    rate=Decimal(rate),
+                )
+            )
+
+        total = data.get("settle_total")
+        try:
+            record = await settlement.record(
+                session,
+                lines=lines,
+                tx_hash=data.get("settle_hash"),
+                amount_usdt=Decimal(total) if total else None,
+                actor=actor,
+                nexterpay_account=data.get("settle_account"),
+            )
+        except Exception as exc:
+            logger.exception("Settlement failed")
+            await query.message.answer(explain(exc))
+            return
+
+        reference = record.display_reference
+        covered = [line.order.display_reference for line in lines]
+
+    await query.message.answer(
+        f"{reference} recorded against {len(covered)} deal"
+        f"{'' if len(covered) == 1 else 's'}: {', '.join(covered)}.\n\n"
+        f"Each is now awaiting the client's confirmation of receipt."
+    )
 
 
 # --------------------------------------------------------------------------
