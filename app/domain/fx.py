@@ -762,12 +762,22 @@ async def open_orders(session: AsyncSession) -> list[FxOrder]:
 
 # How long a deal may sit on one side before the book says so out loud.
 #
-# Deliberately not configurable yet. These are a guess at a desk whose real
-# rhythm nobody here has seen - settlement can legitimately take days, a rate
-# cannot. The moment the FX desk uses this in anger they will tell us the real
-# numbers, and that is the point at which they should become settings rather
-# than before.
-STALE_AFTER = timedelta(days=2)
+# These were a guess until 3 October, when NexterPay's own supplier chat
+# supplied the real number:
+#
+#     All Clients are now chasing these settlements as they have fallen
+#     outside the 5 day limit
+#
+# So five days is not a threshold this project chose - it is the point at
+# which NexterPay's clients start chasing them, which makes it the point at
+# which the desk needs to have chased first. Overdue means late to somebody
+# outside the building.
+#
+# Stale stays short of it on purpose: a deal that has gone quiet for three
+# days is the one worth a nudge while there is still time to fix it. A book
+# that only speaks once the client is already complaining has told the desk
+# something they learned from the client.
+STALE_AFTER = timedelta(days=3)
 OVERDUE_AFTER = timedelta(days=5)
 
 

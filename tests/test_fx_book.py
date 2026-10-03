@@ -177,9 +177,14 @@ async def test_a_deal_with_no_events_ages_from_its_request(
     assert book[0].age().days == 4
 
 
+# Five days is NexterPay's own number, not one this project picked. From
+# their supplier chat on 3 October: "All Clients are now chasing these
+# settlements as they have fallen outside the 5 day limit." Overdue therefore
+# means late to somebody outside the building; stale sits short of it so the
+# desk hears about a quiet deal while there is still time to fix it.
 @pytest.mark.parametrize(
     "days, stale, overdue",
-    [(0, False, False), (3, True, False), (6, True, True)],
+    [(0, False, False), (2, False, False), (4, True, False), (6, True, True)],
 )
 async def test_the_thresholds(
     session, acme_support, support_ops, operator, days, stale, overdue
@@ -257,6 +262,15 @@ async def test_it_is_filed_under_ours_rather_than_suppliers(
 # --------------------------------------------------------------------------
 # How it reads
 # --------------------------------------------------------------------------
+
+def test_overdue_is_their_five_day_limit_rather_than_ours():
+    """Written down as a test because it is a fact about NexterPay's clients,
+    not a tuning choice. If somebody later decides five days is too noisy, the
+    thing to change is what the desk is told - not the number, which belongs
+    to whoever is chasing them."""
+    assert fx.OVERDUE_AFTER == timedelta(days=5)
+    assert fx.STALE_AFTER < fx.OVERDUE_AFTER
+
 
 def test_age_text_is_short_enough_to_scan():
     assert handlers.age_text(timedelta(minutes=12)) == "new"
