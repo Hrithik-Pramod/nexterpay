@@ -655,6 +655,17 @@ async def send_order(query: CallbackQuery, state: FSMContext) -> None:
         await query.message.answer("That draft has already been sent, or it expired.")
         return
 
+    # Claimed before the work, not after. This handler creates an order *and*
+    # puts it in front of a counterparty, so a second tap getting through
+    # costs more than a duplicate message - it is a second commitment with
+    # figures on it.
+    #
+    # The draft check above is what makes the claim effective: once the state
+    # is cleared, a second tap finds no `account` and is turned away by it
+    # rather than racing this one to the gateway.
+    await state.clear()
+    await _clear_buttons(query)
+
     async with session_scope() as session:
         ctx = await staff_context(
             session, query.message.chat.id,
@@ -692,7 +703,6 @@ async def send_order(query: CallbackQuery, state: FSMContext) -> None:
             await query.message.answer(explain(exc))
             return
 
-    await state.clear()
     await query.message.answer(f"Sent to the {side.value}.")
 
 
@@ -1614,6 +1624,12 @@ async def settle_send(query: CallbackQuery, state: FSMContext) -> None:
         await query.message.answer("That draft has already been sent, or it expired.")
         return
 
+    # Claimed before the work. A second settlement notice tells a client their
+    # money has been sent twice, which is the one duplicate on this platform
+    # that a client might act on.
+    await state.clear()
+    await _clear_buttons(query)
+
     async with session_scope() as session:
         ctx = await staff_context(
             session, query.message.chat.id,
@@ -1640,7 +1656,6 @@ async def settle_send(query: CallbackQuery, state: FSMContext) -> None:
             await query.message.answer(explain(exc))
             return
 
-    await state.clear()
     await query.message.answer("Sent to the client, with a button to confirm receipt.")
 
 
@@ -1787,6 +1802,13 @@ async def reject_save(query: CallbackQuery, state: FSMContext) -> None:
         await query.message.answer("That draft has already been recorded, or it expired.")
         return
 
+    # Claimed before the work. Only the supplier side writes outward, but both
+    # sides move the deal, and a second rejection recorded against a deal that
+    # has already gone back for a new price is a confusing thing to find in
+    # the history.
+    await state.clear()
+    await _clear_buttons(query)
+
     async with session_scope() as session:
         ctx = await staff_context(
             session, query.message.chat.id,
@@ -1825,7 +1847,6 @@ async def reject_save(query: CallbackQuery, state: FSMContext) -> None:
             await query.message.answer(explain(exc))
             return
 
-    await state.clear()
     await query.message.answer(outcome)
 
 
@@ -1942,6 +1963,16 @@ async def rate_check_send(query: CallbackQuery, state: FSMContext) -> None:
         await query.message.answer("That list has expired. Run the command again.")
         return
 
+    # Claimed before the work. This is the widest door in the platform - one
+    # tap writes to every supplier group on the desk - so a second tap asks
+    # all of them twice, and they answer twice, and the desk has to work out
+    # which rate belongs to which request.
+    #
+    # `ids` is already read, so clearing the state here costs nothing and the
+    # expired-list branch above turns a second tap away.
+    await state.clear()
+    await _clear_buttons(query)
+
     opened, failed = [], []
     async with session_scope() as session:
         ctx = await staff_context(
@@ -1976,7 +2007,6 @@ async def rate_check_send(query: CallbackQuery, state: FSMContext) -> None:
                 logger.exception("Rate check failed for chat %s", chat_id)
                 failed.append(chat.title or str(chat_id))
 
-    await state.clear()
     lines = [f"Asked {len(opened)} supplier{'' if len(opened) == 1 else 's'}."]
     if opened:
         lines += ["", "  " + ", ".join(opened)]
