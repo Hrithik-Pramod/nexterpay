@@ -141,8 +141,24 @@ async def test_without_a_finance_group_it_says_nothing_anywhere(
 # --------------------------------------------------------------------------
 
 async def _baseline(session, chain=None):
-    """Get past the silent first pass, so a test can watch what comes next."""
-    await wallet_watch.poll(session, FakeGateway(), chain or FakeChain([]))
+    """Get past the silent first pass, so a test can watch what comes next.
+
+    The mark is set to a known moment before `NOW` rather than by letting the
+    first poll pick one. A poll with nothing to see takes the clock, and the
+    clock is whatever time it really is when the suite runs - which is after
+    `NOW`, so every payment in these tests would be in the past and correctly
+    ignored. Seven tests failed that way before this was explicit, and all
+    seven were this helper rather than the watcher.
+    """
+    if chain is not None:
+        await wallet_watch.poll(session, FakeGateway(), chain)
+        return
+    await set_setting(
+        session,
+        wallet_watch.SEEN_SETTING,
+        (NOW - timedelta(hours=1)).isoformat(),
+        by="test",
+    )
 
 
 # --------------------------------------------------------------------------
