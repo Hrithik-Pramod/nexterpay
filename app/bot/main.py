@@ -33,7 +33,7 @@ from app.bot.routing import build_strategy
 from app.config import get_settings
 from app.db.base import init_engine, session_scope
 from app.domain.enums import ChatKind, StaffRole
-from app.services import archive
+from app.services import archive, tron, wallet_watch
 from app.services.gateway import AiogramGateway
 from app.services.throttle import ThrottledGateway
 
@@ -88,6 +88,42 @@ async def _archive_sweeper(gateway) -> None:
             raise
         except Exception:
             logger.exception("Archive sweep failed; it will run again")
+
+
+# How often the watched wallet is checked for incoming USDT.
+#
+# Five minutes. A settlement is not urgent to the minute - the desk's own SLA
+# is five days - but this is the one place the platform can tell somebody
+# their money has arrived before a client does, and that is worth a cheap
+# query. It is one HTTP GET against one address, and it does nothing at all
+# until somebody has set a wallet with /npwallet.
+WALLET_POLL_SECONDS = 5 * 60
+
+
+async def _wallet_watcher(gateway) -> None:
+    """Tell the Finance desk when money lands, on a timer.
+
+    Wrapped exactly as the archive sweeper is, and for the same reason:
+    housekeeping must never be why the bot stops answering people. Every pass
+    is inside its own try, a failure is logged, and the loop carries on.
+
+    A failed pass costs nothing, because the high-water mark only moves when
+    payments were actually read and announced. The worst outcome is that a
+    payment is announced a few minutes later than it might have been.
+    """
+    client = tron.TronGridClient()
+
+    while True:
+        await asyncio.sleep(WALLET_POLL_SECONDS)
+        try:
+            async with session_scope() as session:
+                announced = await wallet_watch.poll(session, gateway, client)
+            if announced:
+                logger.info("Announced %d incoming payment(s)", announced)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Wallet poll failed; it will run again")
 
 
 # What each role adds to the one below it. Written as what a person gains,
@@ -388,10 +424,12 @@ async def main() -> None:
     # on shutdown a half-finished archive should stop where it is rather than
     # be killed mid-forward.
     sweeper = asyncio.create_task(_archive_sweeper(deps.gateway()))
+    watcher = asyncio.create_task(_wallet_watcher(deps.gateway()))
     try:
         await dp.start_polling(bot)
     finally:
         sweeper.cancel()
+        watcher.cancel()
 
 
 if __name__ == "__main__":
