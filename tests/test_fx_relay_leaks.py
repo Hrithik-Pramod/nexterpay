@@ -236,6 +236,15 @@ def test_only_these_functions_may_write_to_a_counterparty() -> None:
     should have option to send the client a message". Their call. It earns its
     place the same way the others do: it composes through `fx.view_for`, so it
     reads the client's columns and cannot see the supplier's.
+
+    It became five on 4 October, and `withdraw_order` earns its place
+    differently. The other four compose figures and are safe because they
+    compose them through one side's columns. This one composes nothing at
+    all: it clears a keyboard and writes a single fixed sentence naming no
+    amount, no rate, no reference and no counterparty. That is a stronger
+    position than the other four hold, not a weaker one, and
+    `test_the_withdrawal_composes_nothing_from_the_order` is what keeps it
+    true.
     """
     tree = ast.parse(inspect.getsource(fx_relay))
     writers = set()
@@ -249,6 +258,7 @@ def test_only_these_functions_may_write_to_a_counterparty() -> None:
 
     assert writers == {
         "send_rate_quote", "send_order", "send_settlement", "notify_rejected",
+        "withdraw_order",
     }, f"the ways out of NexterPay have changed: {sorted(writers)}"
 
 
@@ -273,3 +283,64 @@ async def test_an_order_cannot_be_sent_to_a_side_that_has_no_request(
 
     assert "no supplier request" in str(caught.value)
     assert gw.all_text_to(SUPPLIER_CHAT) == ""
+
+
+def test_the_withdrawal_composes_nothing_from_the_order() -> None:
+    """`withdraw_order` is the fifth way out, and it earns that on different
+    grounds from the other four.
+
+    They compose figures, and they are safe because they compose them through
+    one side's columns - `view_for` reads the client's or the supplier's and
+    cannot see the other. This one composes nothing: it clears a keyboard and
+    writes one fixed sentence.
+
+    So the guard is not "does it use view_for" but "does anything from the
+    deal reach the gateway". Checked on the arguments of the gateway calls
+    specifically, rather than on the whole function, because the function
+    legitimately names the deal in its log lines - and a test that forbade
+    that would be a test that makes the logs worse to satisfy itself.
+
+    A withdrawal that started quoting what the figures used to be would be a
+    leak on a path nobody watches for one: the message goes to a counterparty,
+    and the amount it would most naturally mention is the one just superseded.
+    """
+    tree = ast.parse(inspect.getsource(fx_relay.withdraw_order))
+
+    forbidden = {
+        "client_rate", "supplier_rate",
+        "client_pays", "supplier_pays",
+        "client_receives", "supplier_receives",
+        "display_reference", "client_reference", "supplier_reference",
+        "client_code", "supplier_code",
+        "client_account_name", "supplier_account_name",
+    }
+
+    for call in ast.walk(tree):
+        if not isinstance(call, ast.Call):
+            continue
+        func = call.func
+        if not (isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "gateway"):
+            continue
+        reached = {
+            node.attr for node in ast.walk(call)
+            if isinstance(node, ast.Attribute)
+        }
+        leaked = reached & forbidden
+        assert not leaked, (
+            f"withdraw_order passes {sorted(leaked)} to {func.attr}(). It "
+            f"writes to a counterparty and is only safe because it says "
+            f"nothing about the deal - if it needs to name figures, it needs "
+            f"the same side-scoped composition the other four have."
+        )
+
+
+def test_the_withdrawal_text_names_no_figures() -> None:
+    """Checked on the constant itself, because that is what reaches somebody."""
+    text = fx_relay.WITHDRAWN_ORDER_TEXT
+
+    assert not any(character.isdigit() for character in text), (
+        "the withdrawal notice contains a number; it should say that the "
+        "order is replaced and nothing else"
+    )

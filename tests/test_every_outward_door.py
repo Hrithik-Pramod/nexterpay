@@ -60,6 +60,11 @@ OUTWARD_WRITERS = {
     "send_order",
     "send_settlement",
     "notify_rejected",
+    # Added 4 October. Writes to a counterparty but composes nothing from the
+    # deal - it clears a keyboard and writes one fixed sentence. See
+    # test_the_withdrawal_composes_nothing_from_the_order in
+    # test_fx_relay_leaks.py, which is what keeps that true.
+    "withdraw_order",
 }
 
 # Ways a handler can claim the work before doing it. Any one of them is
@@ -68,6 +73,23 @@ CLAIMS = ("clear", "edit_reply_markup", "_clear_buttons")
 
 
 def _callback_handlers() -> list[tuple[str, ast.AsyncFunctionDef]]:
+    """Handlers with something that can be actioned twice.
+
+    Every callback handler, because a button is there until it is taken away
+    and the reason people press one twice is that nothing has visibly
+    happened yet.
+
+    Plus message handlers that read FSM state, because those are the second
+    half of a draft - `amend_capture_reason` is reached by typing, but what
+    it completes is a flow somebody started with a command and could start
+    again. Widening to these was prompted on 4 October by `withdraw_order`
+    being called from one of them, outside what this file was looking at.
+
+    Not message handlers generally. `cmd_reply`, `client_reply` and
+    `topic_message` all write to a counterparty and have no draft and no
+    button: a typed message is typed once, and demanding they claim something
+    would mean inventing a thing to claim.
+    """
     found = []
     for path in sorted(HANDLERS.glob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -75,7 +97,13 @@ def _callback_handlers() -> list[tuple[str, ast.AsyncFunctionDef]]:
             if not isinstance(node, ast.AsyncFunctionDef):
                 continue
             decorators = " ".join(ast.dump(d) for d in node.decorator_list)
-            if "callback_query" in decorators:
+            if "router" not in decorators:
+                continue
+            body = ast.unparse(node)
+            drives_a_draft = (
+                "callback_query" in decorators or "state.get_data" in body
+            )
+            if drives_a_draft:
                 found.append((path.name, node))
     return found
 
