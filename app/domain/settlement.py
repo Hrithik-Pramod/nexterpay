@@ -35,7 +35,7 @@ difference against what actually moved is reported rather than absorbed.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -60,6 +60,14 @@ from app.domain.work_items import Actor
 # rounded on purpose.
 TOLERANCE_USDT = Decimal("1")
 
+# USDT has six decimal places on Tron, so that is the precision a USDT figure
+# can actually have. Dividing a local amount by a rate does not respect that -
+# 3000000/606 recurs - and an unrounded Decimal carries twenty-eight
+# significant digits into anything that renders it. The desk saw
+# "39,309.46940847930946940847931 USDT" in a preview before this was added,
+# which is both unreadable and a false precision about somebody's money.
+USDT_PLACES = Decimal("0.000001")
+
 
 class SettlementError(DomainError):
     """Something was asked of a settlement that does not hold."""
@@ -81,7 +89,9 @@ class Line:
 
     @property
     def usdt(self) -> Decimal:
-        return self.local_amount / self.rate
+        return (self.local_amount / self.rate).quantize(
+            USDT_PLACES, rounding=ROUND_HALF_UP
+        )
 
     @property
     def currency_code(self) -> str:
@@ -355,6 +365,7 @@ def lines_from(matches: list[Match]) -> list[Line]:
 
 __all__ = [
     "TOLERANCE_USDT",
+    "USDT_PLACES",
     "Match",
     "lines_from",
     "match_lines",

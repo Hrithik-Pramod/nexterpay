@@ -158,6 +158,11 @@ REJECT = _c("reject")
 # sent - pasted as it arrived rather than retyped, which is the whole point.
 SETTLE = _c("settle")
 
+# Changing the figures after both sides have agreed them. NexterPay, through
+# Jason on 3 October: "if the supplier does not have enough, the order amount
+# may change."
+AMEND = _c("amend")
+
 # Asking every supplier on the desk for today's rate, in one go. NexterPay,
 # 16 September: "we need to be able to initiate rate checks". Manual for now -
 # the automated half needs a time of day and a list of desks, which is a
@@ -190,7 +195,8 @@ ALL = [
     WORKLOAD, SETCODE, ADDPARTY, BROADCAST,
     SETLEAD, LEADS, REMOVELEAD, SETUP, HELP, ROLE,
     NEW_CLIENT, NEW_SUPPLIER,
-    ORDER_CLIENT, ORDER_SUPPLIER, FX_DEALS, BOOK, QUOTE, HASH, SETTLE, REJECT,
+    ORDER_CLIENT, ORDER_SUPPLIER, FX_DEALS, BOOK, QUOTE, HASH, SETTLE, AMEND,
+    REJECT,
     RATE_CHECK,
     BRIDGE,
     START, START_ALIAS, WHOAMI,

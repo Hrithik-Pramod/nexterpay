@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from app.domain import corridors
 from app.domain.errors import DomainError
@@ -102,7 +102,12 @@ class ParsedLine:
 
     @property
     def computed_usdt(self) -> Decimal:
-        return self.local_amount / self.rate
+        # Six places, because that is USDT's precision on Tron. An unrounded
+        # division recurs and carries twenty-eight digits into whatever
+        # renders it.
+        return (self.local_amount / self.rate).quantize(
+            Decimal("0.000001"), rounding=ROUND_HALF_UP
+        )
 
 
 @dataclass(frozen=True)

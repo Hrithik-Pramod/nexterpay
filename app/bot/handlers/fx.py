@@ -2056,6 +2056,143 @@ async def list_deals(message: Message) -> None:
 
 
 # --------------------------------------------------------------------------
+# `/npamend` - the amount changed after both sides agreed it
+#
+# NexterPay, through Jason on 3 October: "if the supplier does not have
+# enough, the order amount may change."
+#
+# Reachable from Telegram rather than only from the domain, because a step
+# nobody can reach is the fault this project has already shipped once - see
+# test_every_step_of_the_route_has_a_telegram_entry_point, which refused to
+# let this one go out wired to nothing.
+# --------------------------------------------------------------------------
+
+class FxAmend(StatesGroup):
+    awaiting_amount = State()
+    awaiting_receives = State()
+    awaiting_reason = State()
+
+
+@router.message(cmd.any_case(cmd.AMEND))
+async def amend(message: Message, state: FSMContext) -> None:
+    """`/npamend` - change the figures on a deal both sides have agreed."""
+    user = message.from_user
+    async with session_scope() as session:
+        ctx = await staff_context(session, message.chat.id, user.id if user else None)
+        if ctx is None:
+            await message.reply(
+                await refusal_reason(
+                    user.id if user else None, session, message.chat.id
+                )
+            )
+            return
+        deals = await _open_deals(session, allowed=fx.AMENDABLE)
+        markup = _pick_keyboard(deals, "adeal") if deals else None
+
+    if not deals:
+        await message.reply(
+            "No deal is at a point where its figures can be amended. That "
+            "starts once the order has gone to the client and ends when the "
+            "money has moved."
+        )
+        return
+
+    await state.clear()
+    await message.reply("Which deal is changing?", reply_markup=markup)
+
+
+@router.callback_query(F.data.startswith("fx:adeal:"))
+async def amend_pick_deal(query: CallbackQuery, state: FSMContext) -> None:
+    order_id = int((query.data or "").split(":")[2])
+    await query.answer()
+    await _clear_buttons(query)
+
+    async with session_scope() as session:
+        order = await session.get(FxOrder, order_id)
+        if order is None:
+            await state.clear()
+            await query.message.answer("That deal no longer exists.")
+            return
+        reference = order.display_reference
+        was = fx.format_money(order.client_pays)
+        currency = order.client_pays_currency or ""
+
+    await state.set_state(FxAmend.awaiting_amount)
+    await state.update_data(amend_order_id=order_id)
+    await query.message.answer(
+        f"{reference} — the client was sending {was} {currency}. "
+        f"What is the new amount?"
+    )
+
+
+@router.message(FxAmend.awaiting_amount)
+async def amend_capture_amount(message: Message, state: FSMContext) -> None:
+    try:
+        amount = fx.parse_amount(message.text or "")
+    except fx.FxError as exc:
+        await message.reply(explain(exc))
+        return
+    await state.update_data(amend_pays=str(amount))
+    await state.set_state(FxAmend.awaiting_receives)
+    await message.reply("And what do they receive now? Amount only.")
+
+
+@router.message(FxAmend.awaiting_receives)
+async def amend_capture_receives(message: Message, state: FSMContext) -> None:
+    try:
+        receives = fx.parse_amount(message.text or "")
+    except fx.FxError as exc:
+        await message.reply(explain(exc))
+        return
+    await state.update_data(amend_receives=str(receives))
+    await state.set_state(FxAmend.awaiting_reason)
+    await message.reply(
+        "Why is it changing? One line — “the supplier was short” reads very "
+        "differently from “we typed it wrong” in three months."
+    )
+
+
+@router.message(FxAmend.awaiting_reason)
+async def amend_capture_reason(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    reason = (message.text or "").strip()
+    user = message.from_user
+
+    # Claimed before the work. Amending twice would record two changes and
+    # leave the client confirming a figure that had already moved again.
+    await state.clear()
+
+    async with session_scope() as session:
+        ctx = await staff_context(session, message.chat.id, user.id if user else None)
+        if ctx is None:
+            await message.reply("You are not registered as staff.")
+            return
+        _, actor = ctx
+        order = await session.get(FxOrder, data.get("amend_order_id"))
+        if order is None:
+            await message.reply("That deal no longer exists.")
+            return
+        try:
+            await fx.amend_order(
+                session, order,
+                client_pays=Decimal(data["amend_pays"]),
+                client_receives=Decimal(data["amend_receives"]),
+                reason=reason,
+                actor=actor,
+            )
+            reference = order.display_reference
+        except Exception as exc:
+            logger.exception("Amendment failed")
+            await message.reply(explain(exc))
+            return
+
+    await message.reply(
+        f"{reference} amended. It is back with the client to confirm the new "
+        f"figures — send them the order again with /{cmd.ORDER_CLIENT}."
+    )
+
+
+# --------------------------------------------------------------------------
 # `/npsettle` - one payment, pasted as it arrived
 #
 # NexterPay already send and receive settlements as a block of text. Asking

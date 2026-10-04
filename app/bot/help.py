@@ -232,6 +232,8 @@ _FX: list[tuple[str, str, StaffRole]] = [
      StaffRole.OPERATOR),
     (cmd.SETTLE, "one payment covering several deals - paste the block",
      StaffRole.OPERATOR),
+    (cmd.AMEND, "the amount changed - the client confirms the new figures",
+     StaffRole.OPERATOR),
     (cmd.REJECT, "a rate turned down - theirs by us, or ours by the client",
      StaffRole.OPERATOR),
     (cmd.FX_DEALS, "every open deal, and whose move it is", StaffRole.OPERATOR),

@@ -369,8 +369,21 @@ ALLOWED: dict[FxOrderStatus, tuple[FxOrderStatus, ...]] = {
         # and opening a new one, which loses the link between the two quotes.
         FxOrderStatus.RATE_REJECTED,
     ),
-    FxOrderStatus.AWAITING_SUPPLIER_ACCEPTANCE: (FxOrderStatus.AWAITING_SETTLEMENT,),
-    FxOrderStatus.AWAITING_SETTLEMENT: (FxOrderStatus.AWAITING_RECEIPT,),
+    FxOrderStatus.AWAITING_SUPPLIER_ACCEPTANCE: (
+        FxOrderStatus.AWAITING_SETTLEMENT,
+        # Amendment. NexterPay, 3 October: "if the supplier does not have
+        # enough, the order amount may change". The figures go back to the
+        # client because what they receive has changed, so their agreement to
+        # the old amount does not carry to the new one.
+        FxOrderStatus.AWAITING_CLIENT_CONFIRMATION,
+    ),
+    FxOrderStatus.AWAITING_SETTLEMENT: (
+        FxOrderStatus.AWAITING_RECEIPT,
+        # The same return path, and this is the state it is actually for: the
+        # supplier comes to settle, finds they are short, and the amount is
+        # cut to what they can fund.
+        FxOrderStatus.AWAITING_CLIENT_CONFIRMATION,
+    ),
     FxOrderStatus.AWAITING_RECEIPT: (FxOrderStatus.CLOSED,),
     FxOrderStatus.CLOSED: (),
 }
@@ -688,7 +701,13 @@ async def amend_order(
 
     # Back to the client. Their agreement was to the figure that has just
     # changed, so it does not carry.
-    _move(order, FxOrderStatus.AWAITING_CLIENT_CONFIRMATION)
+    #
+    # An order already waiting on the client stays where it is rather than
+    # moving to itself: the transition table has no self-edges, by design,
+    # and amending an order the client has not confirmed yet is a correction
+    # rather than a journey.
+    if order.status is not FxOrderStatus.AWAITING_CLIENT_CONFIRMATION:
+        _move(order, FxOrderStatus.AWAITING_CLIENT_CONFIRMATION)
     order.client_confirmed_at = None
     order.supplier_confirmed_at = None
 

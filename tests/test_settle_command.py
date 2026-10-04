@@ -259,8 +259,9 @@ async def test_a_settlement_that_ties_out_says_nothing_about_it(
         matches, parsed.stated_total, parsed.tx_hash
     )
 
-    assert "short" not in preview.lower()
-    assert "over" not in preview.lower()
+    assert "short of what" not in preview.lower()
+    assert "over of what" not in preview.lower()
+    assert "🔴" not in preview
 
 
 async def test_the_preview_names_an_unmatched_line_and_why(
