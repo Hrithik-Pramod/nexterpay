@@ -167,10 +167,17 @@ def _fmt(event: Event, *, verbose: bool = False) -> str:
     if t is EventType.FX_RECEIPT_CONFIRMED:
         return "Client confirmed receipt — order closed"
     if t is EventType.FX_ORDER_AMENDED:
-        line = (
-            f"Amended by {actor} — was {p.get('was_client_pays', '?')}, "
-            f"now {p.get('client_pays', '?')}; client to confirm again"
-        )
+        if p.get("kind") == "rate":
+            line = (
+                f"Repriced by {actor} — was {p.get('was_client_rate', '?')}, "
+                f"now {p.get('client_rate', '?')}; back to the client to agree"
+            )
+        else:
+            line = (
+                f"Amount amended by {actor} — was "
+                f"{p.get('was_client_pays', '?')}, now "
+                f"{p.get('client_pays', '?')}"
+            )
         return line + (_quote(p.get("reason")) if verbose and p.get("reason") else "")
 
     raise NotImplementedError(f"No renderer for event type {t!r}")

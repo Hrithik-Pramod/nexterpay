@@ -371,18 +371,22 @@ ALLOWED: dict[FxOrderStatus, tuple[FxOrderStatus, ...]] = {
     ),
     FxOrderStatus.AWAITING_SUPPLIER_ACCEPTANCE: (
         FxOrderStatus.AWAITING_SETTLEMENT,
-        # Amendment. NexterPay, 3 October: "if the supplier does not have
-        # enough, the order amount may change". The figures go back to the
-        # client because what they receive has changed, so their agreement to
-        # the old amount does not carry to the new one.
-        FxOrderStatus.AWAITING_CLIENT_CONFIRMATION,
+        # Repricing. NexterPay, 4 October: "we have had occasions where after
+        # a deal is agreed, stock issues cause rates to change, they wont
+        # settle on that rate, they will notify us of change before we agree
+        # it with client."
+        #
+        # A new price is a new offer, so the deal goes back to being quoted
+        # and the client agrees it or does not. Note that an *amount* change
+        # does not come through here at all - that one the desk decides and
+        # the status does not move.
+        FxOrderStatus.RATE_QUOTED,
     ),
     FxOrderStatus.AWAITING_SETTLEMENT: (
         FxOrderStatus.AWAITING_RECEIPT,
-        # The same return path, and this is the state it is actually for: the
-        # supplier comes to settle, finds they are short, and the amount is
-        # cut to what they can fund.
-        FxOrderStatus.AWAITING_CLIENT_CONFIRMATION,
+        # The same return path, and this is the state it is usually taken
+        # from: the supplier comes to settle and says the rate has moved.
+        FxOrderStatus.RATE_QUOTED,
     ),
     FxOrderStatus.AWAITING_RECEIPT: (FxOrderStatus.CLOSED,),
     FxOrderStatus.CLOSED: (),
@@ -625,13 +629,12 @@ async def create_client_order(
     return order
 
 
-# The states an order can still be amended from.
+# The states an order's figures can still change in.
 #
-# Everything after the client has confirmed and before the money has moved.
-# Earlier than that there is nothing to amend - the figures are still being
-# built - and once a settlement exists the amount is no longer a question of
-# what was agreed but a matter of what was paid, which is a different record
-# and not one to rewrite.
+# Everything after the client has been sent an order and before the money has
+# moved. Earlier there is nothing agreed to change; once a settlement exists
+# the figures are a record of what was paid rather than what was agreed, and
+# that is not ours to rewrite.
 AMENDABLE = (
     FxOrderStatus.AWAITING_CLIENT_CONFIRMATION,
     FxOrderStatus.AWAITING_SUPPLIER_ACCEPTANCE,
@@ -639,7 +642,7 @@ AMENDABLE = (
 )
 
 
-async def amend_order(
+async def amend_amount(
     session: AsyncSession,
     order: FxOrder,
     *,
@@ -650,28 +653,25 @@ async def amend_order(
     reason: str,
     actor: Actor,
 ) -> FxOrder:
-    """The amount changed after both sides had agreed it.
+    """The supplier could not fund the whole amount, so the amount comes down.
 
-    NexterPay, through Jason on 3 October, asked what happens when a payment
-    does not cover the orders it is meant to: "No it should match, or if the
-    supplier does not have enough, the order amount may change."
+    NexterPay, 3 October: "if the supplier does not have enough, the order
+    amount may change." Asked whether the client has to agree the new figure,
+    Jason was unambiguous on 4 October: **"No we make the decision on the
+    short."**
 
-    So this exists, and three things about it are deliberate.
+    So the deal does not move. It stays exactly where it was - awaiting the
+    supplier, or awaiting settlement - and the client is told rather than
+    asked. That is NexterPay's call to make and the platform's job is to
+    record it, not to invent an approval step they do not want.
 
-    **The rate does not move.** A rate is a price that was agreed, and the
-    supplier being short of liquidity is not a reason for the client to get a
-    different one. Only the amounts change. If NexterPay ever want the rate
-    to move too, that is a different conversation and a different function -
-    it would mean repricing a deal the client has already said yes to.
+    This was built the other way round first, on the assumption that a client
+    whose receipt had changed would need to agree it. That assumption was
+    wrong, and it is worth leaving written down: the agreement NexterPay have
+    with their clients is not derivable from the figures.
 
-    **The client confirms again.** What they receive has changed, so their
-    agreement to the old figure is not agreement to this one. The order goes
-    back to awaiting their confirmation rather than quietly carrying on,
-    which is slower and is the only version of this that is honest.
-
-    **The reason is required.** An amount that changed with no record of why
-    is the thing somebody will be asked about in three months, and "the
-    supplier was short" is a different answer from "we typed it wrong".
+    The rate is untouched here on purpose. A rate that moves is a different
+    event with the opposite handling - see `reprice`.
     """
     actor.require(ROLE_REQUIRED_TO_CREATE_ORDER)
     _require_state(order, *AMENDABLE)
@@ -699,20 +699,9 @@ async def amend_order(
     if supplier_receives is not None:
         order.supplier_receives = supplier_receives
 
-    # Back to the client. Their agreement was to the figure that has just
-    # changed, so it does not carry.
-    #
-    # An order already waiting on the client stays where it is rather than
-    # moving to itself: the transition table has no self-edges, by design,
-    # and amending an order the client has not confirmed yet is a correction
-    # rather than a journey.
-    if order.status is not FxOrderStatus.AWAITING_CLIENT_CONFIRMATION:
-        _move(order, FxOrderStatus.AWAITING_CLIENT_CONFIRMATION)
-    order.client_confirmed_at = None
-    order.supplier_confirmed_at = None
-
     await record_event(
         session, order, EventType.FX_ORDER_AMENDED, actor,
+        kind="amount",
         reason=cleaned,
         was_client_pays=before["client_pays"],
         was_client_receives=before["client_receives"],
@@ -722,6 +711,73 @@ async def amend_order(
         client_receives=client_receives,
         supplier_pays=order.supplier_pays,
         supplier_receives=order.supplier_receives,
+    )
+    await session.flush()
+    return order
+
+
+async def reprice(
+    session: AsyncSession,
+    order: FxOrder,
+    *,
+    supplier_rate: Decimal,
+    client_rate: Decimal,
+    reason: str,
+    actor: Actor,
+) -> FxOrder:
+    """The supplier has changed the rate after the deal was agreed.
+
+    NexterPay, 4 October: "we have had occasions where after a deal is
+    agreed, stock issues cause rates to change, they wont settle on that
+    rate, they will notify us of change before we agree it with client."
+
+    The opposite handling to `amend_amount`, and the opposite of what this
+    module assumed first. A price is the one thing the client agreed to, so a
+    new price is a new offer: the deal goes back to being quoted and the
+    client accepts it or does not. The desk does not get to decide this one
+    on their behalf.
+
+    Both rates are taken together, as everywhere else in this module. The
+    supplier's new rate is what prompted the change and ours is what the
+    client will be asked about, and setting one without the other would leave
+    a deal whose margin is nonsense until somebody remembers to finish.
+    """
+    actor.require(ROLE_REQUIRED_TO_QUOTE)
+    _require_state(order, *AMENDABLE)
+
+    cleaned = (reason or "").strip()
+    if not cleaned:
+        raise FxError(
+            "A repricing needs a reason. The client is going to be asked to "
+            "agree a different price and will want to know why."
+        )
+    if supplier_rate <= 0 or client_rate <= 0:
+        raise FxError("A rate has to be a positive number.")
+    if client_rate < supplier_rate:
+        raise FxError(
+            f"Quoting the client {client_rate} against a supplier rate of "
+            f"{supplier_rate} would be selling at a loss."
+        )
+
+    was_supplier, was_client = order.supplier_rate, order.client_rate
+    order.supplier_rate = supplier_rate
+    order.client_rate = client_rate
+
+    # A new price is a new offer. Their agreement to the old one does not
+    # carry, and neither does the supplier's acceptance of an order priced
+    # against it.
+    order.client_confirmed_at = None
+    order.supplier_confirmed_at = None
+    _move(order, FxOrderStatus.RATE_QUOTED)
+
+    await record_event(
+        session, order, EventType.FX_ORDER_AMENDED, actor,
+        kind="rate",
+        reason=cleaned,
+        was_supplier_rate=was_supplier,
+        was_client_rate=was_client,
+        supplier_rate=supplier_rate,
+        client_rate=client_rate,
     )
     await session.flush()
     return order

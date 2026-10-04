@@ -1,27 +1,36 @@
-"""An order's figures can change after both sides have agreed them.
+"""Two ways a deal's figures change, with opposite handling.
 
-NexterPay, through Jason on 3 October. Asked what happens when a settlement
-does not cover the orders it is meant to:
+NexterPay, through Jason, over two days. On 3 October:
 
     No it should match, or if the supplier does not have enough, the order
     amount may change.
 
-That sentence asked for something the platform could not do, and it was not
-obvious that it had. An order was fixed the moment the client confirmed it -
-that is the entire purpose of the confirm step - so "the order amount may
-change" meant either cancelling the deal and losing its history, or a path
-back into figures that were supposed to be settled.
+That was read here as one thing - an amendment - and built as one function.
+Two questions were put back on 4 October to check the assumptions underneath
+it, and both answers were the opposite of what had been built:
 
-Three things about the path are deliberate, and each is a test below.
+    Does the rate stay the same, only the amount moves?
+    — No it should not, but we have had occasions where after a deal is
+      agreed, stock issues cause rates to change, they wont settle on that
+      rate, they will notify us of change before we agree it with client.
 
-**The rate does not move.** A supplier being short of liquidity is not a
-reason for the client to get a different price. Only amounts change.
+    Does the client have to confirm the new amount?
+    — No we make the decision on the short.
 
-**The client confirms again.** Their agreement was to the figure that has
-just changed, so it does not carry. Slower, and the only honest version.
+So they are two events, not one, and they point in opposite directions.
 
-**A reason is required.** "The supplier was short" and "we typed it wrong"
-are different answers to the question somebody asks in three months.
+**A short amount is NexterPay's decision.** The deal does not move and the
+client is told rather than asked. The platform's job is to record a call they
+have already made, not to invent an approval step they do not want.
+
+**A changed rate is the client's decision.** A price is the one thing the
+client agreed to, so a new price is a new offer: the deal goes back to being
+quoted and they accept it or they do not.
+
+The first version of this module had both backwards, which is worth leaving
+written down. The figures do not tell you who decides - that is a fact about
+the agreement NexterPay have with their clients, and the only way to know it
+was to ask.
 """
 
 from __future__ import annotations
@@ -38,7 +47,7 @@ from app.domain.history import render_event
 from app.domain.work_items import Actor
 
 
-async def _confirmed_order(session, acme_support, operator, *, status=None):
+async def _agreed_order(session, acme_support, operator, *, status=None):
     """A deal with figures both sides have agreed."""
     item = await wi.create_work_item(
         session,
@@ -68,16 +77,26 @@ async def _confirmed_order(session, acme_support, operator, *, status=None):
     return order
 
 
+async def _amendment_rows(session, order):
+    result = await session.execute(
+        Event.__table__.select().where(
+            Event.work_item_id == order.client_work_item_id
+        )
+    )
+    return [r for r in result.fetchall()
+            if r.event_type is EventType.FX_ORDER_AMENDED]
+
+
 # --------------------------------------------------------------------------
-# The case Jason described
+# A short amount: NexterPay decide
 # --------------------------------------------------------------------------
 
-async def test_the_supplier_is_short_and_the_amount_comes_down(
+async def test_the_amount_comes_down_when_the_supplier_is_short(
     session, acme_support, support_ops, operator
 ):
-    order = await _confirmed_order(session, acme_support, operator)
+    order = await _agreed_order(session, acme_support, operator)
 
-    await fx.amend_order(
+    await fx.amend_amount(
         session, order,
         client_pays=Decimal("200000"),
         client_receives=Decimal("122400000"),
@@ -91,19 +110,36 @@ async def test_the_supplier_is_short_and_the_amount_comes_down(
     assert order.supplier_receives == Decimal("121000000")
 
 
-async def test_the_rate_does_not_move(
+async def test_the_deal_does_not_move_and_the_client_is_not_asked(
     session, acme_support, support_ops, operator
 ):
-    """A supplier being short of liquidity is not a reason for the client to
-    get a different price.
+    """Jason, 4 October: "No we make the decision on the short."
 
-    If NexterPay ever want the rate to move too, that is a different function
-    and a different conversation - it would mean repricing a deal the client
-    has already said yes to.
+    Built the other way round first. The deal went back to the client to
+    confirm, on the reasoning that their receipt had changed - which is sound
+    reasoning and not what NexterPay do. Who decides is a fact about their
+    agreement with their clients, and it is not derivable from the figures.
     """
-    order = await _confirmed_order(session, acme_support, operator)
+    order = await _agreed_order(session, acme_support, operator)
 
-    await fx.amend_order(
+    await fx.amend_amount(
+        session, order,
+        client_pays=Decimal("200000"),
+        client_receives=Decimal("122400000"),
+        reason="Supplier short",
+        actor=Actor.of(operator),
+    )
+
+    assert order.status is FxOrderStatus.AWAITING_SETTLEMENT
+
+
+async def test_a_short_amount_leaves_the_rate_alone(
+    session, acme_support, support_ops, operator
+):
+    """A rate that moves is a different event with the opposite handling."""
+    order = await _agreed_order(session, acme_support, operator)
+
+    await fx.amend_amount(
         session, order,
         client_pays=Decimal("200000"),
         client_receives=Decimal("122400000"),
@@ -115,157 +151,248 @@ async def test_the_rate_does_not_move(
     assert order.supplier_rate == Decimal("605")
 
 
-async def test_the_client_has_to_confirm_again(
+async def test_an_amount_change_needs_a_reason(
     session, acme_support, support_ops, operator
 ):
-    """Their agreement was to the figure that just changed."""
-    order = await _confirmed_order(session, acme_support, operator)
-    order.client_confirmed_at = fx.utcnow()
-    order.supplier_confirmed_at = fx.utcnow()
-    await session.flush()
-
-    await fx.amend_order(
-        session, order,
-        client_pays=Decimal("200000"),
-        client_receives=Decimal("122400000"),
-        reason="Supplier short",
-        actor=Actor.of(operator),
-    )
-
-    assert order.status is FxOrderStatus.AWAITING_CLIENT_CONFIRMATION
-    assert order.client_confirmed_at is None
-    assert order.supplier_confirmed_at is None
-
-
-async def test_a_reason_is_required(
-    session, acme_support, support_ops, operator
-):
-    order = await _confirmed_order(session, acme_support, operator)
-
+    order = await _agreed_order(session, acme_support, operator)
     with pytest.raises(fx.FxError):
-        await fx.amend_order(
+        await fx.amend_amount(
             session, order,
             client_pays=Decimal("200000"),
             client_receives=Decimal("122400000"),
-            reason="   ",
-            actor=Actor.of(operator),
+            reason="   ", actor=Actor.of(operator),
         )
 
 
 async def test_an_amended_order_is_still_for_something(
     session, acme_support, support_ops, operator
 ):
-    order = await _confirmed_order(session, acme_support, operator)
-
+    order = await _agreed_order(session, acme_support, operator)
     with pytest.raises(fx.FxError):
-        await fx.amend_order(
+        await fx.amend_amount(
             session, order,
-            client_pays=Decimal("0"),
-            client_receives=Decimal("0"),
-            reason="Supplier had nothing",
-            actor=Actor.of(operator),
+            client_pays=Decimal("0"), client_receives=Decimal("0"),
+            reason="Supplier had nothing", actor=Actor.of(operator),
         )
 
 
 # --------------------------------------------------------------------------
-# When it may happen
+# A changed rate: the client decides
+# --------------------------------------------------------------------------
+
+async def test_a_rate_change_goes_back_to_the_client(
+    session, acme_support, support_ops, operator
+):
+    """Jason, 4 October: "stock issues cause rates to change, they wont settle
+    on that rate, they will notify us of change before we agree it with
+    client."
+
+    A price is the one thing the client agreed to, so a new price is a new
+    offer. The desk does not get to decide this one on their behalf.
+    """
+    order = await _agreed_order(session, acme_support, operator)
+
+    await fx.reprice(
+        session, order,
+        supplier_rate=Decimal("598"),
+        client_rate=Decimal("604"),
+        reason="Supplier stock issue, rate moved",
+        actor=Actor.of(operator),
+    )
+
+    assert order.status is FxOrderStatus.RATE_QUOTED
+    assert order.client_rate == Decimal("604")
+    assert order.supplier_rate == Decimal("598")
+
+
+async def test_repricing_clears_both_agreements(
+    session, acme_support, support_ops, operator
+):
+    """Neither side agreed to this price. The supplier's acceptance was of an
+    order built on the old one."""
+    order = await _agreed_order(session, acme_support, operator)
+    order.client_confirmed_at = fx.utcnow()
+    order.supplier_confirmed_at = fx.utcnow()
+    await session.flush()
+
+    await fx.reprice(
+        session, order,
+        supplier_rate=Decimal("598"), client_rate=Decimal("604"),
+        reason="Stock issue", actor=Actor.of(operator),
+    )
+
+    assert order.client_confirmed_at is None
+    assert order.supplier_confirmed_at is None
+
+
+async def test_repricing_will_not_sell_at_a_loss(
+    session, acme_support, support_ops, operator
+):
+    """The margin guard applies to a new price exactly as it does to a first
+    one. A rate that moved under pressure is the most likely moment for
+    somebody to quote below cost."""
+    order = await _agreed_order(session, acme_support, operator)
+
+    with pytest.raises(fx.FxError):
+        await fx.reprice(
+            session, order,
+            supplier_rate=Decimal("610"), client_rate=Decimal("605"),
+            reason="Stock issue", actor=Actor.of(operator),
+        )
+
+
+async def test_repricing_needs_a_reason(
+    session, acme_support, support_ops, operator
+):
+    order = await _agreed_order(session, acme_support, operator)
+    with pytest.raises(fx.FxError):
+        await fx.reprice(
+            session, order,
+            supplier_rate=Decimal("598"), client_rate=Decimal("604"),
+            reason="", actor=Actor.of(operator),
+        )
+
+
+# --------------------------------------------------------------------------
+# When either may happen
 # --------------------------------------------------------------------------
 
 @pytest.mark.parametrize("status", list(fx.AMENDABLE))
-async def test_the_states_an_order_can_be_amended_from(
+async def test_the_states_an_amount_can_change_in(
     session, acme_support, support_ops, operator, status
 ):
-    order = await _confirmed_order(session, acme_support, operator, status=status)
-
-    await fx.amend_order(
+    order = await _agreed_order(session, acme_support, operator, status=status)
+    await fx.amend_amount(
         session, order,
-        client_pays=Decimal("200000"),
-        client_receives=Decimal("122400000"),
-        reason="Supplier short",
-        actor=Actor.of(operator),
+        client_pays=Decimal("200000"), client_receives=Decimal("122400000"),
+        reason="Supplier short", actor=Actor.of(operator),
     )
-    assert order.status is FxOrderStatus.AWAITING_CLIENT_CONFIRMATION
+    assert order.status is status, "an amount change never moves the deal"
 
 
 @pytest.mark.parametrize(
     "status",
-    [FxOrderStatus.RATE_REQUESTED, FxOrderStatus.RATE_QUOTED,
-     FxOrderStatus.AWAITING_RECEIPT, FxOrderStatus.CLOSED],
+    [FxOrderStatus.AWAITING_SUPPLIER_ACCEPTANCE,
+     FxOrderStatus.AWAITING_SETTLEMENT],
 )
-async def test_the_states_it_cannot(
+async def test_the_states_a_rate_can_change_in(
     session, acme_support, support_ops, operator, status
 ):
-    """Earlier than AWAITING_CLIENT_CONFIRMATION there are no agreed figures
-    to amend - they are still being built. Once the money has moved, the
-    amount stops being a question of what was agreed and becomes a record of
-    what was paid, which is the settlement's business and not one to rewrite.
-    """
-    order = await _confirmed_order(session, acme_support, operator, status=status)
+    order = await _agreed_order(session, acme_support, operator, status=status)
+    await fx.reprice(
+        session, order,
+        supplier_rate=Decimal("598"), client_rate=Decimal("604"),
+        reason="Stock issue", actor=Actor.of(operator),
+    )
+    assert order.status is FxOrderStatus.RATE_QUOTED
+
+
+@pytest.mark.parametrize(
+    "status",
+    [FxOrderStatus.RATE_REQUESTED, FxOrderStatus.AWAITING_RECEIPT,
+     FxOrderStatus.CLOSED],
+)
+async def test_figures_cannot_change_outside_that_window(
+    session, acme_support, support_ops, operator, status
+):
+    """Earlier there is nothing agreed to change. Once the money has moved,
+    the figures are a record of what was paid rather than what was agreed,
+    and that is not ours to rewrite."""
+    order = await _agreed_order(session, acme_support, operator, status=status)
 
     with pytest.raises(fx.FxError):
-        await fx.amend_order(
+        await fx.amend_amount(
             session, order,
-            client_pays=Decimal("200000"),
-            client_receives=Decimal("122400000"),
-            reason="Supplier short",
-            actor=Actor.of(operator),
+            client_pays=Decimal("200000"), client_receives=Decimal("122400000"),
+            reason="Supplier short", actor=Actor.of(operator),
         )
 
 
 # --------------------------------------------------------------------------
-# What the record says afterwards
+# The record afterwards
 # --------------------------------------------------------------------------
 
-async def _amendment_event(session, order):
-    result = await session.execute(
-        Event.__table__.select().where(
-            Event.work_item_id == order.client_work_item_id
-        )
-    )
-    rows = [r for r in result.fetchall()
-            if r.event_type is EventType.FX_ORDER_AMENDED]
-    return rows[-1] if rows else None
-
-
-async def test_the_event_carries_the_figure_it_used_to_be(
+async def test_the_two_kinds_are_told_apart_in_the_record(
     session, acme_support, support_ops, operator
 ):
-    """So the audit trail can answer "what was it before" without a second
-    set of columns on the order that would have to be kept honest."""
-    order = await _confirmed_order(session, acme_support, operator)
-
-    await fx.amend_order(
+    """They share an event type and are not the same event. Somebody reading
+    the history in three months needs to know whether NexterPay made the call
+    or the client did."""
+    order = await _agreed_order(session, acme_support, operator)
+    await fx.amend_amount(
         session, order,
-        client_pays=Decimal("200000"),
-        client_receives=Decimal("122400000"),
-        reason="Supplier could only fund 200k",
-        actor=Actor.of(operator),
+        client_pays=Decimal("200000"), client_receives=Decimal("122400000"),
+        reason="Supplier short", actor=Actor.of(operator),
+    )
+    await fx.reprice(
+        session, order,
+        supplier_rate=Decimal("598"), client_rate=Decimal("604"),
+        reason="Stock issue", actor=Actor.of(operator),
     )
 
-    row = await _amendment_event(session, order)
-    assert row is not None
+    kinds = [row.payload.get("kind") for row in await _amendment_rows(session, order)]
+    assert kinds == ["amount", "rate"]
+
+
+async def test_an_amount_event_carries_what_it_used_to_be(
+    session, acme_support, support_ops, operator
+):
+    order = await _agreed_order(session, acme_support, operator)
+    await fx.amend_amount(
+        session, order,
+        client_pays=Decimal("200000"), client_receives=Decimal("122400000"),
+        reason="Supplier could only fund 200k", actor=Actor.of(operator),
+    )
+
+    row = (await _amendment_rows(session, order))[-1]
     assert row.payload["was_client_pays"] == "250000"
     assert row.payload["client_pays"] == "200000"
     assert row.payload["reason"] == "Supplier could only fund 200k"
 
 
-async def test_the_history_line_reads_as_a_change(
+async def test_a_rate_event_carries_the_old_price(
     session, acme_support, support_ops, operator
 ):
-    order = await _confirmed_order(session, acme_support, operator)
-    await fx.amend_order(
+    order = await _agreed_order(session, acme_support, operator)
+    await fx.reprice(
         session, order,
-        client_pays=Decimal("200000"),
-        client_receives=Decimal("122400000"),
-        reason="Supplier could only fund 200k",
-        actor=Actor.of(operator),
+        supplier_rate=Decimal("598"), client_rate=Decimal("604"),
+        reason="Stock issue", actor=Actor.of(operator),
     )
 
-    event = await session.get(
-        Event, (await _amendment_event(session, order)).id
-    )
-    line = render_event(event, verbose=True)
+    row = (await _amendment_rows(session, order))[-1]
+    assert row.payload["was_client_rate"] == "612"
+    assert row.payload["client_rate"] == "604"
 
-    assert "250000" in line and "200000" in line
-    assert "confirm again" in line
-    assert "Supplier could only fund 200k" in line
+
+async def test_the_history_lines_read_differently(
+    session, acme_support, support_ops, operator
+):
+    order = await _agreed_order(session, acme_support, operator)
+    await fx.amend_amount(
+        session, order,
+        client_pays=Decimal("200000"), client_receives=Decimal("122400000"),
+        reason="Supplier short", actor=Actor.of(operator),
+    )
+    amount_line = render_event(
+        await session.get(Event, (await _amendment_rows(session, order))[-1].id),
+        verbose=True,
+    )
+
+    await fx.reprice(
+        session, order,
+        supplier_rate=Decimal("598"), client_rate=Decimal("604"),
+        reason="Stock issue", actor=Actor.of(operator),
+    )
+    rate_line = render_event(
+        await session.get(Event, (await _amendment_rows(session, order))[-1].id),
+        verbose=True,
+    )
+
+    assert "250000" in amount_line and "200000" in amount_line
+    assert "confirm" not in amount_line.lower(), (
+        "an amount change is NexterPay's decision - the line must not imply "
+        "the client was asked"
+    )
+    assert "612" in rate_line and "604" in rate_line
+    assert "agree" in rate_line.lower()

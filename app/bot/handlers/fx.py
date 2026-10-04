@@ -2070,12 +2070,36 @@ async def list_deals(message: Message) -> None:
 class FxAmend(StatesGroup):
     awaiting_amount = State()
     awaiting_receives = State()
+    awaiting_supplier_rate = State()
+    awaiting_client_rate = State()
     awaiting_reason = State()
+
+
+def _amend_kind_keyboard(order_id: int) -> InlineKeyboardMarkup:
+    """The two changes, and they are not variations of each other.
+
+    One the desk decides and the client is told; the other goes back to the
+    client to agree. Asking which at the start is what keeps them apart - a
+    single "amend" flow would have to guess, and guessing wrong means either
+    asking a client about something NexterPay decide, or deciding on their
+    behalf about a price.
+    """
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="Amount — the supplier is short",
+            callback_data=f"fx:amkind:{order_id}:amount",
+        )],
+        [InlineKeyboardButton(
+            text="Rate — the price has moved",
+            callback_data=f"fx:amkind:{order_id}:rate",
+        )],
+        [InlineKeyboardButton(text="Cancel", callback_data="fx:cancel:0")],
+    ])
 
 
 @router.message(cmd.any_case(cmd.AMEND))
 async def amend(message: Message, state: FSMContext) -> None:
-    """`/npamend` - change the figures on a deal both sides have agreed."""
+    """`/npamend` - the figures changed after both sides agreed them."""
     user = message.from_user
     async with session_scope() as session:
         ctx = await staff_context(session, message.chat.id, user.id if user else None)
@@ -2091,9 +2115,9 @@ async def amend(message: Message, state: FSMContext) -> None:
 
     if not deals:
         await message.reply(
-            "No deal is at a point where its figures can be amended. That "
-            "starts once the order has gone to the client and ends when the "
-            "money has moved."
+            "No deal is at a point where its figures can change. That starts "
+            "once the order has gone to the client and ends when the money "
+            "has moved."
         )
         return
 
@@ -2114,13 +2138,45 @@ async def amend_pick_deal(query: CallbackQuery, state: FSMContext) -> None:
             await query.message.answer("That deal no longer exists.")
             return
         reference = order.display_reference
-        was = fx.format_money(order.client_pays)
-        currency = order.client_pays_currency or ""
 
-    await state.set_state(FxAmend.awaiting_amount)
     await state.update_data(amend_order_id=order_id)
     await query.message.answer(
-        f"{reference} — the client was sending {was} {currency}. "
+        f"{reference} — what has changed?",
+        reply_markup=_amend_kind_keyboard(order_id),
+    )
+
+
+@router.callback_query(F.data.startswith("fx:amkind:"))
+async def amend_pick_kind(query: CallbackQuery, state: FSMContext) -> None:
+    _, _, order_id, kind = (query.data or "").split(":")
+    await query.answer()
+    await _clear_buttons(query)
+
+    async with session_scope() as session:
+        order = await session.get(FxOrder, int(order_id))
+        if order is None:
+            await state.clear()
+            await query.message.answer("That deal no longer exists.")
+            return
+        reference = order.display_reference
+        was_pays = fx.format_money(order.client_pays)
+        pays_currency = order.client_pays_currency or ""
+        was_rate = fx.format_money(order.client_rate)
+        currency = order.currency_code or ""
+
+    await state.update_data(amend_order_id=int(order_id), amend_kind=kind)
+
+    if kind == "rate":
+        await state.set_state(FxAmend.awaiting_supplier_rate)
+        await query.message.answer(
+            f"{reference} — we were quoting the client {was_rate} "
+            f"{currency}.\n\nWhat rate is the supplier giving us now?"
+        )
+        return
+
+    await state.set_state(FxAmend.awaiting_amount)
+    await query.message.answer(
+        f"{reference} — the client was sending {was_pays} {pays_currency}. "
         f"What is the new amount?"
     )
 
@@ -2147,8 +2203,35 @@ async def amend_capture_receives(message: Message, state: FSMContext) -> None:
     await state.update_data(amend_receives=str(receives))
     await state.set_state(FxAmend.awaiting_reason)
     await message.reply(
-        "Why is it changing? One line — “the supplier was short” reads very "
-        "differently from “we typed it wrong” in three months."
+        "Why is it changing? One line — \u201cthe supplier was short\u201d reads very "
+        "differently from \u201cwe typed it wrong\u201d in three months."
+    )
+
+
+@router.message(FxAmend.awaiting_supplier_rate)
+async def amend_capture_supplier_rate(message: Message, state: FSMContext) -> None:
+    try:
+        rate = fx.parse_rate(message.text or "")
+    except fx.FxError as exc:
+        await message.reply(explain(exc))
+        return
+    await state.update_data(amend_supplier_rate=str(rate))
+    await state.set_state(FxAmend.awaiting_client_rate)
+    await message.reply("And what are we quoting the client now?")
+
+
+@router.message(FxAmend.awaiting_client_rate)
+async def amend_capture_client_rate(message: Message, state: FSMContext) -> None:
+    try:
+        rate = fx.parse_rate(message.text or "")
+    except fx.FxError as exc:
+        await message.reply(explain(exc))
+        return
+    await state.update_data(amend_client_rate=str(rate))
+    await state.set_state(FxAmend.awaiting_reason)
+    await message.reply(
+        "Why has the price moved? The client is going to be asked to agree a "
+        "different rate and will want to know why."
     )
 
 
@@ -2159,7 +2242,7 @@ async def amend_capture_reason(message: Message, state: FSMContext) -> None:
     user = message.from_user
 
     # Claimed before the work. Amending twice would record two changes and
-    # leave the client confirming a figure that had already moved again.
+    # leave a client agreeing to a figure that had already moved again.
     await state.clear()
 
     async with session_scope() as session:
@@ -2172,24 +2255,38 @@ async def amend_capture_reason(message: Message, state: FSMContext) -> None:
         if order is None:
             await message.reply("That deal no longer exists.")
             return
+
         try:
-            await fx.amend_order(
-                session, order,
-                client_pays=Decimal(data["amend_pays"]),
-                client_receives=Decimal(data["amend_receives"]),
-                reason=reason,
-                actor=actor,
-            )
-            reference = order.display_reference
+            if data.get("amend_kind") == "rate":
+                await fx.reprice(
+                    session, order,
+                    supplier_rate=Decimal(data["amend_supplier_rate"]),
+                    client_rate=Decimal(data["amend_client_rate"]),
+                    reason=reason, actor=actor,
+                )
+                outcome = (
+                    f"{order.display_reference} repriced. It is back to "
+                    f"Rate quoted, so send the client the new rate with "
+                    f"/{cmd.QUOTE} — they agree it or they do not."
+                )
+            else:
+                await fx.amend_amount(
+                    session, order,
+                    client_pays=Decimal(data["amend_pays"]),
+                    client_receives=Decimal(data["amend_receives"]),
+                    reason=reason, actor=actor,
+                )
+                outcome = (
+                    f"{order.display_reference} amended, and it stays at "
+                    f"{order.status.label}. The client has not been asked — "
+                    f"tell them with /{cmd.REPLY} in their topic."
+                )
         except Exception as exc:
             logger.exception("Amendment failed")
             await message.reply(explain(exc))
             return
 
-    await message.reply(
-        f"{reference} amended. It is back with the client to confirm the new "
-        f"figures — send them the order again with /{cmd.ORDER_CLIENT}."
-    )
+    await message.reply(outcome)
 
 
 # --------------------------------------------------------------------------
