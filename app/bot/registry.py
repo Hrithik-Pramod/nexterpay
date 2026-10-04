@@ -10,7 +10,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Chat, Client, GroupLead, Staff, StaffDepartment
+from app.db.models import Chat, Client, GroupLead, Setting, Staff, StaffDepartment
 from app.domain.enums import ChatKind, Department, StaffRole
 
 
@@ -379,3 +379,32 @@ async def remove_group_lead(
     lead.is_active = False
     await session.flush()
     return lead
+
+
+# --------------------------------------------------------------------------
+# Settings somebody can change without a deploy
+# --------------------------------------------------------------------------
+
+async def get_setting(session: AsyncSession, key: str) -> str | None:
+    row = await session.get(Setting, key)
+    return row.value if row else None
+
+
+async def set_setting(
+    session: AsyncSession, key: str, value: str | None, *, by: str | None = None
+) -> Setting:
+    """Upsert, keeping who changed it.
+
+    Who matters more than it looks for the wallet address: a payment arriving
+    at the wrong place is discovered days later by a client chasing money,
+    and the first question is who changed it and when.
+    """
+    row = await session.get(Setting, key)
+    if row is None:
+        row = Setting(key=key, value=value, updated_by_name=by)
+        session.add(row)
+    else:
+        row.value = value
+        row.updated_by_name = by
+    await session.flush()
+    return row

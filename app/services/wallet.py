@@ -33,9 +33,10 @@ would be a module the suite could only exercise by pretending.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Protocol
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,46 @@ MATCH_FRACTION = Decimal("0.0001")   # one basis point
 def tolerance_for(expected: Decimal) -> Decimal:
     """The window around an expected amount, for a payment of this size."""
     return max(MATCH_FLOOR, abs(expected) * MATCH_FRACTION)
+
+
+# Where the watched address is kept. A key rather than a column, and a
+# setting rather than an environment variable, because Jason asked for it to
+# be changeable and the person who needs to change it is on the finance desk.
+WALLET_SETTING = "fx.watched_wallet"
+
+# Tron base58 addresses: `T` then 33 more base58 characters. Base58 excludes
+# 0, O, I and l precisely because they are the characters people confuse, so
+# refusing anything containing them is refusing a typo rather than an address.
+_TRON_ADDRESS = re.compile(r"^T[1-9A-HJ-NP-Za-km-z]{33}$")
+
+
+class WalletError(Exception):
+    """Something that is not an address NexterPay can be paid at."""
+
+
+def parse_address(text: str) -> str:
+    """A Tron address, checked rather than merely stored.
+
+    Checked because of what happens if it is wrong: the watcher looks at an
+    address nobody is paying into, finds nothing, and says nothing - and
+    silence from a monitor is indistinguishable from nothing having arrived.
+    A wrong address here would be discovered by a client chasing a settlement
+    that the platform believed had not been made.
+
+    Not a checksum validation. That would need base58 decoding and the
+    dependency it brings, and the failure this guards against is a pasted
+    address losing characters or picking up whitespace, which the shape
+    catches.
+    """
+    cleaned = (text or "").strip()
+    if not cleaned:
+        raise WalletError("Which address? A Tron address starts with T.")
+    if not _TRON_ADDRESS.match(cleaned):
+        raise WalletError(
+            f"“{cleaned}” is not a Tron address. They start with T and are 34 "
+            f"characters - this one is {len(cleaned)}."
+        )
+    return cleaned
 
 
 @dataclass(frozen=True)
@@ -200,6 +241,9 @@ def from_micro_usdt(raw: int | str) -> Decimal:
 
 __all__ = [
     "MATCH_FLOOR",
+    "WALLET_SETTING",
+    "WalletError",
+    "parse_address",
     "MATCH_FRACTION",
     "USDT_DECIMALS",
     "Candidate",
@@ -208,6 +252,42 @@ __all__ = [
     "Proposal",
     "from_micro_usdt",
     "match_all",
+    "candidates_from_orders",
     "match_payment",
     "tolerance_for",
 ]
+
+
+# --------------------------------------------------------------------------
+# What the desk is waiting to be paid
+# --------------------------------------------------------------------------
+
+def candidates_from_orders(orders: list) -> list[Candidate]:
+    """Open deals, as amounts a payment might be for.
+
+    The expected figure is the supplier's side converted at the supplier's
+    rate, because that is the leg this wallet is settling - NexterPay's
+    arrangement with the supplier, not what the client pays. Reading the
+    client's columns here would mean matching payments against the margin as
+    well as the amount, and finding nothing.
+
+    A deal with no rate or no supplier amount is left out rather than guessed
+    at. It cannot be matched on an amount it does not have, and including it
+    would only widen the ambiguity for the deals that can.
+    """
+    built = []
+    for order in orders:
+        rate = order.supplier_rate or order.client_rate
+        local = order.supplier_receives
+        if not rate or not local or rate <= 0:
+            continue
+        built.append(
+            Candidate(
+                key=order.display_reference,
+                expected_usdt=(local / rate).quantize(
+                    Decimal("0.000001"), rounding=ROUND_HALF_UP
+                ),
+                label=order.display_reference,
+            )
+        )
+    return built

@@ -163,6 +163,12 @@ SETTLE = _c("settle")
 # may change."
 AMEND = _c("amend")
 
+# The address incoming settlements are watched at. Jason, 3 October: "need
+# the ability to change monitoring of wallet" - so it is a command rather
+# than a deployment setting, because the person who needs to change it is on
+# the finance desk and not at a shell.
+WALLET = _c("wallet")
+
 # Asking every supplier on the desk for today's rate, in one go. NexterPay,
 # 16 September: "we need to be able to initiate rate checks". Manual for now -
 # the automated half needs a time of day and a list of desks, which is a
@@ -196,7 +202,7 @@ ALL = [
     SETLEAD, LEADS, REMOVELEAD, SETUP, HELP, ROLE,
     NEW_CLIENT, NEW_SUPPLIER,
     ORDER_CLIENT, ORDER_SUPPLIER, FX_DEALS, BOOK, QUOTE, HASH, SETTLE, AMEND,
-    REJECT,
+    WALLET, REJECT,
     RATE_CHECK,
     BRIDGE,
     START, START_ALIAS, WHOAMI,

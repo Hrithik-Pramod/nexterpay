@@ -778,6 +778,34 @@ class SettlementReferenceCounter(Base):
     next_value: Mapped[int] = mapped_column(Integer, nullable=False, default=1000)
 
 
+class Setting(Base, TimestampMixin):
+    """A value somebody can change without a deploy.
+
+    Added for the watched wallet. Jason, 3 October: "need the ability to
+    change monitoring of wallet" - which rules out an environment variable,
+    because changing one of those means a restart and somebody with shell
+    access, and the person who needs to change a wallet address is on the
+    finance desk.
+
+    Deliberately a key-value table rather than a column per setting. There is
+    exactly one setting today and the shape of the second is unknown; a table
+    that can hold either is cheaper than guessing.
+
+    Not for anything secret. The bot token and the database password stay in
+    the environment, where they are not one `/npsettings` away from being
+    printed into a Telegram group.
+    """
+
+    __tablename__ = "settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    updated_by_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+    def __repr__(self) -> str:
+        return f"<Setting {self.key}={self.value!r}>"
+
+
 class GroupLead(Base, TimestampMixin):
     """A named contact inside a client or supplier group.
 

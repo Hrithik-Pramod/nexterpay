@@ -44,12 +44,13 @@ from app.bot.deps import (
     staff_context,
     work_item_for_thread,
 )
+from app.bot.registry import get_setting, set_setting
 from app.db.base import session_scope, utcnow
 from app.db.models import Chat, Client, FxOrder, WorkItem
 from app.domain import fx, settlement, settlement_text
 from app.domain.enums import ChatKind, FxOrderStatus, FxSide, WorkItemStatus
 from app.domain.work_items import Actor
-from app.services import fx_relay, relay
+from app.services import fx_relay, relay, wallet
 from app.services.relay import _e
 
 logger = logging.getLogger(__name__)
@@ -2053,6 +2054,78 @@ async def list_deals(message: Message) -> None:
         await message.reply("No open FX deals.")
         return
     await message.reply("Open FX deals:\n\n" + "\n".join(lines))
+
+
+# --------------------------------------------------------------------------
+# `/npwallet` - the address incoming settlements are watched at
+# --------------------------------------------------------------------------
+
+@router.message(cmd.any_case(cmd.WALLET))
+async def wallet_address(message: Message) -> None:
+    """`/npwallet` to see it, `/npwallet <address>` to change it.
+
+    A command rather than a deployment setting because Jason asked for it to
+    be changeable, and the person who needs to change a wallet address is on
+    the finance desk rather than at a shell.
+
+    Changing it is announced in the group rather than acknowledged quietly.
+    An address nobody is paying into produces silence from the watcher, and
+    silence is indistinguishable from nothing having arrived - so the one
+    moment to make this visible is when somebody changes it.
+    """
+    user = message.from_user
+    argument = (message.text or "").split(maxsplit=1)
+    wanted = argument[1].strip() if len(argument) > 1 else ""
+
+    async with session_scope() as session:
+        ctx = await staff_context(session, message.chat.id, user.id if user else None)
+        if ctx is None:
+            await message.reply(
+                await refusal_reason(
+                    user.id if user else None, session, message.chat.id
+                )
+            )
+            return
+        _, actor = ctx
+        current = await get_setting(session, wallet.WALLET_SETTING)
+
+        if not wanted:
+            if not current:
+                await message.reply(
+                    "No wallet is being watched. Set one with "
+                    f"/{cmd.WALLET} &lt;address&gt; and incoming settlements "
+                    f"will be matched against open deals automatically.",
+                    parse_mode="HTML",
+                )
+                return
+            await message.reply(
+                f"Watching <code>{_e(current)}</code> for incoming USDT.\n\n"
+                f"<i>Read only — the platform watches this address and never "
+                f"holds a key or moves funds.</i>",
+                parse_mode="HTML",
+            )
+            return
+
+        try:
+            address = wallet.parse_address(wanted)
+        except wallet.WalletError as exc:
+            await message.reply(str(exc))
+            return
+
+        if address == current:
+            await message.reply("That is already the address being watched.")
+            return
+
+        await set_setting(
+            session, wallet.WALLET_SETTING, address, by=actor.name
+        )
+        was = f"\n\nPreviously <code>{_e(current)}</code>." if current else ""
+
+    await message.reply(
+        f"Now watching <code>{_e(address)}</code> for incoming USDT, "
+        f"changed by {_e(actor.name)}.{was}",
+        parse_mode="HTML",
+    )
 
 
 # --------------------------------------------------------------------------
