@@ -47,7 +47,7 @@ from app.db.models import (
     SettlementAllocation,
     SettlementReferenceCounter,
 )
-from app.domain import corridors
+from app.domain import accounts, corridors
 from app.domain.enums import EventType, FxOrderStatus
 from app.domain.errors import DomainError
 from app.domain.fx import check_hash, record_event
@@ -321,6 +321,36 @@ async def match_lines(session: AsyncSession, parsed_lines: list) -> list[Match]:
             and order.supplier_receives is not None
             and order.supplier_receives == line.local_amount
         ]
+
+        # The account number on the line, where there is one, narrows further.
+        #
+        # NexterPay, 4 October: "BBS is a big supplier, so we have multiple
+        # accounts. BBS number is Nexterpay Number." It narrows rather than
+        # decides, because the accounts are shared - BBS 1 carries both
+        # LuckyStar and Spayz Category B - so this cuts the candidates down
+        # and the ambiguity check below still has the last word.
+        #
+        # Applied only when it leaves something. An account we hold but cannot
+        # resolve, or one belonging to a client not registered here yet, must
+        # not turn a line that would have matched on amount into one that
+        # matches nothing: the mapping is there to help, and a half-loaded
+        # mapping that started hiding deals would be worse than none.
+        if len(fits) > 1 and getattr(line, "account", None):
+            supplier_code = next(
+                (o.supplier_code for o in fits if o.supplier_code), None
+            )
+            if supplier_code:
+                allowed = await accounts.clients_on_account(
+                    session, supplier_code=supplier_code, number=line.account
+                )
+                if allowed:
+                    narrowed = [
+                        order for order in fits
+                        if order.client_id in {client.id for client in allowed}
+                    ]
+                    if narrowed:
+                        fits = narrowed
+
         if not fits:
             matches.append(
                 Match(number, line, None, "no open deal for that amount")

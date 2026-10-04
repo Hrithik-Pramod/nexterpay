@@ -793,6 +793,65 @@ class SettlementReferenceCounter(Base):
     next_value: Mapped[int] = mapped_column(Integer, nullable=False, default=1000)
 
 
+class SupplierAccount(Base, TimestampMixin):
+    """One of our accounts with a supplier, and whose business runs through it.
+
+    NexterPay, through Jason on 4 October: "BBS is a big supplier, so we have
+    multiple accounts. BBS number is Nexterpay Number." Every settlement line
+    they send ends with one:
+
+        CI - 50250000/583=86,192.11   (07/09/2026) Nexterpay 5
+
+    Three things about the shape, each of which came from asking rather than
+    from the data.
+
+    **Numbering is per supplier.** BBS 5 and SPEX 5 are unrelated, so the key
+    is the pair and never the number alone.
+
+    **Accounts are shared.** BBS 1 carries both LuckyStar and Spayz Category
+    B. So a row is one account and one client, and an account with two clients
+    is two rows - which means the number narrows a payment down but does not
+    identify it. Anything built on the assumption that it identifies would be
+    wrong for the busiest accounts.
+
+    **The client is held as a name as well as a link.** The list NexterPay
+    work from names clients who are not all registered on this platform yet,
+    and a mapping that could only be loaded once every client existed would
+    not be loadable at all. The name is what was given; `client_id` is filled
+    in where it resolves and stays null where it does not.
+    """
+
+    __tablename__ = "supplier_accounts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    # The supplier whose numbering this is. Held by code rather than by id so
+    # the list can be loaded before every supplier has been registered - the
+    # same reason the client is held by name.
+    supplier_code: Mapped[str] = mapped_column(String(8), nullable=False)
+    number: Mapped[str] = mapped_column(String(16), nullable=False)
+
+    client_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    client_id: Mapped[int | None] = mapped_column(
+        ForeignKey("clients.id"), nullable=True
+    )
+
+    client: Mapped[Client | None] = relationship()
+
+    __table_args__ = (
+        UniqueConstraint(
+            "supplier_code", "number", "client_name", name="uq_supplier_account"
+        ),
+        Index("ix_supplier_accounts_lookup", "supplier_code", "number"),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<SupplierAccount {self.supplier_code} {self.number} "
+            f"{self.client_name!r}>"
+        )
+
+
 class Setting(Base, TimestampMixin):
     """A value somebody can change without a deploy.
 
