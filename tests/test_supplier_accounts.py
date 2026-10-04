@@ -140,7 +140,9 @@ async def test_loading_the_list_twice_does_not_double_it(session):
 # What it is actually for
 # --------------------------------------------------------------------------
 
-async def _awaiting(session, chat, operator, *, client_name, amount, subject):
+async def _awaiting(
+    session, chat, operator, *, client_name, amount, subject, client=None
+):
     """A deal awaiting settlement, for a named client.
 
     The client is created here and put on the order, rather than taken from
@@ -153,14 +155,21 @@ async def _awaiting(session, chat, operator, *, client_name, amount, subject):
     The test that caught it was the one asserting the feature works, which
     reported quite correctly that it did not: the narrowing had two orders for
     the same client and nothing to narrow between.
+
+    Pass `client` to put a second deal against a client that already exists.
+    That is a different case from two clients, and saying so explicitly beats
+    arranging it by picking names that happen to collide - which is how the
+    second attempt at this failed, since "LuckyStar" and "LuckyStar2" both
+    shorten to the code LUCK.
     """
     item = await wi.create_work_item(
         session, source_chat=chat, subject=subject,
         original_message="Please provide a rate.", raised_by_name="Gavs D",
     )
-    client = Client(name=client_name, code=client_name[:4].upper())
-    session.add(client)
-    await session.flush()
+    if client is None:
+        client = Client(name=client_name, code=client_name[:4].upper())
+        session.add(client)
+        await session.flush()
 
     order = await fx.open_order(
         session, client=client, client_work_item=item, actor=Actor.of(operator)
@@ -288,12 +297,12 @@ async def test_one_client_with_two_identical_deals_is_still_ambiguous(
         session, acme_support, operator,
         client_name="LuckyStar", amount="20100000", subject="a",
     )
-    second = await _awaiting(
+    same_client = await session.get(Client, first.client_id)
+    await _awaiting(
         session, acme_support, operator,
-        client_name="LuckyStar2", amount="20100000", subject="b",
+        client_name="LuckyStar", amount="20100000", subject="b",
+        client=same_client,
     )
-    second.client_id = first.client_id
-    await session.flush()
 
     await accounts.record(
         session, supplier_code="BBS", number="1", client_name="LuckyStar"
