@@ -373,9 +373,74 @@ __all__ = [
     "SettlementError",
     "allocations_of",
     "already_settled",
+    "attach_hash",
+    "awaiting_hash",
     "discrepancy",
     "expected_total",
     "is_material",
     "record",
     "settlement_for",
 ]
+
+
+# --------------------------------------------------------------------------
+# A hash that arrives after the settlement
+# --------------------------------------------------------------------------
+
+async def awaiting_hash(session: AsyncSession) -> list[Settlement]:
+    """Settlements recorded without proof of payment, newest first.
+
+    This is a normal state rather than an error. Suppliers send the lines and
+    the hash as two messages - it happened in their own chat on 1 September,
+    the lines at 17:49 and the hash afterwards - so a desk working at the
+    speed of the conversation will often record one before the other arrives.
+    """
+    result = await session.execute(
+        select(Settlement)
+        .where(Settlement.tx_hash.is_(None))
+        .order_by(Settlement.reference.desc())
+    )
+    return list(result.scalars().all())
+
+
+async def attach_hash(
+    session: AsyncSession,
+    settlement: Settlement,
+    *,
+    tx_hash: str,
+    actor: Actor,
+) -> Settlement:
+    """Put the proof against a payment already recorded.
+
+    The hash goes onto every order the settlement covers as well as the
+    settlement itself, because that is where a client asking about their own
+    deal will be shown it. Doing only one of the two would leave a client
+    being told there is no proof of a payment the desk can see the proof of.
+
+    Refuses to overwrite. A settlement that already has a hash and is offered
+    a different one is either a mistake or two payments being confused, and
+    both want a person rather than a quiet replacement.
+    """
+    if settlement.tx_hash:
+        raise SettlementError(
+            f"{settlement.display_reference} already has a hash. If the "
+            f"payment is a different one, it is a different settlement."
+        )
+
+    cleaned = check_hash(tx_hash)
+    settlement.tx_hash = cleaned
+
+    for allocation in await allocations_of(session, settlement):
+        order = await session.get(FxOrder, allocation.fx_order_id)
+        if order is None:
+            continue
+        order.tx_hash = cleaned
+        await record_event(
+            session, order, EventType.FX_HASH_RECORDED, actor,
+            tx_hash=cleaned,
+            settlement=settlement.display_reference,
+            attached_later=True,
+        )
+
+    await session.flush()
+    return settlement

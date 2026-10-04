@@ -46,7 +46,7 @@ from app.bot.deps import (
 )
 from app.bot.registry import get_setting, set_setting
 from app.db.base import session_scope, utcnow
-from app.db.models import Chat, Client, FxOrder, WorkItem
+from app.db.models import Chat, Client, FxOrder, Settlement, WorkItem
 from app.domain import fx, settlement, settlement_text
 from app.domain.enums import ChatKind, FxOrderStatus, FxSide, WorkItemStatus
 from app.domain.work_items import Actor
@@ -2499,6 +2499,43 @@ async def settle_capture_block(message: Message, state: FSMContext) -> None:
         try:
             parsed = settlement_text.parse(pasted)
         except settlement_text.SettlementTextError as exc:
+            # A block with no lines but a hash in it is not a mistake. The
+            # supplier sends the figures and the proof as two messages - it
+            # happened that way in their own chat on 1 September - so a desk
+            # keeping up with the conversation records one and then the other
+            # arrives. Found while testing on 4 October, when exactly this
+            # happened by accident.
+            loose_hash = settlement_text.find_hash(pasted)
+            if loose_hash:
+                waiting = await settlement.awaiting_hash(session)
+                if not waiting:
+                    await state.clear()
+                    await message.reply(
+                        "That looks like a transaction hash, but every "
+                        "settlement already has one. If this is a new "
+                        "payment, paste its lines too."
+                    )
+                    return
+                await state.update_data(loose_hash=loose_hash)
+                await message.reply(
+                    "That is a hash on its own. Which settlement is it for?",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        *[
+                            [InlineKeyboardButton(
+                                text=(
+                                    f"{record.display_reference} · "
+                                    f"{fx.format_money(record.amount_usdt)} USDT"
+                                )[:60],
+                                callback_data=f"fx:sethash:{record.id}",
+                            )]
+                            for record in waiting[:8]
+                        ],
+                        [InlineKeyboardButton(
+                            text="Cancel", callback_data="fx:cancel:0"
+                        )],
+                    ]),
+                )
+                return
             await message.reply(explain(exc))
             return
 
@@ -2532,6 +2569,52 @@ async def settle_capture_block(message: Message, state: FSMContext) -> None:
         preview,
         parse_mode="HTML",
         reply_markup=_action_keyboard("✅ Record this settlement", "fx:setsave"),
+    )
+
+
+@router.callback_query(F.data.startswith("fx:sethash:"))
+async def settle_attach_hash(query: CallbackQuery, state: FSMContext) -> None:
+    """Put a late-arriving hash against a settlement already recorded."""
+    settlement_id = int((query.data or "").split(":")[2])
+    data = await state.get_data()
+    await query.answer()
+
+    loose_hash = data.get("loose_hash")
+    if not loose_hash:
+        await state.clear()
+        await query.message.answer("That hash has already been used, or it expired.")
+        return
+
+    await state.clear()
+    await _clear_buttons(query)
+
+    async with session_scope() as session:
+        ctx = await staff_context(
+            session, query.message.chat.id,
+            query.from_user.id if query.from_user else None,
+        )
+        if ctx is None:
+            await query.message.answer("You are not registered as staff.")
+            return
+        _, actor = ctx
+        record = await session.get(Settlement, settlement_id)
+        if record is None:
+            await query.message.answer("That settlement no longer exists.")
+            return
+        try:
+            await settlement.attach_hash(
+                session, record, tx_hash=loose_hash, actor=actor
+            )
+            reference = record.display_reference
+            covered = len(await settlement.allocations_of(session, record))
+        except Exception as exc:
+            logger.exception("Attaching a hash failed")
+            await query.message.answer(explain(exc))
+            return
+
+    await query.message.answer(
+        f"Hash recorded against {reference} and the {covered} deal"
+        f"{'' if covered == 1 else 's'} it covers."
     )
 
 

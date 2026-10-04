@@ -422,3 +422,135 @@ async def test_there_is_no_balance_anywhere(
 
     columns = set(Settlement.__table__.columns.keys())
     assert not {c for c in columns if "balance" in c or "remainder" in c}
+
+
+# --------------------------------------------------------------------------
+# A hash that arrives after the settlement
+#
+# Not an edge case. Suppliers send the figures and the proof as two separate
+# messages - it happened that way in their own chat on 1 September, the lines
+# at 17:49 and the hash afterwards - so a desk keeping up with the
+# conversation will record one before the other arrives.
+#
+# Found on 4 October while testing /npsettle live, when the hash went as its
+# own message by accident and there was no way to attach it.
+# --------------------------------------------------------------------------
+
+async def test_a_settlement_can_be_recorded_before_the_hash(
+    session, acme_support, support_ops, operator
+):
+    order = await _settleable(session, acme_support, operator)
+    record = await settlement.record(
+        session,
+        lines=[settlement.Line(order, "CI", Decimal("5830"), Decimal("583"))],
+        tx_hash=None, amount_usdt=Decimal("10"), actor=Actor.of(operator),
+    )
+
+    assert record.tx_hash is None
+    assert record in await settlement.awaiting_hash(session)
+
+
+async def test_the_hash_reaches_the_settlement_and_its_orders(
+    session, acme_support, support_ops, operator
+):
+    """Both, because the order is where a client asking about their own deal
+    is shown the proof. Doing only the settlement would leave a client told
+    there is none while the desk can see it."""
+    first = await _settleable(session, acme_support, operator, subject="a")
+    second = await _settleable(session, acme_support, operator, subject="b")
+    record = await settlement.record(
+        session,
+        lines=[
+            settlement.Line(first, "CI", Decimal("5830"), Decimal("583")),
+            settlement.Line(second, "SN", Decimal("5830"), Decimal("583")),
+        ],
+        tx_hash=None, amount_usdt=Decimal("20"), actor=Actor.of(operator),
+    )
+
+    await settlement.attach_hash(
+        session, record, tx_hash=HASH_A, actor=Actor.of(operator)
+    )
+
+    assert record.tx_hash == HASH_A
+    assert first.tx_hash == HASH_A
+    assert second.tx_hash == HASH_A
+
+
+async def test_a_settlement_that_has_a_hash_will_not_take_another(
+    session, acme_support, support_ops, operator
+):
+    """Either a mistake or two payments being confused, and both want a
+    person rather than a quiet replacement."""
+    order = await _settleable(session, acme_support, operator)
+    record = await settlement.record(
+        session,
+        lines=[settlement.Line(order, "CI", Decimal("5830"), Decimal("583"))],
+        tx_hash=HASH_A, amount_usdt=Decimal("10"), actor=Actor.of(operator),
+    )
+
+    with pytest.raises(settlement.SettlementError):
+        await settlement.attach_hash(
+            session, record, tx_hash=HASH_B, actor=Actor.of(operator)
+        )
+
+
+async def test_a_settled_payment_is_not_offered_for_a_hash(
+    session, acme_support, support_ops, operator
+):
+    order = await _settleable(session, acme_support, operator)
+    await settlement.record(
+        session,
+        lines=[settlement.Line(order, "CI", Decimal("5830"), Decimal("583"))],
+        tx_hash=HASH_A, amount_usdt=Decimal("10"), actor=Actor.of(operator),
+    )
+
+    assert await settlement.awaiting_hash(session) == []
+
+
+async def test_the_newest_unhashed_settlement_comes_first(
+    session, acme_support, support_ops, operator
+):
+    """The one the desk just recorded is the one the hash is most likely for."""
+    first = await _settleable(session, acme_support, operator, subject="a")
+    second = await _settleable(session, acme_support, operator, subject="b")
+    older = await settlement.record(
+        session,
+        lines=[settlement.Line(first, "CI", Decimal("5830"), Decimal("583"))],
+        tx_hash=None, amount_usdt=Decimal("10"), actor=Actor.of(operator),
+    )
+    newer = await settlement.record(
+        session,
+        lines=[settlement.Line(second, "SN", Decimal("5830"), Decimal("583"))],
+        tx_hash=None, amount_usdt=Decimal("10"), actor=Actor.of(operator),
+    )
+
+    waiting = await settlement.awaiting_hash(session)
+    assert [s.id for s in waiting] == [newer.id, older.id]
+
+
+async def test_a_bad_hash_is_refused(
+    session, acme_support, support_ops, operator
+):
+    order = await _settleable(session, acme_support, operator)
+    record = await settlement.record(
+        session,
+        lines=[settlement.Line(order, "CI", Decimal("5830"), Decimal("583"))],
+        tx_hash=None, amount_usdt=Decimal("10"), actor=Actor.of(operator),
+    )
+
+    with pytest.raises(fx.FxError):
+        await settlement.attach_hash(
+            session, record, tx_hash="not-a-hash", actor=Actor.of(operator)
+        )
+
+
+def test_a_lone_hash_is_recognised_as_one() -> None:
+    """What the handler keys off: a pasted block with no settlement lines but
+    a hash in it is a late-arriving proof, not a malformed settlement."""
+    from app.domain import settlement_text
+
+    block = "51c86654d87af90109a33bead642ca329771a4669d4bdc749219a49b78d80474"
+
+    assert settlement_text.find_hash(block) == block
+    with pytest.raises(settlement_text.SettlementTextError):
+        settlement_text.parse(block)
