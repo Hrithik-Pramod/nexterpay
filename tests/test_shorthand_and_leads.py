@@ -203,3 +203,74 @@ async def test_the_currency_is_read_however_it_is_typed(session, pexi_supplier):
 
     assert await preferred_lead_for(session, pexi_supplier, currency="XOF")
     assert await preferred_lead_for(session, pexi_supplier, currency=" xof ")
+
+
+# --------------------------------------------------------------------------
+# The shorthand never leaves the building
+# --------------------------------------------------------------------------
+
+def test_a_staff_reply_strips_the_shorthand():
+    """A supplier reading `#ACME` has just learned the client's code, which is
+    the beginning of working out what NexterPay make on them.
+
+    The same leak `supplier_reference` exists to prevent, arriving through a
+    different door - and a door that only opened once the desk was given a
+    reason to write counterparty codes in their messages.
+    """
+    from app.services.relay import staff_reply_text
+
+    out = staff_reply_text("ACME-1042", "can #BBS do 611 for #ACME")
+
+    assert "#BBS" not in out
+    assert "#ACME" not in out
+    assert "611" in out
+
+
+def test_an_outbound_request_strips_it_too():
+    from app.services.relay import outbound_body
+
+    out = outbound_body("Rate for XOF", "Rate for XOF\nasking #BBS today")
+
+    assert "#BBS" not in out
+    assert "asking" in out
+
+
+def test_the_reference_in_the_header_survives():
+    """Only the hash shorthand goes. `ACME-1042` is what the counterparty is
+    meant to quote back."""
+    from app.services.relay import staff_reply_text
+
+    assert "ACME-1042" in staff_reply_text("ACME-1042", "noted")
+
+
+def test_ordinary_text_is_untouched():
+    """A message with no shorthand in it must come out exactly as written -
+    stripping is not a licence to reformat somebody's words."""
+    from app.services.relay import staff_reply_text
+
+    assert "rate on XOF is 583" in staff_reply_text("ACME-1042", "rate on XOF is 583")
+
+
+def test_every_path_to_a_counterparty_strips_the_shorthand() -> None:
+    """Structural, because the two functions above are not the point.
+
+    The point is that *any* text a member of staff types which reaches a
+    counterparty has the shorthand taken out of it. Both of the current paths
+    do; this fails if a third appears that does not, which is how the three
+    reference leaks and the three internal-request doors each happened.
+    """
+    import ast
+    import pathlib
+
+    source = pathlib.Path("app/services/relay.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    composers = {"staff_reply_text", "outbound_body"}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or node.name not in composers:
+            continue
+        body = ast.unparse(node)
+        assert "strip_codes" in body, (
+            f"{node.name} composes text for a counterparty without stripping "
+            f"the desk's #CODE shorthand out of it"
+        )

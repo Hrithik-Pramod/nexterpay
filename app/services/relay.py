@@ -44,6 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import as_utc, utcnow
 from app.db.models import Attachment, Chat, Client, Event, Message, Staff, WorkItem
+from app.domain import shorthand
 from app.domain import work_items as wi
 from app.domain.enums import (
     Department,
@@ -664,8 +665,15 @@ def staff_reply_text(
     `escape` is kept as a parameter and ignored, so that any caller still
     passing it keeps working; it will go once nothing does.
     """
+    # `#BBS` and `#ACME` are the desk's own shorthand for a counterparty, and
+    # they stop here. A supplier reading `#ACME` has just learned the client's
+    # code, which is the beginning of working out what NexterPay make on them -
+    # the same leak `supplier_reference` exists to prevent, arriving by a
+    # different door. Stripped at the last moment before escaping, so no
+    # caller can forget.
+    spoken = shorthand.strip_codes(text)
     signature = f" — from {_e(sender)}" if sender else ""
-    body = f"{mention} — {_e(text)}" if mention else _e(text)
+    body = f"{mention} — {_e(spoken)}" if mention else _e(spoken)
     return (
         f"{MARK_RESPONSE} <b>Response to {_e(reference)}{signature}</b>\n\n"
         f"{body}\n\n"
@@ -1654,8 +1662,8 @@ def outbound_body(subject: str, body: str) -> str:
     lines = body.splitlines()
     first = lines[0].strip() if lines else ""
     if first and first == (subject or "").strip():
-        return "\n".join(lines[1:]).strip()
-    return body.strip()
+        return shorthand.strip_codes("\n".join(lines[1:]))
+    return shorthand.strip_codes(body)
 
 
 def outbound_opening_text(item: WorkItem, body: str) -> str:
