@@ -221,6 +221,12 @@ async def send_order(
     sent = await gateway.send_message(
         counterparty.telegram_chat_id, text, reply_markup=keyboard
     )
+    # Kept so the order can be withdrawn if its figures change before the
+    # counterparty answers. See `withdraw_order`.
+    if side is FxSide.CLIENT:
+        order.client_order_message_id = sent.message_id
+    else:
+        order.supplier_order_message_id = sent.message_id
     work_item_id = (
         order.client_work_item_id
         if side is FxSide.CLIENT
@@ -368,3 +374,76 @@ def desk_summary(order: FxOrder) -> str:
     if order.tx_hash:
         lines += ["", f"Hash  {order.tx_hash}"]
     return "\n".join(line.rstrip() for line in lines)
+
+
+WITHDRAWN_ORDER_TEXT = (
+    "This order has been replaced — please ignore the figures above. "
+    "An updated one will follow."
+)
+
+
+async def withdraw_order(
+    session: AsyncSession,
+    gateway: TelegramGateway,
+    order: FxOrder,
+    side: FxSide,
+) -> bool:
+    """Take back an order a counterparty has not answered yet.
+
+    Found live on 4 October. A deal was amended from 250,000 to 200,000, and
+    the order message sitting in the client's group kept both its old figures
+    and its live Confirm button. Tapping it recorded the client as having
+    confirmed 250,000 - a number that was no longer the order and that they
+    had agreed in good faith from what was in front of them.
+
+    A client agreeing to a figure they were never shown is the worst thing
+    this platform can do that is not a margin leak, and it was reachable by
+    one tap on a message nobody had thought to take down.
+
+    So the button goes first and the text second. If only the first succeeds
+    the order cannot be confirmed, which is the half that matters; if the text
+    edit also lands, the stale figures stop being readable as current. Both
+    are attempted and neither is allowed to raise - a withdrawal that fails
+    must not take the amendment down with it, because an amended deal with a
+    stale message is recoverable and an unrecorded amendment is not.
+
+    Returns whether the button was successfully removed, so the caller can
+    tell the desk to go and say something if it was not.
+    """
+    message_id = (
+        order.client_order_message_id
+        if side is FxSide.CLIENT
+        else order.supplier_order_message_id
+    )
+    if message_id is None:
+        return True  # nothing outstanding to take back
+
+    counterparty, _ = await _chat_for_side(session, order, side)
+    cleared = False
+
+    try:
+        await gateway.edit_reply_markup(
+            counterparty.telegram_chat_id, message_id, reply_markup=None
+        )
+        cleared = True
+    except Exception:
+        logger.exception(
+            "Could not clear the order buttons for %s", order.display_reference
+        )
+
+    try:
+        await gateway.edit_message_text(
+            counterparty.telegram_chat_id, message_id, WITHDRAWN_ORDER_TEXT
+        )
+    except Exception:
+        logger.debug(
+            "Could not rewrite the withdrawn order text for %s",
+            order.display_reference, exc_info=True,
+        )
+
+    if side is FxSide.CLIENT:
+        order.client_order_message_id = None
+    else:
+        order.supplier_order_message_id = None
+    await session.flush()
+    return cleared

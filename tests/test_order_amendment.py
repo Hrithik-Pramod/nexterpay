@@ -396,3 +396,109 @@ async def test_the_history_lines_read_differently(
     )
     assert "612" in rate_line and "604" in rate_line
     assert "agree" in rate_line.lower()
+
+
+# --------------------------------------------------------------------------
+# The order the counterparty is still looking at
+#
+# Found live on 4 October, driving a real deal through UAT. FXACME-1002 was
+# amended from 250,000 EUR down to 200,000 because the supplier was short.
+# The order message in the client's group kept both its old figures and its
+# live Confirm button - and tapping it recorded the client as having confirmed
+# 250,000, a number that was no longer the order, agreed in good faith from
+# what was in front of them.
+#
+# A client agreeing to a figure they were never shown is the worst thing this
+# platform can do that is not a margin leak. It was one tap away, on a message
+# nobody had thought to take down.
+# --------------------------------------------------------------------------
+
+async def test_an_outstanding_order_is_withdrawn_when_the_amount_changes(
+    session, acme_support, support_ops, operator
+):
+    from app.domain.enums import FxSide
+    from app.services import fx_relay
+    from app.services.gateway import FakeGateway
+
+    order = await _agreed_order(
+        session, acme_support, operator,
+        status=FxOrderStatus.AWAITING_CLIENT_CONFIRMATION,
+    )
+    gw = FakeGateway()
+    await fx_relay.send_order(
+        session, gw, order, FxSide.CLIENT, actor=Actor.of(operator),
+        keyboard={"inline_keyboard": [[{"text": "Confirm", "callback_data": "x"}]]},
+    )
+    assert order.client_order_message_id is not None
+
+    await fx.amend_amount(
+        session, order,
+        client_pays=Decimal("200000"), client_receives=Decimal("122400000"),
+        reason="Supplier short", actor=Actor.of(operator),
+    )
+    cleared = await fx_relay.withdraw_order(session, gw, order, FxSide.CLIENT)
+
+    assert cleared
+    assert order.client_order_message_id is None
+
+
+async def test_the_confirm_button_is_the_half_that_matters(
+    session, acme_support, support_ops, operator
+):
+    """Button first, text second.
+
+    If only the first lands the order cannot be confirmed, which is the whole
+    risk. If the text edit lands too, the stale figures stop reading as
+    current - which is better, and not the thing that costs money.
+    """
+    import pathlib
+
+    source = pathlib.Path("app/services/fx_relay.py").read_text(encoding="utf-8")
+    body = source[source.index("async def withdraw_order"):]
+
+    assert body.index("edit_reply_markup") < body.index("edit_message_text")
+
+
+async def test_a_failed_withdrawal_does_not_undo_the_amendment(
+    session, acme_support, support_ops, operator
+):
+    """An amended deal with a stale message is recoverable - somebody says so
+    in the group. An amendment that was refused because a message edit failed
+    is a deal the platform now disagrees with the desk about."""
+    from app.domain.enums import FxSide
+    from app.services import fx_relay
+
+    class Hostile:
+        async def edit_reply_markup(self, *a, **k):
+            raise RuntimeError("Telegram said no")
+
+        async def edit_message_text(self, *a, **k):
+            raise RuntimeError("Telegram said no")
+
+    order = await _agreed_order(
+        session, acme_support, operator,
+        status=FxOrderStatus.AWAITING_CLIENT_CONFIRMATION,
+    )
+    order.client_order_message_id = 4242
+    await session.flush()
+
+    cleared = await fx_relay.withdraw_order(
+        session, Hostile(), order, FxSide.CLIENT
+    )
+
+    assert cleared is False, "the caller has to be told so it can warn the desk"
+
+
+async def test_nothing_outstanding_is_not_a_failure(
+    session, acme_support, support_ops, operator
+):
+    from app.domain.enums import FxSide
+    from app.services import fx_relay
+    from app.services.gateway import FakeGateway
+
+    order = await _agreed_order(session, acme_support, operator)
+    assert order.client_order_message_id is None
+
+    assert await fx_relay.withdraw_order(
+        session, FakeGateway(), order, FxSide.CLIENT
+    ) is True

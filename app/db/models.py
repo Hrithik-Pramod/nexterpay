@@ -538,6 +538,18 @@ class FxOrder(Base, TimestampMixin):
     client_confirmed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # The message in the client's group carrying the order and its Confirm
+    # button.
+    #
+    # Remembered so it can be withdrawn. Found live on 4 October: after a
+    # deal was amended the old order message kept its button and its old
+    # figures, and tapping it recorded the client as having confirmed an
+    # amount that was no longer the order. A client agreeing to a number they
+    # were never shown is the worst thing on this platform that is not a
+    # margin leak.
+    client_order_message_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True
+    )
 
     # ---- the supplier's half, which never crosses --------------------------
     supplier_account_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
@@ -548,6 +560,9 @@ class FxOrder(Base, TimestampMixin):
     supplier_receives_currency: Mapped[str | None] = mapped_column(String(8), nullable=True)
     supplier_confirmed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    supplier_order_message_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True
     )
 
     # ---- settlement --------------------------------------------------------

@@ -2357,6 +2357,22 @@ async def amend_capture_reason(message: Message, state: FSMContext) -> None:
                     f"{order.status.label}. The client has not been asked — "
                     f"tell them with /{cmd.REPLY} in their topic."
                 )
+
+            # Whichever it was, the figures the counterparties are looking at
+            # are no longer the deal. An order left standing with its Confirm
+            # button is an invitation to agree to a number that no longer
+            # exists - found live on 4 October, when exactly that happened.
+            withdrawn = True
+            for side in (FxSide.CLIENT, FxSide.SUPPLIER):
+                withdrawn = await fx_relay.withdraw_order(
+                    session, gateway(), order, side
+                ) and withdrawn
+            if not withdrawn:
+                outcome += (
+                    "\n\n⚠️ I could not take the old order message down. "
+                    "Check their group — the previous figures may still be "
+                    "showing with a live button."
+                )
         except Exception as exc:
             logger.exception("Amendment failed")
             await message.reply(explain(exc))
