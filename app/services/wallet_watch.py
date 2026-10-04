@@ -25,6 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.registry import get_setting, set_setting
+from app.db.base import utcnow
 from app.db.models import Chat, FxOrder, Settlement
 from app.domain.enums import ChatKind, Department, FxOrderStatus
 from app.services import wallet
@@ -138,6 +139,29 @@ async def poll(
     since = datetime.fromisoformat(since_raw) if since_raw else None
 
     payments = await client.incoming_usdt(address, since=since)
+
+    if since is None:
+        # The first pass on a new wallet establishes a baseline and says
+        # nothing.
+        #
+        # Found live on 4 October, within minutes of setting the real address:
+        # the watcher announced the whole page of history TronGrid returns -
+        # fifteen payments going back weeks, each one "no open deal is waiting
+        # on that amount", because of course none of them were. The desk's
+        # first experience of the feature was a wall of noise about money that
+        # had already been dealt with.
+        #
+        # This watches for money arriving from now on. An account's past is
+        # not news, and the one thing that would make somebody stop reading
+        # these messages is a dozen of them that did not matter.
+        mark = max((p.at for p in payments), default=now or utcnow())
+        await set_setting(session, SEEN_SETTING, mark.isoformat(), by="System")
+        logger.info(
+            "Wallet watch starting from %s; %d earlier payment(s) not announced",
+            mark, len(payments),
+        )
+        return 0
+
     if not payments:
         return 0
 
@@ -166,4 +190,15 @@ async def poll(
     return announced
 
 
-__all__ = ["SEEN_SETTING", "describe", "poll"]
+async def reset_baseline(session: AsyncSession) -> None:
+    """Forget where we had got to.
+
+    Called when the watched address changes. A new wallet inheriting the old
+    one's high-water mark would skip anything that arrived at the new address
+    before that moment; clearing it makes the next pass establish a fresh
+    baseline, silently, which is what `poll` does when there is no mark.
+    """
+    await set_setting(session, SEEN_SETTING, None, by="System")
+
+
+__all__ = ["SEEN_SETTING", "describe", "poll", "reset_baseline"]

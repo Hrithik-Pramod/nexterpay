@@ -50,7 +50,7 @@ from app.db.models import Chat, Client, FxOrder, WorkItem
 from app.domain import fx, settlement, settlement_text
 from app.domain.enums import ChatKind, FxOrderStatus, FxSide, WorkItemStatus
 from app.domain.work_items import Actor
-from app.services import fx_relay, relay, wallet
+from app.services import fx_relay, relay, wallet, wallet_watch
 from app.services.relay import _e
 
 logger = logging.getLogger(__name__)
@@ -2119,6 +2119,9 @@ async def wallet_address(message: Message) -> None:
         await set_setting(
             session, wallet.WALLET_SETTING, address, by=actor.name
         )
+        # A new address starts its own baseline. Keeping the old one's would
+        # skip anything that arrived here before the change.
+        await wallet_watch.reset_baseline(session)
         was = f"\n\nPreviously <code>{_e(current)}</code>." if current else ""
 
     await message.reply(

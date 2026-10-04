@@ -110,6 +110,7 @@ async def test_a_payment_the_desk_already_settled_is_not_announced(
     group and somebody pastes it straight in. Announcing it afterwards would
     be the platform telling them about something they did."""
     await set_setting(session, wallet.WALLET_SETTING, ADDRESS)
+    await _baseline(session)
     session.add(Settlement(reference=1, tx_hash=HASH_A, recorded_by_name="peter"))
     await session.flush()
 
@@ -139,10 +140,89 @@ async def test_without_a_finance_group_it_says_nothing_anywhere(
 # When it speaks
 # --------------------------------------------------------------------------
 
+async def _baseline(session, chain=None):
+    """Get past the silent first pass, so a test can watch what comes next."""
+    await wallet_watch.poll(session, FakeGateway(), chain or FakeChain([]))
+
+
+# --------------------------------------------------------------------------
+# The first pass says nothing
+# --------------------------------------------------------------------------
+
+async def test_the_first_pass_on_a_new_wallet_announces_nothing(
+    session, acme_support, support_ops, finance_ops, operator
+):
+    """Found live on 4 October, within minutes of setting the real address.
+
+    The watcher announced the whole page of history TronGrid returns - fifteen
+    payments going back weeks, each one "no open deal is waiting on that
+    amount", because of course none of them were. The desk's first experience
+    of the feature was a wall of noise about money already dealt with.
+
+    This watches for money arriving from now on. An account's past is not
+    news, and a dozen messages that did not matter is the fastest way to make
+    somebody stop reading the one that does.
+    """
+    await set_setting(session, wallet.WALLET_SETTING, ADDRESS)
+    history = [
+        _payment("130681.754", at=NOW - timedelta(days=20), tx="c" * 64),
+        _payment("50335.57", at=NOW - timedelta(days=3), tx="d" * 64),
+    ]
+    gw = FakeGateway()
+
+    assert await wallet_watch.poll(session, gw, FakeChain(history)) == 0
+    assert not gw.calls
+
+
+async def test_the_baseline_is_set_to_the_newest_thing_it_saw(
+    session, acme_support, support_ops, finance_ops, operator
+):
+    """So the next pass starts after the history rather than before it."""
+    await set_setting(session, wallet.WALLET_SETTING, ADDRESS)
+    newest = NOW - timedelta(days=3)
+    await wallet_watch.poll(
+        session, FakeGateway(),
+        FakeChain([
+            _payment("1", at=NOW - timedelta(days=20), tx="c" * 64),
+            _payment("2", at=newest, tx="d" * 64),
+        ]),
+    )
+
+    assert await get_setting(session, wallet_watch.SEEN_SETTING) == newest.isoformat()
+
+
+async def test_what_arrives_after_the_baseline_is_announced(
+    session, acme_support, support_ops, finance_ops, operator
+):
+    await set_setting(session, wallet.WALLET_SETTING, ADDRESS)
+    await _baseline(session, FakeChain([_payment("1", at=NOW - timedelta(days=1), tx="c" * 64)]))
+    gw = FakeGateway()
+
+    announced = await wallet_watch.poll(
+        session, gw, FakeChain([_payment("777", at=NOW, tx=HASH_A)])
+    )
+
+    assert announced == 1
+
+
+async def test_changing_the_address_starts_a_new_baseline(
+    session, acme_support, support_ops, finance_ops, operator
+):
+    """A new wallet inheriting the old one's high-water mark would skip
+    anything that arrived at the new address before the change."""
+    await set_setting(session, wallet.WALLET_SETTING, ADDRESS)
+    await _baseline(session, FakeChain([_payment("1", at=NOW, tx="c" * 64)]))
+    assert await get_setting(session, wallet_watch.SEEN_SETTING)
+
+    await wallet_watch.reset_baseline(session)
+    assert not await get_setting(session, wallet_watch.SEEN_SETTING)
+
+
 async def test_a_matching_payment_is_announced_to_finance(
     session, acme_support, support_ops, finance_ops, operator
 ):
     await set_setting(session, wallet.WALLET_SETTING, ADDRESS)
+    await _baseline(session)
     order = await _awaiting(
         session, acme_support, operator, local="20100000", rate="585"
     )
@@ -167,6 +247,7 @@ async def test_it_proposes_and_never_records(
     has one fact where a person has several.
     """
     await set_setting(session, wallet.WALLET_SETTING, ADDRESS)
+    await _baseline(session)
     order = await _awaiting(
         session, acme_support, operator, local="20100000", rate="585"
     )
@@ -183,6 +264,7 @@ async def test_an_ambiguous_payment_names_both_and_guesses_neither(
     session, acme_support, support_ops, finance_ops, operator
 ):
     await set_setting(session, wallet.WALLET_SETTING, ADDRESS)
+    await _baseline(session)
     first = await _awaiting(
         session, acme_support, operator, local="20100000", rate="585", subject="a"
     )
@@ -207,6 +289,7 @@ async def test_a_payment_nobody_expected_is_still_announced(
     """Either a supplier paying early, or money nobody has accounted for.
     Both are things the desk needs to know."""
     await set_setting(session, wallet.WALLET_SETTING, ADDRESS)
+    await _baseline(session)
     gw = FakeGateway()
 
     assert await wallet_watch.poll(
@@ -223,6 +306,7 @@ async def test_their_rounding_slip_is_announced_as_short(
     """163,378 against 163,379.07. The payment is the one being waited for,
     and the desk is told it is light rather than left to find out."""
     await set_setting(session, wallet.WALLET_SETTING, ADDRESS)
+    await _baseline(session)
     await _awaiting(
         session, acme_support, operator, local="95250000", rate="583"
     )
@@ -241,6 +325,7 @@ async def test_a_payment_is_only_announced_once(
     session, acme_support, support_ops, finance_ops, operator
 ):
     await set_setting(session, wallet.WALLET_SETTING, ADDRESS)
+    await _baseline(session)
     chain = FakeChain([_payment("777")])
     gw = FakeGateway()
 
@@ -252,6 +337,7 @@ async def test_the_high_water_mark_is_kept(
     session, acme_support, support_ops, finance_ops, operator
 ):
     await set_setting(session, wallet.WALLET_SETTING, ADDRESS)
+    await _baseline(session)
     await wallet_watch.poll(
         session, FakeGateway(), FakeChain([_payment("777", at=NOW)])
     )
@@ -263,6 +349,7 @@ async def test_a_later_payment_is_still_announced(
     session, acme_support, support_ops, finance_ops, operator
 ):
     await set_setting(session, wallet.WALLET_SETTING, ADDRESS)
+    await _baseline(session)
     gw = FakeGateway()
     later = NOW + timedelta(minutes=30)
 
