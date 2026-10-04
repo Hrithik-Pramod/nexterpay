@@ -33,6 +33,7 @@ from app.bot.registry import (
     resolve_chat,
     resolve_staff,
     set_group_lead,
+    set_preferred_lead,
     upsert_staff,
 )
 from app.config import get_settings
@@ -723,12 +724,44 @@ async def cmd_setlead(message: Message) -> None:
             session, chat,
             telegram_user_id=target.id, display_name=target.full_name,
         )
+
+        # `/npsetlead always` or `/npsetlead XOF` marks the person this desk
+        # habitually asks. Jason, 2 October: "there will be key people in some
+        # group he always ask, so we can use lead to identify."
+        #
+        # An argument rather than a second command, because it is the same
+        # act - naming somebody - with one more fact attached, and a desk that
+        # has just learned one command should not have to learn another to say
+        # "this is the one".
+        argument = (message.text or "").split(maxsplit=1)
+        wanted = argument[1].strip() if len(argument) > 1 else ""
+        marked = ""
+
+        if wanted:
+            currency = None if wanted.lower() == "always" else wanted.upper()
+            if currency and not (len(currency) == 3 and currency.isalpha()):
+                await message.reply(
+                    f"{target.full_name} is now a named contact for this "
+                    f"group.\n\nI did not understand “{wanted}”. Use "
+                    f"/{cmd.SETLEAD} always for the usual contact, or "
+                    f"/{cmd.SETLEAD} XOF for a particular currency."
+                )
+                return
+            await set_preferred_lead(
+                session, chat, target.id, currency=currency,
+            )
+            marked = (
+                "\n\nThey are now the usual contact here"
+                + (f" for {currency}" if currency else "")
+                + " — they will be offered first when you address this group."
+            )
+
         logger.info("Named %s as a lead for chat %s", target.id, message.chat.id)
         names = [lead.display_name for lead in await leads_for(session, chat)]
 
     await message.reply(
         f"{target.full_name} is now a named contact for this group.\n"
-        f"Contacts: {', '.join(names)}."
+        f"Contacts: {', '.join(names)}.{marked}"
     )
 
 

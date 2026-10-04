@@ -31,7 +31,7 @@ from app.bot.deps import (
     refusal_reason,
     staff_context,
 )
-from app.bot.registry import leads_for, resolve_chat
+from app.bot.registry import leads_for, preferred_lead_for, resolve_chat
 from app.db.base import session_scope
 from app.db.models import Chat
 from app.domain.enums import ChatKind
@@ -60,7 +60,7 @@ def _counterparty_keyboard(chats) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _confirm(leads=None) -> InlineKeyboardMarkup:
+def _confirm(leads=None, preferred_id: int | None = None) -> InlineKeyboardMarkup:
     """Send to the room, or send addressed to the named contact.
 
     The same two-button shape as replying, and for the same reason. NexterPay
@@ -75,12 +75,28 @@ def _confirm(leads=None) -> InlineKeyboardMarkup:
 
     None at all when nobody has been named: a button that would do nothing
     needs explaining, and explaining it is worse than not offering it.
+
+    The person this desk always asks goes first and says so. Jason, 2 October:
+    "there will be key people in some group he always ask, so we can use lead
+    to identify."
+
+    Marked rather than chosen. The desk still taps; they just stop hunting for
+    the name in a list every time. Selecting it for them would be the platform
+    deciding who to address, which is a different thing from remembering who
+    they usually address - and this is the screen that exists to stop people
+    tapping without reading.
     """
     rows = [[InlineKeyboardButton(text="✉ Send and open", callback_data="ob:send")]]
-    for lead in leads or []:
+
+    ordered = list(leads or [])
+    if preferred_id is not None:
+        ordered.sort(key=lambda lead: lead.telegram_user_id != preferred_id)
+
+    for lead in ordered:
+        usual = " (usual)" if lead.telegram_user_id == preferred_id else ""
         rows.append(
             [InlineKeyboardButton(
-                text=f"✉ Send and tag {lead.display_name}"[:60],
+                text=f"✉ Send and tag {lead.display_name}{usual}"[:60],
                 callback_data=f"ob:sendtag:{lead.telegram_user_id}",
             )]
         )
@@ -239,11 +255,13 @@ async def capture(message: Message, state: FSMContext) -> None:
     subject = (body.splitlines()[0] if body else "")[:120] or "New request"
 
     # The contacts for the group they picked, if any have been named.
-    leads = []
+    leads, preferred_id = [], None
     async with session_scope() as session:
         target = await resolve_chat(session, data.get("to_chat_id"))
         if target is not None:
             leads = await leads_for(session, target)
+            usual = await preferred_lead_for(session, target)
+            preferred_id = usual.telegram_user_id if usual else None
 
     # Composed the same way the real message is, rather than assembled again
     # here. Two implementations of "what will they see" is how the preview came
@@ -255,7 +273,7 @@ async def capture(message: Message, state: FSMContext) -> None:
         f"This will open a new request with {data.get('to_title')} and send:\n\n"
         f"— — —\n{shown}\n— — —\n\n"
         f"Nothing has been sent yet.",
-        reply_markup=_confirm(leads),
+        reply_markup=_confirm(leads, preferred_id),
     )
 
 

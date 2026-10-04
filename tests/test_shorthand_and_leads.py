@@ -274,3 +274,89 @@ def test_every_path_to_a_counterparty_strips_the_shorthand() -> None:
             f"{node.name} composes text for a counterparty without stripping "
             f"the desk's #CODE shorthand out of it"
         )
+
+
+# --------------------------------------------------------------------------
+# The usual contact, where the desk actually sees it
+# --------------------------------------------------------------------------
+
+def test_the_usual_contact_is_offered_first():
+    """Jason, 2 October: "there will be key people in some group he always
+    ask, so we can use lead to identify."
+
+    The value is not that the platform knows - it is that the desk stops
+    hunting for the name in a list every time they address a group.
+    """
+    from app.bot.handlers.outbound import _confirm
+
+    class Lead:
+        def __init__(self, uid, name):
+            self.telegram_user_id, self.display_name = uid, name
+
+    markup = _confirm(
+        [Lead(900, "Amina"), Lead(901, "Marco")], preferred_id=901
+    )
+    labels = [row[0].text for row in markup.inline_keyboard]
+
+    assert "Marco" in labels[1], "the usual contact comes first"
+    assert "(usual)" in labels[1]
+    assert "Amina" in labels[2]
+    assert "(usual)" not in labels[2]
+
+
+def test_it_is_marked_rather_than_chosen():
+    """Selecting it for them would be the platform deciding who to address,
+    which is a different thing from remembering who they usually address -
+    and this is the screen that exists to stop people tapping without
+    reading."""
+    from app.bot.handlers.outbound import _confirm
+
+    class Lead:
+        def __init__(self, uid, name):
+            self.telegram_user_id, self.display_name = uid, name
+
+    markup = _confirm([Lead(901, "Marco")], preferred_id=901)
+
+    # Send to the room is still the first button, and still unaddressed.
+    assert markup.inline_keyboard[0][0].callback_data == "ob:send"
+
+
+def test_no_preference_changes_nothing():
+    from app.bot.handlers.outbound import _confirm
+
+    class Lead:
+        def __init__(self, uid, name):
+            self.telegram_user_id, self.display_name = uid, name
+
+    markup = _confirm([Lead(900, "Amina"), Lead(901, "Marco")])
+    labels = [row[0].text for row in markup.inline_keyboard]
+
+    assert "Amina" in labels[1] and "Marco" in labels[2]
+    assert not any("(usual)" in label for label in labels)
+
+
+def test_nobody_named_means_no_tag_buttons():
+    """A button that would do nothing needs explaining, and explaining it is
+    worse than not offering it."""
+    from app.bot.handlers.outbound import _confirm
+
+    markup = _confirm([], preferred_id=None)
+
+    assert [row[0].callback_data for row in markup.inline_keyboard] == [
+        "ob:send", "ob:cancel",
+    ]
+
+
+def test_setlead_takes_always_or_a_currency() -> None:
+    """Checked on the source: the argument is read, `always` means no
+    currency, and anything that is not three letters is refused rather than
+    stored as a currency nobody has."""
+    import pathlib
+
+    source = pathlib.Path("app/bot/handlers/admin.py").read_text(encoding="utf-8")
+    body = source[source.index("async def cmd_setlead"):]
+    body = body[: body.index("@router.message", 10)]
+
+    assert '"always"' in body
+    assert "set_preferred_lead(" in body
+    assert "isalpha()" in body, "a currency that is not three letters is refused"

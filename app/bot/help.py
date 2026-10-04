@@ -251,7 +251,8 @@ _ADMIN: list[tuple[str, str]] = [
     (cmd.REMOVEUSER + " [department]", "take one desk off somebody, or all of them"),
     (cmd.SETCODE + " <CODE>", "a counterparty's four letters - in their group"),
     (cmd.ADDPARTY + " <CODE> <name>", "a counterparty with no Telegram group"),
-    (cmd.SETLEAD, "name a contact in a counterparty group - as a reply to them"),
+    (cmd.SETLEAD, "name a contact in a counterparty group - as a reply to them; "
+     "add always, or a currency, to make them the usual one"),
     (cmd.LEADS, "who is named for a group"),
     (cmd.REMOVELEAD, "unname somebody - as a reply to them"),
 ]
