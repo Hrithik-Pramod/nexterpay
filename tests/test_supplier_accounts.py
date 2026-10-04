@@ -141,19 +141,32 @@ async def test_loading_the_list_twice_does_not_double_it(session):
 # --------------------------------------------------------------------------
 
 async def _awaiting(session, chat, operator, *, client_name, amount, subject):
+    """A deal awaiting settlement, for a named client.
+
+    The client is created here and put on the order, rather than taken from
+    the chat the request came through. Every request raised in one client
+    group belongs to that group's client, so building two deals for two
+    different clients out of one fixture chat is not possible - and the first
+    version of this helper did exactly that, renaming one client twice and
+    producing two orders that shared it.
+
+    The test that caught it was the one asserting the feature works, which
+    reported quite correctly that it did not: the narrowing had two orders for
+    the same client and nothing to narrow between.
+    """
     item = await wi.create_work_item(
         session, source_chat=chat, subject=subject,
         original_message="Please provide a rate.", raised_by_name="Gavs D",
     )
-    client = await session.get(Client, item.client_id)
-    client.name = client_name
-    if client.code is None:
-        client.code = client_name[:4].upper()
+    client = Client(name=client_name, code=client_name[:4].upper())
+    session.add(client)
     await session.flush()
 
     order = await fx.open_order(
         session, client=client, client_work_item=item, actor=Actor.of(operator)
     )
+    order.client_id = client.id
+    order.client_code = client.code
     order.currency_code = "XOF"
     order.supplier_code = "BBS"
     order.supplier_receives = Decimal(amount)
@@ -254,3 +267,42 @@ async def test_a_line_with_no_account_behaves_as_before(
     matches = await settlement.match_lines(session, parsed.lines)
 
     assert matches[0].matched
+
+
+async def test_one_client_with_two_identical_deals_is_still_ambiguous(
+    session, acme_support, support_ops, operator
+):
+    """The account cannot separate deals it does not distinguish.
+
+    Two deals for the *same* client, same currency, same amount, both running
+    through the same account. Everything the number knows is already true of
+    both, so the refusal stands - and it should, because this is one client
+    who is owed two payments and the platform has no way to tell which one
+    arrived.
+
+    Worth a test of its own because the first version of the fixture above
+    produced exactly this shape by accident while claiming to test the
+    opposite, and it passed for the wrong reason until the assertion failed.
+    """
+    first = await _awaiting(
+        session, acme_support, operator,
+        client_name="LuckyStar", amount="20100000", subject="a",
+    )
+    second = await _awaiting(
+        session, acme_support, operator,
+        client_name="LuckyStar2", amount="20100000", subject="b",
+    )
+    second.client_id = first.client_id
+    await session.flush()
+
+    await accounts.record(
+        session, supplier_code="BBS", number="1", client_name="LuckyStar"
+    )
+
+    parsed = settlement_text.parse(
+        "XOF: 20100000/585=34 358,974 ( 07/09/2026) Nexterpay 1"
+    )
+    matches = await settlement.match_lines(session, parsed.lines)
+
+    assert not matches[0].matched
+    assert "2 open deals" in matches[0].problem
