@@ -61,6 +61,12 @@ SPEAKING_HELPERS = (
                           # refusals. Earned the same way: see
                           # test_the_quote_step_always_speaks in
                           # test_quote_in_topic.py.
+    "_ask_for_a_missing_country",
+                          # fx.py - returns True only once it has asked the
+                          # desk where a settlement line paid out. A caller
+                          # that returns on True is handing the conversation
+                          # to that question, not giving up. Earned below in
+                          # test_the_country_question_is_always_asked_aloud.
 )
 
 # Bare returns that are correct, each with the reason written down. This list
@@ -177,6 +183,49 @@ def test_the_routing_exemptions_still_exist() -> None:
 
     stale = set(ROUTING_SILENCE) - names
     assert not stale, f"exemptions for handlers that no longer exist: {stale}"
+
+
+def test_the_country_question_is_always_asked_aloud() -> None:
+    """The exemption above is earned here rather than asserted.
+
+    `_ask_for_a_missing_country` returns True to mean "I have asked the desk
+    something and the conversation is now theirs". If a path through it ever
+    returned True without speaking, every caller that returns on True becomes
+    a silent dead end - which is precisely the fault this helper was written
+    to fix, where "Which country? Two letters, like CI or NG." arrived with
+    nothing listening for the answer.
+    """
+    from app.bot.handlers import fx as fx_handlers
+
+    tree = ast.parse(inspect.getsource(fx_handlers._ask_for_a_missing_country))
+    fn = tree.body[0]
+
+    returns_true = [
+        node for node in ast.walk(fn)
+        if isinstance(node, ast.Return)
+        and isinstance(node.value, ast.Constant)
+        and node.value.value is True
+    ]
+    assert returns_true, "the helper no longer reports that it asked"
+
+    for node in returns_true:
+        # Every `return True` must sit after a reply in the same block.
+        enclosing = [
+            parent for parent in ast.walk(fn)
+            if isinstance(parent, (ast.For, ast.If, ast.AsyncFunctionDef))
+            and node in getattr(parent, "body", [])
+        ]
+        assert enclosing, "could not find the block this return belongs to"
+        spoke = any(
+            "message.reply" in ast.unparse(stmt)
+            for parent in enclosing
+            for stmt in parent.body
+        )
+        assert spoke, (
+            "a path returns True without asking anything. Callers treat True "
+            "as 'the desk has been asked a question', and a silent True makes "
+            "every one of them give up without a word."
+        )
 
 
 def test_the_admin_refusal_helper_actually_replies() -> None:
