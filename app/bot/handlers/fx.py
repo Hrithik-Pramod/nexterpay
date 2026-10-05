@@ -48,7 +48,7 @@ from app.bot.deps import (
 from app.bot.registry import get_setting, set_setting
 from app.db.base import session_scope, utcnow
 from app.db.models import Chat, Client, FxOrder, Settlement, WorkItem
-from app.domain import fx, settlement, settlement_text
+from app.domain import corridors, fx, settlement, settlement_text
 from app.domain.enums import ChatKind, FxOrderStatus, FxSide, WorkItemStatus
 from app.domain.work_items import Actor
 from app.services import fx_relay, relay, wallet, wallet_watch
@@ -2398,6 +2398,11 @@ async def amend_capture_reason(message: Message, state: FSMContext) -> None:
 
 class FxSettle(StatesGroup):
     awaiting_block = State()
+    # Asked only when nothing else knows where a line paid out. See
+    # `_ask_for_a_missing_country`: this exists because the refusal used to
+    # come after the desk had already confirmed, phrased as a question nobody
+    # could answer.
+    awaiting_country = State()
 
 
 def settlement_preview(
@@ -2588,22 +2593,113 @@ async def settle_capture_block_from(
         )
         return
 
+    good = [m for m in matches if m.matched]
     await state.update_data(
-        settle_order_ids=[m.order.id for m in matches if m.matched],
-        settle_countries=[
-            (m.parsed.country_code or "") for m in matches if m.matched
-        ],
-        settle_amounts=[str(m.parsed.local_amount) for m in matches if m.matched],
-        settle_rates=[str(m.parsed.rate) for m in matches if m.matched],
+        settle_order_ids=[m.order.id for m in good],
+        settle_countries=[_country_for_line(m) for m in good],
+        settle_references=[m.order.display_reference for m in good],
+        settle_amounts=[str(m.parsed.local_amount) for m in good],
+        settle_rates=[str(m.parsed.rate) for m in good],
         settle_hash=parsed.tx_hash,
         settle_total=str(parsed.stated_total) if parsed.stated_total else None,
         settle_account=next(
-            (m.parsed.account for m in matches if m.matched and m.parsed.account),
-            None,
+            (m.parsed.account for m in good if m.parsed.account), None
         ),
+        settle_preview=preview,
     )
+
+    # A payout has to land somewhere, and `settlement.record` refuses without
+    # it. That refusal used to arrive *after* the desk had tapped Record, as
+    # "Which country? Two letters, like CI or NG." - which reads like a
+    # question, had no state behind it to catch the answer, and left the
+    # settlement unrecorded with no way forward. Seen live on 5 October:
+    # typing SN did nothing at all.
+    #
+    # So the question is asked here, where it is a real question, and only
+    # when it genuinely cannot be answered from what we already hold.
+    if await _ask_for_a_missing_country(message, state):
+        return
+
     await message.reply(
         preview,
+        parse_mode="HTML",
+        reply_markup=_action_keyboard("✅ Record this settlement", "fx:setsave"),
+    )
+
+
+def _country_for_line(match) -> str:
+    """Where this line paid out, from whatever already knows.
+
+    Three sources, in the order they deserve trust: the line itself, because
+    their blocks label by country ("CI - 50250000/583"); then the deal, which
+    was told when the order was built; then the currency, but only when it
+    names exactly one country. XOF names eight, so for XOF this gives nothing
+    and the desk is asked - which is the correct outcome, not a gap.
+    """
+    return (
+        match.parsed.country_code
+        or match.order.country_code
+        or corridors.sole_country(match.order.currency_code or "")
+        or ""
+    )
+
+
+async def _ask_for_a_missing_country(message: Message, state: FSMContext) -> bool:
+    """Ask about the first line with nowhere to land. True if we asked.
+
+    One at a time and named by its deal reference, because a block covering
+    four countries is their ordinary case and "which country?" would be an
+    impossible question across four lines at once.
+    """
+    data = await state.get_data()
+    countries = list(data.get("settle_countries") or [])
+    references = list(data.get("settle_references") or [])
+
+    for index, country in enumerate(countries):
+        if country:
+            continue
+        reference = references[index] if index < len(references) else "this deal"
+        await state.set_state(FxSettle.awaiting_country)
+        await state.update_data(settle_country_index=index)
+        await message.reply(
+            f"Which country did {reference} pay into? Two letters — "
+            f"SN, CI, CM, NG."
+        )
+        return True
+    return False
+
+
+@router.message(FxSettle.awaiting_country)
+async def settle_capture_country(message: Message, state: FSMContext) -> None:
+    """The answer to the question above, and then the next one or the preview."""
+    try:
+        country = corridors.parse_country_code(message.text or "")
+    except corridors.UnknownCountry as exc:
+        # Stays in the state deliberately: they are mid-answer, and dropping
+        # the whole settlement because somebody typed "Senegal" would make
+        # them paste the block again.
+        await message.reply(explain(exc))
+        return
+
+    data = await state.get_data()
+    countries = list(data.get("settle_countries") or [])
+    index = data.get("settle_country_index")
+    if index is None or index >= len(countries):
+        await state.clear()
+        await message.reply(
+            "That settlement has expired. Paste the block again."
+        )
+        return
+
+    countries[index] = country
+    await state.update_data(settle_countries=countries)
+
+    if await _ask_for_a_missing_country(message, state):
+        return
+
+    await state.set_state(FxSettle.awaiting_block)
+    await message.reply(
+        data.get("settle_preview") or "Ready to record.",
         parse_mode="HTML",
         reply_markup=_action_keyboard("✅ Record this settlement", "fx:setsave"),
     )

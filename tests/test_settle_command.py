@@ -22,11 +22,12 @@ platform thinks has been accounted for.
 
 from __future__ import annotations
 
+import pathlib
 from decimal import Decimal
 
 from app.bot.handlers import fx as handlers
 from app.db.models import Client
-from app.domain import fx, settlement, settlement_text
+from app.domain import corridors, fx, settlement, settlement_text
 from app.domain import work_items as wi
 from app.domain.enums import FxOrderStatus
 from app.domain.work_items import Actor
@@ -147,7 +148,7 @@ def test_only_one_place_decides_which_column_holds_the_local_amount():
     wallet matcher - and both got it wrong in the same way. A second copy of a
     decision is a second chance to make it differently.
     """
-    import pathlib
+
 
     offenders = []
     for path in sorted(pathlib.Path("app").rglob("*.py")):
@@ -176,6 +177,81 @@ def test_only_one_place_decides_which_column_holds_the_local_amount():
         "these read supplier_receives directly instead of asking "
         f"settlement.local_leg(): {unexpected}"
     )
+
+
+# --------------------------------------------------------------------------
+# Where the money landed
+# --------------------------------------------------------------------------
+#
+# `settlement.record` refuses a line with no country, and that refusal used to
+# arrive after the desk had already tapped Record, worded "Which country? Two
+# letters, like CI or NG." It reads like a question. It had no state behind it
+# to catch an answer, and the settlement was simply not recorded. Seen live on
+# 5 October: typing SN did nothing whatsoever.
+
+def _match(*, on_the_line=None, on_the_deal=None, currency="XOF"):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        parsed=SimpleNamespace(country_code=on_the_line),
+        order=SimpleNamespace(country_code=on_the_deal, currency_code=currency),
+    )
+
+
+def test_the_line_knows_best():
+    """Their blocks label by country: "CI - 50250000/583"."""
+    assert handlers._country_for_line(
+        _match(on_the_line="CI", on_the_deal="SN")
+    ) == "CI"
+
+
+def test_otherwise_the_deal_knows():
+    assert handlers._country_for_line(_match(on_the_deal="SN")) == "SN"
+
+
+def test_a_currency_with_one_country_answers_for_itself():
+    """NGN is Nigeria. Asking after they have typed NGN is a stage for
+    nothing, and stages are the thing NexterPay complained about."""
+    assert handlers._country_for_line(_match(currency="NGN")) == "NG"
+
+
+def test_xof_answers_nothing_and_that_is_correct():
+    """Eight countries. Picking one would put a payout in the wrong place on
+    the record, which is the reason country drives currency and never the
+    reverse."""
+    assert handlers._country_for_line(_match(currency="XOF")) == ""
+    assert corridors.sole_country("XAF") is None
+
+
+def test_there_is_a_state_waiting_for_the_answer():
+    """The fault was not the question, it was asking it with nothing
+    listening. A prompt with no state behind it is a dead end."""
+    assert hasattr(handlers.FxSettle, "awaiting_country")
+
+    source = pathlib.Path("app/bot/handlers/fx.py").read_text(encoding="utf-8")
+    assert "@router.message(FxSettle.awaiting_country)" in source, (
+        "nothing is registered to receive the country the desk types"
+    )
+
+
+def test_the_question_comes_before_the_button():
+    """Asked while the flow can still act on the answer, not after the desk
+    has confirmed and the state has been cleared."""
+    import ast
+
+    tree = ast.parse(
+        pathlib.Path("app/bot/handlers/fx.py").read_text(encoding="utf-8")
+    )
+    fn = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "settle_capture_block_from"
+    )
+    body = ast.unparse(fn)
+
+    assert body.index("_ask_for_a_missing_country") < body.index(
+        "fx:setsave"
+    ), "the Record button is offered before anybody is asked where it landed"
 
 
 # --------------------------------------------------------------------------
@@ -429,7 +505,7 @@ def test_the_save_claims_before_it_writes() -> None:
     """Same rule as every other door. Covered by test_every_outward_door for
     the ones that write to a counterparty; this one writes to the ledger, and
     a second tap would record the payment twice."""
-    import pathlib
+
 
     source = pathlib.Path("app/bot/handlers/fx.py").read_text(encoding="utf-8")
     body = source[source.index("async def settle_save"):]

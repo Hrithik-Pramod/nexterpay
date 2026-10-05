@@ -101,6 +101,20 @@ def countries_for(currency_code: str) -> tuple[str, ...]:
     return CURRENCY_COUNTRIES.get((currency_code or "").strip().upper(), ())
 
 
+def sole_country(currency_code: str) -> str | None:
+    """The country, when the currency names exactly one. Otherwise None.
+
+    The honest half of "country drives currency, never the reverse". The
+    derivation does not run for XOF or XAF - eight countries and six - and
+    this returns None there rather than picking one, which is the whole point.
+    But NGN is Nigeria and GHS is Ghana, and asking somebody to type NG after
+    they have already said NGN is a stage for nothing. NexterPay's complaint
+    through Jason on 2 October was that the platform has too many of those.
+    """
+    countries = countries_for(currency_code)
+    return countries[0] if len(countries) == 1 else None
+
+
 def is_shared(currency_code: str) -> bool:
     """Does this currency cover more than one country?
 
@@ -119,4 +133,5 @@ __all__ = [
     "currency_for",
     "is_shared",
     "parse_country_code",
+    "sole_country",
 ]
