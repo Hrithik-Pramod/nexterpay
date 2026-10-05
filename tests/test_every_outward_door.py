@@ -325,3 +325,90 @@ def test_no_door_composes_an_internal_reference(case) -> None:
             f"the counterparty sees - client_reference and supplier_reference "
             f"exist for exactly this."
         )
+
+
+# --------------------------------------------------------------------------
+# A deal that moves to Awaiting receipt must have told the client
+# --------------------------------------------------------------------------
+#
+# The fifth instance of the pattern this file was written for, found on
+# 6 October by recording the first settlement that ever got that far.
+#
+# `/nphash` - one deal, one hash - has always sent the client the notice and
+# the button that closes the deal. `/npsettle` - several deals on one payment,
+# which is what NexterPay asked for on 3 October and what their real traffic
+# looks like - recorded the payment, moved every covered order to Awaiting
+# receipt, and told nobody. The desk's own book then listed those deals under
+# "waiting on clients", for a confirmation no client had been asked for.
+#
+# Same shape as every entry at the top of this file: the behaviour was right
+# in the function where somebody thought of it, and absent in the one added
+# later. So this is enumerated rather than named.
+
+RECEIPT_WRITERS = {"record", "record_hash"}
+
+
+def _moves_to_awaiting_receipt(node: ast.AST) -> bool:
+    """Does this handler put a deal into Awaiting receipt?
+
+    Both routes run through the domain - `settlement.record` for a block,
+    `fx.record_hash` for a single deal - and both set the status themselves,
+    so a handler calling either has moved a deal whether it meant to or not.
+    """
+    for call in ast.walk(node):
+        if not isinstance(call, ast.Call):
+            continue
+        func = call.func
+        if not isinstance(func, ast.Attribute) or func.attr not in RECEIPT_WRITERS:
+            continue
+        owner = getattr(func.value, "id", "")
+        if owner in {"settlement", "fx"}:
+            return True
+    return False
+
+
+def _handlers_that_settle():
+    found = []
+    for path in sorted(HANDLERS.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.AsyncFunctionDef):
+                continue
+            if _moves_to_awaiting_receipt(node):
+                found.append((path.name, node))
+    return found
+
+
+def test_there_is_something_to_check() -> None:
+    """A finder that silently matches nothing passes for ever."""
+    assert _handlers_that_settle(), (
+        "no handler appears to record a settlement any more - if the flow "
+        "moved, point RECEIPT_WRITERS at wherever it went"
+    )
+
+
+@pytest.mark.parametrize(
+    "case", _handlers_that_settle(), ids=lambda c: f"{c[0]}::{c[1].name}"
+)
+def test_every_settlement_tells_the_client(case) -> None:
+    """Awaiting receipt means we are waiting on somebody who has been asked.
+
+    A deal sitting in that state with the client never told is worse than an
+    error: the desk reads its book, sees "waiting on clients", and chases a
+    client who has no idea the money has moved. Nothing anywhere says the
+    notice was missed.
+    """
+    filename, node = case
+    body = ast.unparse(node)
+
+    assert "send_settlement" in body, (
+        f"{filename}::{node.name} moves a deal to Awaiting receipt without "
+        f"calling fx_relay.send_settlement. The client is never told their "
+        f"money has gone, and never gets the button that closes the deal - "
+        f"while the book lists them as the one holding it up."
+    )
+    assert "receipt_keyboard" in body, (
+        f"{filename}::{node.name} sends the settlement without the Confirm "
+        f"receipt button, so the deal can never be closed from the client's "
+        f"side."
+    )

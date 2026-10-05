@@ -2817,11 +2817,52 @@ async def settle_save(query: CallbackQuery, state: FSMContext) -> None:
         reference = record.display_reference
         covered = [line.order.display_reference for line in lines]
 
-    await query.message.answer(
+        # Tell each client their money has gone, with the button that closes
+        # the deal.
+        #
+        # `/nphash` has always done this for a single deal. `/npsettle` - the
+        # multi-deal path NexterPay asked for on 3 October, and the one their
+        # real traffic actually uses - recorded the payment, moved every order
+        # to Awaiting receipt, and told nobody. The desk's book then said
+        # "waiting on the client" for a confirmation the client had never been
+        # asked for. Found on 6 October, recording the first settlement to get
+        # this far.
+        #
+        # The same `send_settlement` the single-deal path uses, deliberately:
+        # a second way of telling a client their money has moved is a second
+        # thing to keep true.
+        told: list[str] = []
+        failed: list[str] = []
+        for line in lines:
+            try:
+                await fx_relay.send_settlement(
+                    session, gateway(), line.order, actor=actor,
+                    keyboard=receipt_keyboard(line.order.id),
+                )
+                told.append(line.order.display_reference)
+            except Exception:
+                # One client's group being unreachable must not cost the
+                # others their notice, and must not read as success.
+                logger.exception(
+                    "Settlement notice failed for %s", line.order.display_reference
+                )
+                failed.append(line.order.display_reference)
+
+    body = (
         f"{reference} recorded against {len(covered)} deal"
-        f"{'' if len(covered) == 1 else 's'}: {', '.join(covered)}.\n\n"
-        f"Each is now awaiting the client's confirmation of receipt."
+        f"{'' if len(covered) == 1 else 's'}: {', '.join(covered)}."
     )
+    if told:
+        body += (
+            f"\n\n{len(told)} client{'' if len(told) == 1 else 's'} told, with "
+            f"a button to confirm receipt."
+        )
+    if failed:
+        body += (
+            f"\n\n⚠️ Could not reach the group for {', '.join(failed)}. "
+            f"The payment is recorded — they have not been told."
+        )
+    await query.message.answer(body)
 
 
 # --------------------------------------------------------------------------
