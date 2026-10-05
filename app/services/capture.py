@@ -50,6 +50,39 @@ RATE_LINE = re.compile(
 RATE_MIN = Decimal("0.01")
 RATE_MAX = Decimal("1000000")
 
+# How a figure is shown to the desk, as opposed to how it is held.
+#
+# USDT has six decimal places and the record keeps all of them, because that
+# is the precision the asset actually has. A prompt is a different job: this
+# one is meant to be taken in at a glance, beside the supplier's own message
+# that reads `39 309,469`, and `39,309.469409 USDT` next to it reads as noise
+# rather than as more care.
+#
+# Seen on the first live observation on 5 October. Three places matches how
+# they write it, and nothing here is what anybody acts on - the settlement
+# flow does its own arithmetic from the block when somebody says yes.
+SHOWN_PLACES = Decimal("0.001")
+
+
+def _shown(value: Decimal) -> str:
+    """A figure as the desk reads it: three places, trailing zeros trimmed.
+
+    A single remaining decimal is padded back to two, which is the same rule
+    `fx.format_money` follows and for the same reason written there: money
+    printed as 1250.5 looks like a typo to anyone in finance. Trimming 89.50
+    to 89.5 would make a rate look like a mistake in the one message meant to
+    be read at a glance.
+    """
+    rounded = value.quantize(SHOWN_PLACES)
+    text = f"{rounded:,f}"
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    if "." in text:
+        whole, _, fraction = text.partition(".")
+        if len(fraction) == 1:
+            text = f"{whole}.{fraction}0"
+    return text
+
 
 @dataclass(frozen=True)
 class Observation:
@@ -115,7 +148,7 @@ def observe(text: str | None) -> list[Observation]:
                 summary=(
                     f"{len(settlement.lines)} settlement line"
                     f"{'' if len(settlement.lines) == 1 else 's'}, "
-                    f"{total:,f} USDT"
+                    f"{_shown(total)} USDT"
                     + (" — with a hash" if settlement.tx_hash else "")
                 ),
                 payload={"text": body},
@@ -131,7 +164,7 @@ def observe(text: str | None) -> list[Observation]:
         found.append(
             Observation(
                 kind="rate",
-                summary=f"a rate for {currency} of {value:,f}",
+                summary=f"a rate for {currency} of {_shown(value)}",
                 payload={"currency": currency, "rate": str(value)},
             )
         )
@@ -139,4 +172,11 @@ def observe(text: str | None) -> list[Observation]:
     return found
 
 
-__all__ = ["RATE_LINE", "RATE_MAX", "RATE_MIN", "Observation", "observe"]
+__all__ = [
+    "RATE_LINE",
+    "RATE_MAX",
+    "RATE_MIN",
+    "SHOWN_PLACES",
+    "Observation",
+    "observe",
+]

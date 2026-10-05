@@ -116,8 +116,13 @@ def test_their_settlement_is_recognised():
     assert len(found) == 1
     assert found[0].kind == "settlement"
     assert "2 settlement lines" in found[0].summary
-    assert "39,309.469" in found[0].summary
     assert "with a hash" in found[0].summary
+
+    # Exactly as they wrote it - they sent "39 309,469". Six decimal places
+    # is USDT's real precision and what the record keeps; a prompt meant to
+    # be read at a glance, beside their own message, is a different job.
+    assert "39,309.469 USDT" in found[0].summary
+    assert "39,309.469409" not in found[0].summary
 
 
 def test_a_settlement_carries_the_block_so_nothing_is_retyped():
@@ -188,6 +193,15 @@ def test_nothing_here_decides_anything() -> None:
     assert not [
         node for node in ast.walk(tree) if isinstance(node, ast.Await)
     ]
+
+
+def test_a_rate_keeps_two_decimals_rather_than_looking_like_a_typo() -> None:
+    """The same rule `fx.format_money` follows, and for the reason written
+    there: money printed as 1250.5 looks like a mistake to anyone in finance.
+    89.50 stays 89.50."""
+    assert "89.50" in capture.observe("XOF: 89.50")[0].summary
+    assert "89.50" in capture.observe("XOF: 89.5")[0].summary
+    assert capture.observe("XOF: 583")[0].summary.endswith("583")
 
 
 def test_a_rate_has_to_be_a_plausible_number() -> None:
