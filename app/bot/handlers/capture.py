@@ -219,7 +219,12 @@ async def record(query: CallbackQuery, state: FSMContext) -> None:
     await query.message.answer(
         "Reading it as if you had pasted it:"
     )
-    await settle_capture_block_from(query.message, state, block)
+    # `query.message` is the bot's own observation post, so it says where to
+    # reply but not who is asking. `query.from_user` is the person who tapped,
+    # and the settlement flow needs them to check they are staff.
+    await settle_capture_block_from(
+        query.message, state, block, actor=query.from_user
+    )
 
 
 __all__ = ["HEADING", "observation_text", "record", "router", "watch"]

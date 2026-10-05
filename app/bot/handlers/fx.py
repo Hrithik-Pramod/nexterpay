@@ -32,6 +32,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
+    User,
 )
 from sqlalchemy import or_, select
 
@@ -2492,7 +2493,10 @@ async def settle_capture_block(message: Message, state: FSMContext) -> None:
 
 
 async def settle_capture_block_from(
-    message: Message, state: FSMContext, pasted: str
+    message: Message,
+    state: FSMContext,
+    pasted: str,
+    actor: User | None = None,
 ) -> None:
     """The settlement flow, given a block from wherever it came.
 
@@ -2502,8 +2506,19 @@ async def settle_capture_block_from(
     value of this flow; a capture path with its own copy would be a quieter
     way to record a payment, which is the shape of every expensive fault on
     this project.
+
+    `actor` exists because `message` is not always the person's message. When
+    the capture layer hands a block over, the message in hand is the **bot's
+    own** observation post, and `message.from_user` is therefore the bot -
+    which is not staff, so the whole flow refused with "You are not registered
+    as staff." Found live on 5 October, the first time anybody tapped Record.
+
+    The lesson is narrow and worth keeping: a message carries two separate
+    things - where to reply, and who is asking - and a callback splits them.
+    Callers that have a real person pass them in; `message.from_user` is only
+    the fallback for the paths where the message genuinely is the person's.
     """
-    user = message.from_user
+    user = actor or message.from_user
 
     async with session_scope() as session:
         ctx = await staff_context(session, message.chat.id, user.id if user else None)

@@ -168,3 +168,143 @@ def test_it_says_plainly_that_nothing_has_happened():
 
     text = observation_text("x", [Observation(kind="rate", summary="a rate")])
     assert "nothing has been recorded" in text.lower()
+
+
+# --------------------------------------------------------------------------
+# Who is asking
+# --------------------------------------------------------------------------
+#
+# Found live on 5 October, the first time anybody tapped Record: the flow
+# answered "You are not registered as staff." to a registered member of staff.
+#
+# A callback splits two things a message normally carries together - where to
+# reply, and who is asking. `query.message` is the **bot's own** post, so its
+# `from_user` is the bot; the person is `query.from_user`. Handing the bot's
+# message to a flow that works out identity from `message.from_user` asks the
+# platform whether the bot is staff, and it is not.
+#
+# Worth a test rather than a fix, because the failure was indistinguishable
+# from a permissions problem and would have had the desk editing staff records
+# to chase it.
+
+class _Person:
+    id = 4242
+    is_bot = False
+
+
+class _Bot:
+    id = 99
+    is_bot = True
+
+
+class _Post:
+    """The bot's own observation message - the one carrying the buttons."""
+
+    from_user = _Bot()
+
+    def __init__(self) -> None:
+        self.chat = type("c", (), {"id": -100})()
+        self.message_id = 7
+        self.said: list[str] = []
+
+    async def edit_reply_markup(self, **_kw) -> None:
+        return None
+
+    async def answer(self, text, **_kw):
+        self.said.append(text)
+        return None
+
+
+class _Query:
+    def __init__(self) -> None:
+        self.message = _Post()
+        self.from_user = _Person()
+
+    async def answer(self, *_a, **_kw) -> None:
+        return None
+
+
+class _State:
+    def __init__(self) -> None:
+        self.state = None
+
+    async def clear(self) -> None:
+        self.state = None
+
+    async def set_state(self, value) -> None:
+        self.state = value
+
+
+async def test_the_person_who_tapped_is_who_the_flow_asks_about(monkeypatch) -> None:
+    """Not the bot whose message the button is attached to."""
+    from app.bot.handlers import capture as handler
+
+    seen: dict = {}
+
+    async def fake_flow(message, state, pasted, actor=None):
+        seen["actor"] = actor
+        seen["pasted"] = pasted
+
+    monkeypatch.setattr(handler, "settle_capture_block_from", fake_flow)
+
+    query = _Query()
+    handler._PENDING[(query.message.chat.id, query.message.message_id)] = "XOF: 1/2"
+
+    await handler.record(query, _State())
+
+    assert seen.get("actor") is not None, (
+        "the settlement flow was given no actor, so it falls back to the "
+        "bot's own message and refuses a real member of staff"
+    )
+    assert seen["actor"].id == _Person.id
+    assert not getattr(seen["actor"], "is_bot", False)
+
+
+def test_the_settlement_flow_can_be_told_who_is_asking() -> None:
+    """The other half of the same fault, read off the flow itself.
+
+    `settle_capture_block_from` is called from two places: a message the
+    person typed, where `message.from_user` is right, and a button, where it
+    is the bot. It therefore has to accept an actor.
+    """
+    flow = ast.parse(
+        pathlib.Path("app/bot/handlers/fx.py").read_text(encoding="utf-8")
+    )
+    node = next(
+        n for n in ast.walk(flow)
+        if isinstance(n, ast.AsyncFunctionDef)
+        and n.name == "settle_capture_block_from"
+    )
+
+    names = [a.arg for a in node.args.args] + [
+        a.arg for a in node.args.kwonlyargs
+    ]
+    assert "actor" in names, (
+        "settle_capture_block_from works out who is asking from the message "
+        "it was handed. From a button that message is the bot's."
+    )
+
+
+def test_no_callback_handler_takes_identity_from_the_bots_own_message() -> None:
+    """The class, across every handler module.
+
+    `query.message.from_user` is the author of the message the button sits on,
+    which for every button this platform sends is the bot. Identity comes from
+    `query.from_user`.
+    """
+    offenders: list[str] = []
+
+    for path in sorted(pathlib.Path("app/bot/handlers").glob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.AsyncFunctionDef):
+                continue
+            body = ast.unparse(node)
+            if "query.message.from_user" in body:
+                offenders.append(f"{path.name}:{node.name}")
+
+    assert not offenders, (
+        "these read the author of the bot's own message as if it were the "
+        f"person who tapped: {offenders}"
+    )
