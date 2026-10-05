@@ -24,7 +24,7 @@ from aiogram.types import Message
 
 from app.bot import commands as cmd
 from app.bot import deps
-from app.bot.handlers import admin, bridge, broadcast, client, outbound, staff
+from app.bot.handlers import admin, bridge, broadcast, capture, client, outbound, staff
 from app.bot.handlers import fx as fx_handlers
 from app.bot.help import build as build_help
 from app.bot.registry import resolve_chat, resolve_staff
@@ -356,6 +356,11 @@ def build_dispatcher() -> Dispatcher:
     dp.include_router(bridge.router)
     dp.include_router(fx_handlers.router)
     dp.include_router(staff.router)
+    # Before the client router so it sees a counterparty's message first,
+    # and after everything that owns a command. It reads, tells the desk, and
+    # raises SkipHandler on every path - so what follows runs exactly as it
+    # did before it existed.
+    dp.include_router(capture.router)
     dp.include_router(client.router)
 
     # Included last, so it only sees what every other handler declined.

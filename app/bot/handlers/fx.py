@@ -2486,7 +2486,23 @@ async def settle_block(message: Message, state: FSMContext) -> None:
 
 @router.message(FxSettle.awaiting_block)
 async def settle_capture_block(message: Message, state: FSMContext) -> None:
-    pasted = message.text or message.caption or ""
+    await settle_capture_block_from(
+        message, state, message.text or message.caption or ""
+    )
+
+
+async def settle_capture_block_from(
+    message: Message, state: FSMContext, pasted: str
+) -> None:
+    """The settlement flow, given a block from wherever it came.
+
+    Split out so the capture layer can hand over a block the supplier posted
+    without a second implementation of any of this. The preview, the matching,
+    the discrepancy check and the refusal to choose between two deals are the
+    value of this flow; a capture path with its own copy would be a quieter
+    way to record a payment, which is the shape of every expensive fault on
+    this project.
+    """
     user = message.from_user
 
     async with session_scope() as session:

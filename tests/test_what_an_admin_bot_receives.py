@@ -48,6 +48,11 @@ KNOWN_OPEN_HANDLERS = {
     "topic_message",
     # Edits, guarded the same way: not an Operations Group, SkipHandler.
     "staff_edited_a_message",
+    # The capture layer, added 5 October and the reason the bot was promoted
+    # at all. Reads every counterparty message, says nothing in that group,
+    # and raises SkipHandler on every path - so it observes in front of the
+    # handlers above without changing what any of them receive.
+    "watch",
 }
 
 
