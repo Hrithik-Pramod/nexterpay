@@ -24,6 +24,7 @@ from app.bot.routing import IncomingMessage, build_strategy, our_message_behind
 from app.config import get_settings
 from app.db.base import session_scope
 from app.db.models import Department, WorkItem
+from app.domain import corridors, settlement_text
 from app.services import broadcast as broadcast_service
 from app.services import relay
 
@@ -387,10 +388,50 @@ def transaction_ids(text: str | None) -> list[str]:
     return TRANSACTION_ID.findall(text or "")
 
 
+def looks_like_desk_traffic(text: str) -> bool:
+    """Is this the FX desk talking, rather than somebody searching?
+
+    The digits rule behind `TRANSACTION_ID` was always loose - the comment
+    above it says so - and it was affordable while the bot only received
+    replies to its own messages. Promoting the bot to administrator on
+    5 October changed the arithmetic: it now sees every message in the group,
+    and a supplier writing `20100000` in the ordinary course of quoting is
+    indistinguishable from somebody pasting a reference.
+
+    Found by sending a plain number into an FX group to check the promotion
+    had worked. It had, and the nudge fired - which is the right answer to the
+    question I was asking and the wrong answer to the message.
+
+    Three signals, all of them things this codebase already understands:
+
+    * the line parses as a settlement line - `CI - 50250000/583` is a payment,
+      not a search;
+    * a currency this desk deals in appears beside the number, so `20100000
+      XOF` is an amount;
+    * two numbers separated by a slash, which is how every rate on this desk
+      is written.
+
+    Deliberately not country codes. They are two letters and collide with
+    ordinary words, and a rule that silenced the nudge whenever somebody wrote
+    "ML" or "NE" would be a worse mistake in the other direction.
+    """
+    for line in (text or "").splitlines():
+        if settlement_text.parse_line(line) is not None:
+            return True
+
+    words = {word.strip(":,.()").upper() for word in (text or "").split()}
+    if words & set(corridors.CURRENCY_COUNTRIES):
+        return True
+    if "USDT" in words:
+        return True
+
+    return bool(re.search(r"\d\s*/\s*\d", text or ""))
+
+
 def should_nudge(text: str | None, *, is_reply: bool) -> bool:
     """Whether a pasted reference should be answered with the format.
 
-    Three conditions, and the last two exist to keep the bot quiet.
+    Four conditions now, and three of them exist to keep the bot quiet.
 
     Not if they already used the command: that is the request working as
     intended, and answering would mean correcting somebody who got it right.
@@ -402,13 +443,17 @@ def should_nudge(text: str | None, *, is_reply: bool) -> bool:
 
     That second rule is mine rather than NexterPay's - they specified "sent
     without /orderstatus" and said nothing about replies - so it is written
-    here where it can be found and argued with.
+    here where it can be found and argued with. So is the third: desk traffic
+    is not a search, and it only became worth excluding once the bot could
+    see it.
     """
     if not text:
         return False
     if LOOKUP_COMMAND in text.lower():
         return False
     if is_reply:
+        return False
+    if looks_like_desk_traffic(text):
         return False
     return bool(transaction_ids(text))
 

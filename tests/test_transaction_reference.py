@@ -244,3 +244,70 @@ def test_the_decision_is_callable_from_a_test() -> None:
     """
     source = inspect.getsource(client.offer_lookup_format)
     assert "should_nudge(" in source
+
+
+# --------------------------------------------------------------------------
+# What changed when the bot became an administrator
+#
+# The digits rule was always loose - the comment above TRANSACTION_ID says so,
+# and calls a wrong nudge "a cheap wrong answer". That was true while the bot
+# only received replies to its own messages.
+#
+# Promoting it in the FX groups on 5 October changed the arithmetic. It now
+# sees every message, and a supplier writing 20100000 in the ordinary course
+# of quoting looks exactly like somebody pasting a reference. Found by sending
+# a plain number into an FX group to check the promotion had worked: it had,
+# and the nudge fired - the right answer to my question, the wrong answer to
+# the message.
+# --------------------------------------------------------------------------
+
+
+
+def test_a_settlement_line_is_not_a_search():
+    assert client.looks_like_desk_traffic("XOF: 20100000/585=34 358,974")
+    assert not client.should_nudge("XOF: 20100000/585=34 358,974", is_reply=False)
+
+
+def test_their_request_line_is_not_a_search():
+    line = "CI - 50250000/583=86,192.11  ( 07/09/2026) Nexterpay 5"
+    assert not client.should_nudge(line, is_reply=False)
+
+
+def test_an_amount_beside_a_currency_is_not_a_search():
+    assert not client.should_nudge("20100000 XOF", is_reply=False)
+    assert not client.should_nudge("can you do 5000000000 for XOF today", is_reply=False)
+
+
+def test_a_usdt_total_is_not_a_search():
+    assert not client.should_nudge("= 39 309,469 USDT", is_reply=False)
+
+
+def test_a_rate_written_as_a_fraction_is_not_a_search():
+    """Two numbers either side of a slash is how every rate on this desk is
+    written, and it is the shape their lines take."""
+    assert client.looks_like_desk_traffic("3000000/606")
+
+
+def test_a_bare_reference_still_nudges():
+    """The feature NexterPay asked for has to survive the exclusions."""
+    assert client.should_nudge("1234567890123", is_reply=False)
+
+
+def test_the_known_loose_case_is_unchanged():
+    """A bare nine billion with no currency beside it still reads as a
+    reference. That was NexterPay's call when the rule was written and nothing
+    about the promotion changes it - this records that it was considered
+    rather than missed."""
+    assert client.should_nudge("9000000000", is_reply=False)
+
+
+def test_ordinary_chatter_is_untouched():
+    assert not client.should_nudge("morning team", is_reply=False)
+    assert not client.looks_like_desk_traffic("morning team")
+
+
+def test_country_codes_are_deliberately_not_a_signal():
+    """Two letters collide with ordinary words. Silencing the nudge whenever
+    somebody wrote ML or NE would be a worse mistake in the other direction,
+    so only three-letter currencies count."""
+    assert not client.looks_like_desk_traffic("ML NE SN")
