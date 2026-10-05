@@ -20,7 +20,7 @@ from app.bot import commands as cmd
 from app.bot import keyboards as kb
 from app.bot.attachments import extract_attachments
 from app.bot.deps import client_context, gateway, prompt_for
-from app.bot.routing import IncomingMessage, build_strategy, replied_to_one_of_ours
+from app.bot.routing import IncomingMessage, build_strategy, our_message_behind
 from app.config import get_settings
 from app.db.base import session_scope
 from app.db.models import Department, WorkItem
@@ -499,12 +499,12 @@ async def client_reply(message: Message) -> None:
                 # The platform talking over a client's own conversation is
                 # worse than any message it could miss, so the check comes
                 # before anything is said rather than after.
-                aimed_at_us = await replied_to_one_of_ours(
+                anchor = await our_message_behind(
                     session,
                     telegram_chat_id=message.chat.id,
                     reply_to_message_id=incoming.reply_to_message_id,
                 )
-                if not aimed_at_us:
+                if anchor is None:
                     return
 
                 logger.info(

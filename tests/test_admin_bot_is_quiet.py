@@ -23,7 +23,7 @@ is before anything is said rather than after.
 
 from __future__ import annotations
 
-from app.bot.routing import replied_to_one_of_ours
+from app.bot.routing import our_message_behind
 from app.db.models import Message
 from app.domain import work_items as wi
 from app.domain.enums import MessageDirection
@@ -52,7 +52,7 @@ async def test_a_reply_to_one_of_our_messages_is_ours(
     )
     await _ours(session, acme_support, item, 5001)
 
-    assert await replied_to_one_of_ours(
+    assert await our_message_behind(
         session,
         telegram_chat_id=acme_support.telegram_chat_id,
         reply_to_message_id=5001,
@@ -67,21 +67,21 @@ async def test_two_people_replying_to_each_other_is_not(
     Nothing the platform sent has that message id, so it was not aimed at us -
     and the platform says nothing.
     """
-    assert not await replied_to_one_of_ours(
+    assert await our_message_behind(
         session,
         telegram_chat_id=acme_support.telegram_chat_id,
         reply_to_message_id=9999,
-    )
+    ) is None
 
 
 async def test_a_message_that_is_not_a_reply_is_not_ours(
     session, acme_support, support_ops
 ):
-    assert not await replied_to_one_of_ours(
+    assert await our_message_behind(
         session,
         telegram_chat_id=acme_support.telegram_chat_id,
         reply_to_message_id=None,
-    )
+    ) is None
 
 
 async def test_the_same_message_id_in_another_group_does_not_count(
@@ -95,11 +95,11 @@ async def test_the_same_message_id_in_another_group_does_not_count(
     )
     await _ours(session, acme_support, item, 5001)
 
-    assert not await replied_to_one_of_ours(
+    assert await our_message_behind(
         session,
         telegram_chat_id=acme_compliance.telegram_chat_id,
         reply_to_message_id=5001,
-    )
+    ) is None
 
 
 def test_the_handler_checks_before_it_speaks() -> None:
@@ -114,5 +114,5 @@ def test_the_handler_checks_before_it_speaks() -> None:
     source = pathlib.Path("app/bot/handlers/client.py").read_text(encoding="utf-8")
     body = source[source.index("async def client_reply"):]
 
-    assert body.index("replied_to_one_of_ours(") < body.index("unrouted_notice(")
-    assert body.index("replied_to_one_of_ours(") < body.index("await message.reply(notice)")
+    assert body.index("our_message_behind(") < body.index("unrouted_notice(")
+    assert body.index("our_message_behind(") < body.index("await message.reply(notice)")

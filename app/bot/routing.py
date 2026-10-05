@@ -128,10 +128,18 @@ def build_strategy(name: str) -> ReplyRoutingStrategy:
         ) from None
 
 
-async def replied_to_one_of_ours(
+async def our_message_behind(
     session: AsyncSession, *, telegram_chat_id: int, reply_to_message_id: int | None
-) -> bool:
-    """Did this reply point at a message the platform sent?
+) -> Message | None:
+    """The message of ours this reply was aimed at, or None.
+
+    Named and shaped like `broadcast_behind` beside it, and returning the row
+    rather than a boolean for a reason beyond tidiness: a handler that ends
+    `if anchor is None: return` is saying "this lookup found nothing", which
+    is the one silence this codebase's refusal guard exempts by name. A
+    boolean would have made the same correct silence read as a handler giving
+    up without a word, and the honest fix for that is to say the true thing
+    rather than widen the guard.
 
     Needed the moment the bot becomes an administrator, and not before.
 
@@ -146,11 +154,11 @@ async def replied_to_one_of_ours(
     message it could miss, so this is checked before anything is said.
     """
     if reply_to_message_id is None:
-        return False
+        return None
     result = await session.execute(
         select(Message).where(
             Message.telegram_chat_id == telegram_chat_id,
             Message.telegram_message_id == reply_to_message_id,
         )
     )
-    return result.scalar_one_or_none() is not None
+    return result.scalar_one_or_none()
