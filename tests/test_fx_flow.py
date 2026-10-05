@@ -410,6 +410,46 @@ def test_an_unknown_chain_gets_no_link_rather_than_a_wrong_one() -> None:
     assert fx.explorer_link("ethereum", "0xabc") is None
 
 
+@pytest.mark.parametrize("missing", ["", "   ", None])
+def test_no_hash_means_no_link(missing) -> None:
+    """A settlement from a pasted block often has no hash yet.
+
+    Their supplier sends the figures and the proof as two messages, which is
+    why `/nphash` can attach one later. Without this the client was sent
+    `https://tronscan.org/#/transaction/` - a live link to a page about
+    nothing, directly under the words "has been settled". Seen on 6 October in
+    the first settlement notice a client ever received.
+    """
+    assert fx.explorer_link("tron", missing or "") is None
+
+
+def test_a_settlement_with_no_hash_does_not_mention_one() -> None:
+    """"Transaction: None" is worse than silence about it."""
+    from types import SimpleNamespace
+
+    from app.services import fx_relay
+
+    order = SimpleNamespace(
+        chain="tron",
+        tx_hash=None,
+        currency_code="XOF",
+        client_reference="FXACME-1003",
+        client_receives=Decimal("10065000"),
+        client_receives_currency="XOF",
+        client_pays=Decimal("16500"),
+        client_pays_currency="EUR",
+        client_rate=Decimal("610"),
+        client_account_name="Acme Payments",
+    )
+
+    body = fx_relay.settlement_text(order)
+
+    assert "None" not in body
+    assert "tronscan" not in body
+    assert "has been settled" in body
+    assert "confirm" in body.lower()
+
+
 @pytest.mark.parametrize(
     "text,expected",
     [

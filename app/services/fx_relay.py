@@ -97,12 +97,20 @@ def settlement_text(order: FxOrder) -> str:
         f"{view.reference} has been settled.",
         "",
         fx.format_money(view.receives) + f" {view.receives_currency or ''}".rstrip(),
-        "",
-        f"Transaction: {order.tx_hash}",
     ]
-    link = fx.explorer_link(order.chain, order.tx_hash or "")
-    if link:
-        lines.append(link)
+
+    # A settlement recorded from a pasted block may not carry a hash yet -
+    # their supplier sends the figures and the proof as two messages, and
+    # `/nphash` exists to attach the second one later. The client was being
+    # told "Transaction: None", followed by a bare Tronscan link to nothing.
+    #
+    # Saying nothing is better than saying None: the figure and the request to
+    # confirm are the message, and the proof follows when it arrives.
+    if (order.tx_hash or "").strip():
+        lines += ["", f"Transaction: {order.tx_hash}"]
+        link = fx.explorer_link(order.chain, order.tx_hash)
+        if link:
+            lines.append(link)
     lines.append("")
     lines.append("Please confirm once you have received it.")
     return "\n".join(lines)

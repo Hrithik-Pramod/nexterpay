@@ -171,8 +171,19 @@ def check_hash(text: str) -> str:
 
 
 def explorer_link(chain: str, tx_hash: str) -> str | None:
+    """A link to look the payment up, or None when there is nothing to look up.
+
+    The empty-hash guard is not defensive tidiness. A settlement pasted as a
+    block often has no hash on it - their supplier sends the figures and the
+    proof as two messages - and without this the client was sent
+    `https://tronscan.org/#/transaction/` on its own: a live link to a page
+    about nothing, under the words "has been settled". Seen on 6 October, in
+    the first settlement notice a client ever received.
+    """
     template = EXPLORERS.get((chain or "").lower())
-    return template.format(hash=tx_hash) if template else None
+    if not template or not (tx_hash or "").strip():
+        return None
+    return template.format(hash=tx_hash.strip())
 
 
 # --------------------------------------------------------------------------
