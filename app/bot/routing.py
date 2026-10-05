@@ -126,3 +126,31 @@ def build_strategy(name: str) -> ReplyRoutingStrategy:
         raise ValueError(
             f"Unknown routing strategy {name!r}; expected one of {sorted(_REGISTRY)}"
         ) from None
+
+
+async def replied_to_one_of_ours(
+    session: AsyncSession, *, telegram_chat_id: int, reply_to_message_id: int | None
+) -> bool:
+    """Did this reply point at a message the platform sent?
+
+    Needed the moment the bot becomes an administrator, and not before.
+
+    Under privacy mode Telegram only delivers replies to the bot's own
+    messages, so "this is a reply" and "this is a reply to us" were the same
+    fact and the platform could treat them as one. An administrator bot
+    receives every message in the group, including two people in a client's
+    group replying to each other - and the unrouted notice would then tell
+    them we could not match their conversation to one of their requests.
+
+    The platform butting into a client's own conversation is worse than any
+    message it could miss, so this is checked before anything is said.
+    """
+    if reply_to_message_id is None:
+        return False
+    result = await session.execute(
+        select(Message).where(
+            Message.telegram_chat_id == telegram_chat_id,
+            Message.telegram_message_id == reply_to_message_id,
+        )
+    )
+    return result.scalar_one_or_none() is not None

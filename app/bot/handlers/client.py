@@ -20,7 +20,7 @@ from app.bot import commands as cmd
 from app.bot import keyboards as kb
 from app.bot.attachments import extract_attachments
 from app.bot.deps import client_context, gateway, prompt_for
-from app.bot.routing import IncomingMessage, build_strategy
+from app.bot.routing import IncomingMessage, build_strategy, replied_to_one_of_ours
 from app.config import get_settings
 from app.db.base import session_scope
 from app.db.models import Department, WorkItem
@@ -486,6 +486,27 @@ async def client_reply(message: Message) -> None:
             if replied_to is not None:
                 opened_from_broadcast = _broadcast_context(replied_to)
             else:
+                # Only answer a reply that was aimed at us.
+                #
+                # Under privacy mode these were the same fact: Telegram only
+                # delivered replies to the bot's own messages, so "is a reply"
+                # meant "is a reply to us". An administrator bot receives
+                # everything, including two people in a client's group
+                # replying to each other - and the notice below would tell
+                # them we could not match their conversation to one of their
+                # requests.
+                #
+                # The platform talking over a client's own conversation is
+                # worse than any message it could miss, so the check comes
+                # before anything is said rather than after.
+                aimed_at_us = await replied_to_one_of_ours(
+                    session,
+                    telegram_chat_id=message.chat.id,
+                    reply_to_message_id=incoming.reply_to_message_id,
+                )
+                if not aimed_at_us:
+                    return
+
                 logger.info(
                     "Unrouted client message in chat %s: reply_to=%s",
                     message.chat.id, incoming.reply_to_message_id,
