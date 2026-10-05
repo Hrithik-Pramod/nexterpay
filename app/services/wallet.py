@@ -39,6 +39,11 @@ from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Protocol
 
+# The one module that decides which column holds the local amount. Imported
+# rather than copied: this file and `settlement.py` each made the same wrong
+# choice independently, which is what two copies of a decision buys you.
+from app.domain import settlement
+
 logger = logging.getLogger(__name__)
 
 # USDT on Tron. Six decimals, so the raw integer in a transfer is micro-USDT.
@@ -278,7 +283,12 @@ def candidates_from_orders(orders: list) -> list[Candidate]:
     built = []
     for order in orders:
         rate = order.supplier_rate or order.client_rate
-        local = order.supplier_receives
+        # The local amount is what the supplier SENDS - `supplier_pays`.
+        # `supplier_receives` is the USDT, and dividing that by the rate again
+        # gives a figure no payment will ever be for. This read the wrong
+        # column until 5 October; `settlement.local_leg` carries the full note
+        # and is the one place that decides which column this is.
+        _, local = settlement.local_leg(order)
         if not rate or not local or rate <= 0:
             continue
         built.append(

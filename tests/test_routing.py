@@ -19,6 +19,7 @@ from app.bot.routing import (
     IncomingMessage,
     MostRecentOpenItemStrategy,
     ReplyToAcknowledgementStrategy,
+    answering_our_last_message,
     build_strategy,
 )
 from app.db.models import Message
@@ -98,6 +99,93 @@ async def test_fresh_message_resolves_to_nothing(session, acme_support, support_
     )
 
     assert await strategy.resolve(session, acme_support, incoming) is None
+
+
+# --------------------------------------------------------------------------
+# Answering a question we asked, without using Telegram's reply
+# --------------------------------------------------------------------------
+#
+# Found live on 5 October. The platform asked a client, in their own group,
+# "How much would you like to trade at this rate? Reply here and we will send
+# the order through for you to confirm." The client typed an answer. It was
+# dropped: not relayed, not queried, nothing in the Operations Group at all,
+# and the desk sat waiting for a figure that had already been given.
+
+async def _said_by_client(session, chat, item, *, message_id, text):
+    session.add(
+        Message(
+            work_item_id=item.id,
+            direction=MessageDirection.INBOUND,
+            telegram_chat_id=chat.telegram_chat_id,
+            telegram_message_id=message_id,
+            sender_name="Tom Baker",
+            text=text,
+        )
+    )
+    await session.flush()
+
+
+async def test_a_typed_answer_reaches_the_request_we_asked_about(
+    session, acme_support, support_ops
+):
+    """We spoke last, so they are answering us."""
+    item = await _item_with_ack(
+        session, acme_support, subject="Rate", ack_message_id=100
+    )
+
+    found = await answering_our_last_message(
+        session, telegram_chat_id=acme_support.telegram_chat_id
+    )
+    assert found is not None and found.id == item.id
+
+
+async def test_it_stops_once_they_have_answered(
+    session, acme_support, support_ops
+):
+    """One question collects one answer, not the rest of the morning.
+
+    This is the whole difference between this and `MostRecentOpenItemStrategy`
+    next door, which attaches any stray message to whatever was touched most
+    recently and is "occasionally wrong in a way nobody notices". Once the
+    client has spoken, the newest message in the group is theirs, and two
+    people in a client's group talking to each other no longer lands on a
+    request.
+    """
+    item = await _item_with_ack(
+        session, acme_support, subject="Rate", ack_message_id=100
+    )
+    await _said_by_client(
+        session, acme_support, item, message_id=101, text="20,130,000 XOF",
+    )
+
+    assert await answering_our_last_message(
+        session, telegram_chat_id=acme_support.telegram_chat_id
+    ) is None
+
+
+async def test_a_group_we_have_not_spoken_in_routes_nothing(
+    session, acme_support, support_ops
+):
+    assert await answering_our_last_message(
+        session, telegram_chat_id=acme_support.telegram_chat_id
+    ) is None
+
+
+async def test_a_closed_request_does_not_collect_answers(
+    session, acme_support, support_ops
+):
+    """The last thing we said may have been "this is now closed"."""
+    from app.domain.enums import WorkItemStatus
+
+    item = await _item_with_ack(
+        session, acme_support, subject="Rate", ack_message_id=100
+    )
+    item.status = WorkItemStatus.CLOSED
+    await session.flush()
+
+    assert await answering_our_last_message(
+        session, telegram_chat_id=acme_support.telegram_chat_id
+    ) is None
 
 
 async def test_fallback_strategy_attaches_to_most_recent(session, acme_support, support_ops):

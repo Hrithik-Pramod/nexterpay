@@ -72,9 +72,26 @@ async def _awaiting(session, acme_support, operator, *, local, rate, subject="de
     order = await fx.open_order(
         session, client=client, client_work_item=item, actor=Actor.of(operator)
     )
-    order.supplier_receives = Decimal(local)
-    order.supplier_rate = Decimal(rate)
     order.currency_code = "XOF"
+    order.status = FxOrderStatus.AWAITING_SUPPLIER_ACCEPTANCE
+    await session.flush()
+
+    # Built through the real flow. `local` is what the supplier sends, which
+    # the order flow puts in `supplier_pays`; assigning it to
+    # `supplier_receives` here is what let the wallet matcher read the wrong
+    # column for a fortnight without a single test objecting.
+    sends = Decimal(local)
+    supplier_rate = Decimal(rate)
+    await fx.create_supplier_order(
+        session, order,
+        account_name="Nexterpay 5",
+        rate=supplier_rate,
+        pays=sends,
+        pays_currency="XOF",
+        receives=(sends / supplier_rate).quantize(Decimal("0.000001")),
+        receives_currency="USDT",
+        actor=Actor.of(operator),
+    )
     order.status = FxOrderStatus.AWAITING_SETTLEMENT
     await session.flush()
     return order

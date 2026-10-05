@@ -178,7 +178,24 @@ async def _awaiting(
     order.client_code = client.code
     order.currency_code = "XOF"
     order.supplier_code = "BBS"
-    order.supplier_receives = Decimal(amount)
+    order.status = FxOrderStatus.AWAITING_SUPPLIER_ACCEPTANCE
+    await session.flush()
+
+    # Through the real flow, not by assignment: the local amount belongs in
+    # `supplier_pays`, and a fixture that puts it in `supplier_receives`
+    # builds an order the platform cannot produce. See `_awaiting` in
+    # test_settle_command.py for what that cost on 5 October.
+    sends = Decimal(amount)
+    await fx.create_supplier_order(
+        session, order,
+        account_name="Nexterpay 5",
+        rate=Decimal("585"),
+        pays=sends,
+        pays_currency="XOF",
+        receives=(sends / Decimal("585")).quantize(Decimal("0.000001")),
+        receives_currency="USDT",
+        actor=Actor.of(operator),
+    )
     order.status = FxOrderStatus.AWAITING_SETTLEMENT
     await session.flush()
     return order

@@ -2431,11 +2431,17 @@ def settlement_preview(
         lines.append(f"<b>Payment says:</b> {fx.format_money(stated_total)} USDT")
         difference = stated_total - expected
         if settlement.is_material(difference):
-            direction = "short" if difference < 0 else "over"
+            # Two phrasings rather than one word slotted into a fixed
+            # sentence: "over" and "short" do not take the same preposition,
+            # and the single-word version read "over of what these deals come
+            # to" every time a payment was too large.
+            direction = (
+                "short of" if difference < 0 else "more than"
+            )
             lines += [
                 "",
                 f"🔴 <b>The payment is {fx.format_money(abs(difference))} USDT "
-                f"{direction} of what these deals come to.</b> Worth checking "
+                f"{direction} what these deals come to.</b> Worth checking "
                 f"before this is recorded.",
             ]
 

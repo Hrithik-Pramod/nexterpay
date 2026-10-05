@@ -277,6 +277,38 @@ class Match:
         return self.order is not None and self.problem is None
 
 
+def local_leg(order: FxOrder) -> tuple[str | None, Decimal | None]:
+    """What the supplier sends out, and the currency it is in.
+
+    This exists because reading the wrong one of these two columns is a
+    mistake the platform has already made, in two separate places, and shipped.
+
+    An order has four money columns. `supplier_pays` is what the supplier
+    sends - the local currency, paid out to the beneficiary - and
+    `supplier_receives` is the USDT we send them for it. The order flow fills
+    them from two questions in that order: "what does the supplier send?" then
+    "what do they receive?".
+
+    A settlement line is about the first of those. `XOF: 20130000/585` says
+    the supplier paid out 20,130,000 XOF; the USDT on the line is that figure
+    divided by the rate, which is what we owe them. Matching a line against
+    `supplier_receives` compares XOF to USDT and finds nothing, for ever.
+
+    Found on 5 October by building a deal through the platform's own flow and
+    then settling it: the line matched the order exactly and the platform said
+    "no open deal for that amount". 1,120 tests passed over it, because every
+    fixture set `supplier_receives` to the local amount by hand - an order the
+    platform itself cannot produce.
+
+    The currency comes back with the amount rather than being read separately,
+    which is the actual lesson: these two belong together, and every caller
+    that split them got it wrong. `currency_code` is the fallback only for
+    rows written before the per-leg currency existed.
+    """
+    currency = order.supplier_pays_currency or order.currency_code
+    return (currency.upper() if currency else None), order.supplier_pays
+
+
 async def _settleable_orders(session: AsyncSession) -> list[FxOrder]:
     result = await session.execute(
         select(FxOrder)
@@ -314,13 +346,15 @@ async def match_lines(session: AsyncSession, parsed_lines: list) -> list[Match]:
             matches.append(Match(number, line, None, "unknown currency"))
             continue
 
-        fits = [
-            order for order in candidates
-            if order.id not in taken
-            and order.currency_code == currency
-            and order.supplier_receives is not None
-            and order.supplier_receives == line.local_amount
-        ]
+        fits = []
+        for order in candidates:
+            if order.id in taken:
+                continue
+            order_currency, order_amount = local_leg(order)
+            if order_currency != currency or order_amount is None:
+                continue
+            if order_amount == line.local_amount:
+                fits.append(order)
 
         # The account number on the line, where there is one, narrows further.
         #
@@ -408,6 +442,7 @@ __all__ = [
     "discrepancy",
     "expected_total",
     "is_material",
+    "local_leg",
     "record",
     "settlement_for",
 ]

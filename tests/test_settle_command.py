@@ -33,10 +33,25 @@ from app.domain.work_items import Actor
 
 
 async def _awaiting(
-    session, acme_support, operator, *, currency, supplier_receives,
-    country=None, subject="deal",
+    session, acme_support, operator, *, currency, supplier_sends,
+    rate="585", country=None, subject="deal",
 ):
-    """A deal waiting on settlement, for the amount a supplier will send."""
+    """A deal waiting on settlement, for the amount a supplier will send.
+
+    Built through `fx.create_supplier_order` rather than by assigning columns,
+    and that is the whole point of this helper.
+
+    It used to set `order.supplier_receives = <the local amount>` directly.
+    That is an order the platform cannot produce - the order flow puts the
+    local amount in `supplier_pays` and the USDT in `supplier_receives` - and
+    because the matcher happened to read the same wrong column, every test
+    here passed while the feature could not match a single real deal. Found on
+    5 October by driving one deal through the platform end to end.
+
+    The rule this encodes: a fixture that writes columns a flow would never
+    write together is not a shortcut, it is a second implementation of the
+    flow, and the suite then tests the two copies against each other.
+    """
     item = await wi.create_work_item(
         session,
         source_chat=acme_support,
@@ -53,7 +68,21 @@ async def _awaiting(
     )
     order.currency_code = currency
     order.country_code = country
-    order.supplier_receives = Decimal(supplier_receives)
+    order.status = FxOrderStatus.AWAITING_SUPPLIER_ACCEPTANCE
+    await session.flush()
+
+    sends = Decimal(supplier_sends)
+    supplier_rate = Decimal(rate)
+    await fx.create_supplier_order(
+        session, order,
+        account_name="Nexterpay 5",
+        rate=supplier_rate,
+        pays=sends,
+        pays_currency=currency,
+        receives=(sends / supplier_rate).quantize(Decimal("0.000001")),
+        receives_currency="USDT",
+        actor=Actor.of(operator),
+    )
     order.status = FxOrderStatus.AWAITING_SETTLEMENT
     await session.flush()
     return order
@@ -68,6 +97,88 @@ XOF: 20100000/585=34 358,974
 
 
 # --------------------------------------------------------------------------
+# The column the amount lives in
+# --------------------------------------------------------------------------
+#
+# Found live on 5 October, and the most expensive kind of fault this project
+# produces: everything passed, and the feature could not match a single deal
+# the platform itself had made.
+
+async def test_a_deal_built_by_the_platform_is_matched_by_its_own_settlement(
+    session, acme_support, support_ops, operator
+):
+    """The one test that would have caught it.
+
+    `_awaiting` goes through `fx.create_supplier_order`, so the order here has
+    its columns where the order flow puts them: the local amount in
+    `supplier_pays`, the USDT in `supplier_receives`. The matcher read the
+    second one, compared XOF against USDT, and found nothing - for every deal,
+    every time.
+
+    Deliberately asserts the columns too. Matching correctly for the wrong
+    reason is how this survived a fortnight.
+    """
+    deal = await _awaiting(
+        session, acme_support, operator, currency="XOF",
+        supplier_sends="20130000", rate="585", country="SN",
+    )
+
+    assert deal.supplier_pays == Decimal("20130000"), (
+        "the local amount belongs in supplier_pays - this is the fixture "
+        "lying if it fails"
+    )
+    assert deal.supplier_receives_currency == "USDT"
+
+    parsed = settlement_text.parse("XOF: 20130000/585")
+    matches = await settlement.match_lines(session, parsed.lines)
+
+    assert matches[0].matched, (
+        "a settlement line for exactly this order found no open deal. The "
+        "matcher is reading a different column from the one the order flow "
+        "writes."
+    )
+    assert matches[0].order.id == deal.id
+
+
+def test_only_one_place_decides_which_column_holds_the_local_amount():
+    """`settlement.local_leg`, and nothing else.
+
+    Two modules worked this out independently - the settlement matcher and the
+    wallet matcher - and both got it wrong in the same way. A second copy of a
+    decision is a second chance to make it differently.
+    """
+    import pathlib
+
+    offenders = []
+    for path in sorted(pathlib.Path("app").rglob("*.py")):
+        if path.as_posix().endswith("app/domain/settlement.py"):
+            continue
+        text = path.read_text(encoding="utf-8")
+        for number, line in enumerate(text.splitlines(), start=1):
+            stripped = line.strip()
+            if stripped.startswith("#") or stripped.startswith("*"):
+                continue
+            if ".supplier_receives" in line and "_currency" not in line:
+                offenders.append(f"{path.as_posix()}:{number}")
+
+    # Reading it to show it, or to copy it onto an order, is fine. Reading it
+    # to match an amount against is the mistake, and the only way to be sure
+    # is to have one function own the question.
+    allowed_prefixes = (
+        "app/domain/fx.py",        # writes it, and renders it on the order
+        "app/services/fx_relay.py",  # prints it to the supplier
+    )
+    unexpected = [
+        where for where in offenders
+        if not where.startswith(allowed_prefixes)
+    ]
+    assert not unexpected, (
+        "these read supplier_receives directly instead of asking "
+        f"settlement.local_leg(): {unexpected}"
+    )
+
+
+# --------------------------------------------------------------------------
 # Matching
 # --------------------------------------------------------------------------
 
@@ -76,11 +187,11 @@ async def test_their_block_matches_both_deals(
 ):
     cm = await _awaiting(
         session, acme_support, operator, currency="XAF",
-        supplier_receives="3000000", country="CM", subject="a",
+        supplier_sends="3000000", country="CM", subject="a",
     )
     sn = await _awaiting(
         session, acme_support, operator, currency="XOF",
-        supplier_receives="20100000", country="SN", subject="b",
+        supplier_sends="20100000", country="SN", subject="b",
     )
 
     parsed = settlement_text.parse(THEIR_BLOCK)
@@ -95,7 +206,7 @@ async def test_a_line_with_no_open_deal_is_reported_not_dropped(
 ):
     await _awaiting(
         session, acme_support, operator, currency="XAF",
-        supplier_receives="3000000", country="CM",
+        supplier_sends="3000000", country="CM",
     )
 
     parsed = settlement_text.parse(THEIR_BLOCK)
@@ -115,11 +226,11 @@ async def test_two_deals_for_the_same_amount_are_refused(
     """
     first = await _awaiting(
         session, acme_support, operator, currency="XOF",
-        supplier_receives="20100000", country="SN", subject="a",
+        supplier_sends="20100000", country="SN", subject="a",
     )
     second = await _awaiting(
         session, acme_support, operator, currency="XOF",
-        supplier_receives="20100000", country="CI", subject="b",
+        supplier_sends="20100000", country="CI", subject="b",
     )
 
     parsed = settlement_text.parse("XOF: 20100000/585=34 358,974")
@@ -138,7 +249,7 @@ async def test_one_order_cannot_answer_two_lines(
     settlement would appear to cover twice what it does."""
     await _awaiting(
         session, acme_support, operator, currency="XOF",
-        supplier_receives="20100000", country="SN",
+        supplier_sends="20100000", country="SN",
     )
 
     parsed = settlement_text.parse(
@@ -155,7 +266,7 @@ async def test_a_deal_not_awaiting_settlement_is_not_a_candidate(
 ):
     order = await _awaiting(
         session, acme_support, operator, currency="XOF",
-        supplier_receives="20100000", country="SN",
+        supplier_sends="20100000", country="SN",
     )
     order.status = FxOrderStatus.AWAITING_CLIENT_CONFIRMATION
     await session.flush()
@@ -172,7 +283,7 @@ async def test_the_country_comes_from_the_order_when_the_line_gives_a_currency(
     order is the only thing that knows which one this was."""
     await _awaiting(
         session, acme_support, operator, currency="XOF",
-        supplier_receives="20100000", country="SN",
+        supplier_sends="20100000", country="SN",
     )
 
     parsed = settlement_text.parse("XOF: 20100000/585=34 358,974")
@@ -191,11 +302,11 @@ async def test_the_preview_shows_what_was_understood(
 ):
     await _awaiting(
         session, acme_support, operator, currency="XAF",
-        supplier_receives="3000000", country="CM", subject="a",
+        supplier_sends="3000000", country="CM", subject="a",
     )
     await _awaiting(
         session, acme_support, operator, currency="XOF",
-        supplier_receives="20100000", country="SN", subject="b",
+        supplier_sends="20100000", country="SN", subject="b",
     )
     parsed = settlement_text.parse(THEIR_BLOCK)
     matches = await settlement.match_lines(session, parsed.lines)
@@ -219,11 +330,11 @@ async def test_the_preview_calls_out_a_short_payment(
     """
     await _awaiting(
         session, acme_support, operator, currency="XOF",
-        supplier_receives="50250000", country="CI", subject="a",
+        supplier_sends="50250000", country="CI", subject="a",
     )
     await _awaiting(
         session, acme_support, operator, currency="XOF",
-        supplier_receives="45000000", country="CI", subject="b",
+        supplier_sends="45000000", country="CI", subject="b",
     )
     parsed = settlement_text.parse(
         "XOF: 50250000/583=86 192,11\n"
@@ -246,11 +357,11 @@ async def test_a_settlement_that_ties_out_says_nothing_about_it(
     """A checker that always finds something is a checker nobody reads."""
     await _awaiting(
         session, acme_support, operator, currency="XAF",
-        supplier_receives="3000000", country="CM", subject="a",
+        supplier_sends="3000000", country="CM", subject="a",
     )
     await _awaiting(
         session, acme_support, operator, currency="XOF",
-        supplier_receives="20100000", country="SN", subject="b",
+        supplier_sends="20100000", country="SN", subject="b",
     )
     parsed = settlement_text.parse(THEIR_BLOCK)
     matches = await settlement.match_lines(session, parsed.lines)
@@ -260,8 +371,29 @@ async def test_a_settlement_that_ties_out_says_nothing_about_it(
     )
 
     assert "short of what" not in preview.lower()
-    assert "over of what" not in preview.lower()
+    assert "more than what" not in preview.lower()
     assert "🔴" not in preview
+
+
+async def test_a_payment_that_is_too_large_reads_as_english(
+    session, acme_support, support_ops, operator
+):
+    """"over of what these deals come to" is what a word slotted into a fixed
+    sentence produced, every time a payment was too big. Seen live on
+    5 October."""
+    await _awaiting(
+        session, acme_support, operator, currency="XOF",
+        supplier_sends="20100000", country="SN",
+    )
+    parsed = settlement_text.parse("XOF: 20100000/585\n= 50 000,000 USDT")
+    matches = await settlement.match_lines(session, parsed.lines)
+
+    preview = handlers.settlement_preview(
+        matches, parsed.stated_total, parsed.tx_hash
+    )
+
+    assert "over of" not in preview.lower()
+    assert "more than what these deals come to" in preview.lower()
 
 
 async def test_the_preview_names_an_unmatched_line_and_why(
@@ -269,7 +401,7 @@ async def test_the_preview_names_an_unmatched_line_and_why(
 ):
     await _awaiting(
         session, acme_support, operator, currency="XAF",
-        supplier_receives="3000000", country="CM",
+        supplier_sends="3000000", country="CM",
     )
     parsed = settlement_text.parse(THEIR_BLOCK)
     matches = await settlement.match_lines(session, parsed.lines)

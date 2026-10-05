@@ -20,7 +20,12 @@ from app.bot import commands as cmd
 from app.bot import keyboards as kb
 from app.bot.attachments import extract_attachments
 from app.bot.deps import client_context, gateway, prompt_for
-from app.bot.routing import IncomingMessage, build_strategy, our_message_behind
+from app.bot.routing import (
+    IncomingMessage,
+    answering_our_last_message,
+    build_strategy,
+    our_message_behind,
+)
 from app.config import get_settings
 from app.db.base import session_scope
 from app.db.models import Department, WorkItem
@@ -515,6 +520,12 @@ async def client_reply(message: Message) -> None:
                 message.reply_to_message.message_id if message.reply_to_message else None
             ),
         )
+        # Set when the client typed a plain answer to a question we had just
+        # asked, so the second pass below can route it: `strategy.resolve`
+        # will say None again, correctly, because there is no Telegram reply
+        # to resolve.
+        plain_answer_item_id: int | None = None
+
         item = await strategy.resolve(session, chat, incoming)
         if item is None:
             # A reply to a broadcast resolves to nothing, because a broadcast
@@ -550,18 +561,30 @@ async def client_reply(message: Message) -> None:
                     reply_to_message_id=incoming.reply_to_message_id,
                 )
                 if anchor is None:
+                    # Before giving up: are they answering a question we just
+                    # asked? The platform asks clients things in their own
+                    # group - "how much would you like to trade at this
+                    # rate?" - and people answer by typing, not by using
+                    # Telegram's reply. On 5 October one of those answers was
+                    # dropped and the desk was left waiting for it.
+                    answered = await answering_our_last_message(
+                        session, telegram_chat_id=message.chat.id
+                    )
+                    if answered is None:
+                        return
+                    plain_answer_item_id = answered.id
+                    opened_from_broadcast = None
+                else:
+                    logger.info(
+                        "Unrouted client message in chat %s: reply_to=%s",
+                        message.chat.id, incoming.reply_to_message_id,
+                    )
+                    notice = unrouted_notice(
+                        incoming.reply_to_message_id, chat.department
+                    )
+                    if notice is not None:
+                        await message.reply(notice)
                     return
-
-                logger.info(
-                    "Unrouted client message in chat %s: reply_to=%s",
-                    message.chat.id, incoming.reply_to_message_id,
-                )
-                notice = unrouted_notice(
-                    incoming.reply_to_message_id, chat.department
-                )
-                if notice is not None:
-                    await message.reply(notice)
-                return
         else:
             opened_from_broadcast = None
 
@@ -576,6 +599,8 @@ async def client_reply(message: Message) -> None:
         if chat is None:
             return
         item = await strategy.resolve(session, chat, incoming)
+        if item is None and plain_answer_item_id is not None:
+            item = await session.get(WorkItem, plain_answer_item_id)
         if item is None:
             return
 

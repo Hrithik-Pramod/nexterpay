@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Chat, Message, WorkItem
+from app.domain.enums import MessageDirection
 from app.domain.work_items import open_items_for_chat
 
 
@@ -162,3 +163,53 @@ async def our_message_behind(
         )
     )
     return result.scalar_one_or_none()
+
+
+async def answering_our_last_message(
+    session: AsyncSession, *, telegram_chat_id: int
+) -> WorkItem | None:
+    """The open request this group is in the middle of answering, or None.
+
+    The gap this closes, found live on 5 October. The platform asked a client,
+    in their own group:
+
+        How much would you like to trade at this rate? Reply here and we
+        will send the order through for you to confirm.
+
+    and the client answered the way anybody would - by typing a message. It
+    was dropped. Not relayed, not queried, nothing in the Operations Group at
+    all. The desk was left waiting for an answer that had already been given,
+    and nothing anywhere recorded that it had been lost.
+
+    `ReplyToAcknowledgementStrategy` resolves Telegram replies and nothing
+    else, which was not a limitation while it was true that a reply was the
+    only message the bot could see. An administrator bot sees everything, and
+    the one message it most needs is the answer to a question it just asked.
+
+    The rule here is narrow on purpose, and `MostRecentOpenItemStrategy` next
+    door is what it is deliberately not: that one attaches any stray message
+    to whatever was most recently touched, which is forgiving and "occasionally
+    wrong in a way nobody notices". This fires only when **we spoke last** in
+    that group - the newest message on record is one of ours, against an open
+    request. Once the client has answered once, the newest message is theirs
+    and this stops firing, so a question collects one answer rather than the
+    rest of the morning's conversation.
+
+    It is also a fallback, not a replacement: a real Telegram reply still
+    resolves through the agreed mechanism first, and a group with no
+    outstanding question of ours still routes nothing.
+    """
+    result = await session.execute(
+        select(Message)
+        .where(Message.telegram_chat_id == telegram_chat_id)
+        .order_by(Message.sent_at.desc(), Message.id.desc())
+        .limit(1)
+    )
+    latest = result.scalar_one_or_none()
+    if latest is None or latest.direction is not MessageDirection.OUTBOUND:
+        return None
+
+    item = await session.get(WorkItem, latest.work_item_id)
+    if item is None or item.status.is_terminal:
+        return None
+    return item
