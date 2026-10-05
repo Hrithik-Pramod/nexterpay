@@ -155,20 +155,39 @@ def test_nothing_here_decides_anything() -> None:
 
     So this module returns observations and nothing else. If it ever gains a
     session, a gateway or a write, it has stopped observing.
+
+    Checked against the names the code actually uses rather than the text of
+    the file. The first version of this scanned the source and failed on its
+    own docstring, which contains the word "commit" - the same mistake as the
+    withdraw_order guard earlier the same week, and the same fix: a test that
+    reads prose is testing the comments.
     """
+    import ast
     import inspect
 
-    source = inspect.getsource(capture)
+    tree = ast.parse(inspect.getsource(capture))
 
-    for forbidden in (
+    used = {
+        node.id for node in ast.walk(tree) if isinstance(node, ast.Name)
+    } | {
+        node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+    }
+
+    forbidden = {
         "AsyncSession", "session", "gateway", "send_message",
-        "commit", "flush", "await ",
-    ):
-        assert forbidden not in source, (
-            f"capture.py mentions {forbidden!r}. It reads messages and says "
-            f"what they appear to contain - a person decides, and the handler "
-            f"is where that happens."
-        )
+        "commit", "flush", "add",
+    }
+    reached = sorted(used & forbidden)
+    assert not reached, (
+        f"capture.py uses {reached}. It reads messages and says what they "
+        f"appear to contain - a person decides, and the handler is where that "
+        f"happens."
+    )
+
+    # Nothing here is awaited either: observing is not an operation.
+    assert not [
+        node for node in ast.walk(tree) if isinstance(node, ast.Await)
+    ]
 
 
 def test_a_rate_has_to_be_a_plausible_number() -> None:
