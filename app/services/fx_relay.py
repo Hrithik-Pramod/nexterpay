@@ -189,7 +189,7 @@ async def send_rate_quote(
     than elsewhere: this is the moment a price is put in front of a client, and
     the record of exactly what was said is the thing a dispute comes back to.
     """
-    counterparty, ops = await _chat_for_side(session, order, FxSide.CLIENT)
+    counterparty, _ = await _chat_for_side(session, order, FxSide.CLIENT)
     text = rate_quote_text(order)
 
     sent = await gateway.send_message(
@@ -204,7 +204,7 @@ async def send_rate_quote(
         sender_name=actor.name,
         text=text,
     )
-    await _announce(session, gateway, order, ops, "Rate sent to the client.")
+    # Nothing is said to the desk here. See `_announce` for why.
 
 
 async def send_order(
@@ -223,7 +223,7 @@ async def send_order(
     eventually reads the wrong column. This one cannot: it is handed a side and
     passes it straight to `view_for`.
     """
-    counterparty, ops = await _chat_for_side(session, order, side)
+    counterparty, _ = await _chat_for_side(session, order, side)
     text = order_text(order, side)
 
     sent = await gateway.send_message(
@@ -249,7 +249,7 @@ async def send_order(
         sender_name=actor.name,
         text=text,
     )
-    await _announce(session, gateway, order, ops, f"Order sent to the {side.value}.")
+    # Nothing is said to the desk here. See `_announce` for why.
 
 
 async def send_settlement(
@@ -261,7 +261,7 @@ async def send_settlement(
     keyboard=None,
 ) -> None:
     """The hash, to the client. Always the client - a supplier told us."""
-    counterparty, ops = await _chat_for_side(session, order, FxSide.CLIENT)
+    counterparty, _ = await _chat_for_side(session, order, FxSide.CLIENT)
     text = settlement_text(order)
 
     sent = await gateway.send_message(
@@ -276,7 +276,7 @@ async def send_settlement(
         sender_name=actor.name,
         text=text,
     )
-    await _announce(session, gateway, order, ops, "Settlement passed to the client.")
+    # Nothing is said to the desk here. See `_announce` for why.
 
 
 async def notify_rejected(
@@ -293,17 +293,15 @@ async def notify_rejected(
     with. "We are not able to work with that rate on this one" is the whole
     message. A supplier who learns what beat them learns the market we buy in.
     """
-    counterparty, ops = await _chat_for_side(session, order, FxSide.SUPPLIER)
+    counterparty, _ = await _chat_for_side(session, order, FxSide.SUPPLIER)
     view = fx.view_for(order, FxSide.SUPPLIER)
     text = (
         f"{view.reference} — we are not able to work with that rate on this "
         f"one. Thank you for quoting."
     )
     await gateway.send_message(counterparty.telegram_chat_id, text)
-    await _announce(
-        session, gateway, order, ops,
-        f"Told the supplier their rate was not taken ({reason}).",
-    )
+    # Nothing is said to the desk: turning a rate down is the desk's own
+    # doing, and they typed `reason` a moment ago. See `_announce`.
 
 
 async def announce_counterparty_reply(
@@ -343,7 +341,38 @@ async def _announce(
     ops: Chat,
     line: str,
 ) -> None:
-    """Into the Operations topic. Staff-only, so it may name both sides."""
+    """Into the Operations topic. Staff-only, so it may name both sides.
+
+    **Only for things the desk did not do themselves.**
+
+    Jason, 7 October, on how the FX desk should feel to Slim, who runs it:
+
+        when Slim sends a message normally, nothing happens until they
+        respond, for us, lots happens with the bot... the bot should be more
+        hidden, and only say things on reaction, not continual dialogue...
+        if he sends a message, the bot knows, but without an answer from the
+        client, its waiting. as he would when he is waiting for them.
+
+    This function used to be called after our own sends as well - "Rate sent
+    to the client.", "Order sent to the supplier.", "Settlement passed to the
+    client." - so pressing Send produced two messages back, one here and one
+    from the handler, both telling Slim a thing he had just done himself.
+    That is the dialogue being designed out.
+
+    What is left is the half worth keeping: `announce_counterparty_reply`,
+    which fires when somebody on the other side answers. That is news.
+
+    The rule, in four lines:
+
+      * the desk acts            -> nothing is said
+      * the other side moves     -> say so
+      * nobody moves for too long-> say so (`/npbook`)
+      * something failed         -> say so
+
+    The fourth is what makes the first safe. Silence has to mean it worked,
+    never that nobody checked, so a send that throws must still reach the
+    desk - see `test_a_silent_success_has_a_loud_failure`.
+    """
     item = await session.get(WorkItem, order.client_work_item_id)
     thread_id = item.topic_id if item else None
     if thread_id is None:

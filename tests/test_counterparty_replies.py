@@ -12,6 +12,13 @@ and `/npfx` would have answered; but a desk waiting on a client is not going
 to poll a command, and the point of the topic is that the conversation appears
 in it.
 
+Since 7 October the first half of that is gone: the desk is no longer told
+about its own sends, because Jason asked for the bot to stop holding a
+dialogue with Slim about things Slim had just done. What this file covers is
+the half that was added then and matters more — the other side moving. The
+fault it was written for was the platform being loud about us and silent
+about them; the fix was never to be loud about both.
+
 Four buttons a counterparty can tap, and all four were silent internally: the
 rate Yes, the rate No, the order confirmation, and the receipt.
 

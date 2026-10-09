@@ -706,7 +706,9 @@ async def send_order(query: CallbackQuery, state: FSMContext) -> None:
             await query.message.answer(explain(exc))
             return
 
-    await query.message.answer(f"Sent to the {side.value}.")
+    # Nothing. The desk pressed Send; telling them it sent is the dialogue
+    # Jason asked us to remove on 7 October. A failure still speaks - see the
+    # except above - so silence here means it went.
 
 
 @router.callback_query(F.data.startswith("fx:confirm:"))
@@ -1355,7 +1357,7 @@ async def tell_client_the_rate(query: CallbackQuery) -> None:
             await query.message.answer(explain(exc))
             return
 
-    await query.message.answer("Sent. The client has Yes and No to tap.")
+    # Nothing. See send_order.
 
 
 async def _clear_buttons(query: CallbackQuery) -> None:
@@ -1659,7 +1661,7 @@ async def settle_send(query: CallbackQuery, state: FSMContext) -> None:
             await query.message.answer(explain(exc))
             return
 
-    await query.message.answer("Sent to the client, with a button to confirm receipt.")
+    # Nothing. See send_order.
 
 
 # --------------------------------------------------------------------------
@@ -2848,21 +2850,23 @@ async def settle_save(query: CallbackQuery, state: FSMContext) -> None:
                 )
                 failed.append(line.order.display_reference)
 
-    body = (
+    # The record itself, which is new and is not something the desk typed:
+    # a settlement reference that did not exist a moment ago, and the deals
+    # it closed out. That survives the quiet rules.
+    await query.message.answer(
         f"{reference} recorded against {len(covered)} deal"
         f"{'' if len(covered) == 1 else 's'}: {', '.join(covered)}."
     )
-    if told:
-        body += (
-            f"\n\n{len(told)} client{'' if len(told) == 1 else 's'} told, with "
-            f"a button to confirm receipt."
-        )
+
+    # The clients we could not reach get their own message rather than a line
+    # tacked onto the one above. A warning that shares a message with good
+    # news is read as good news, and this is the case where silence would
+    # otherwise mean "told" - the one thing the quiet rules cannot allow.
     if failed:
-        body += (
-            f"\n\n⚠️ Could not reach the group for {', '.join(failed)}. "
+        await query.message.answer(
+            f"⚠️ Could not reach the group for {', '.join(failed)}. "
             f"The payment is recorded — they have not been told."
         )
-    await query.message.answer(body)
 
 
 # --------------------------------------------------------------------------

@@ -45,6 +45,7 @@ from sqlalchemy import select
 from app.bot import commands as cmd
 from app.bot.deps import gateway
 from app.bot.handlers.fx import FxSettle, settle_capture_block_from
+from app.bot.registry import resolve_staff
 from app.db.base import session_scope
 from app.db.models import Chat
 from app.domain.enums import ChatKind
@@ -130,6 +131,27 @@ async def watch(message: Message) -> None:
         if chat is None or chat.kind is not ChatKind.CLIENT:
             # Not a counterparty group. The desk's own messages in Operations
             # are not somebody else's conversation to observe.
+            raise SkipHandler
+
+        # Was this the desk talking? Then say nothing.
+        #
+        # Jason, 7 October: "when Slim sends a message normally, nothing
+        # happens until they respond, for us, lots happens with the bot...
+        # if he sends a message, the bot knows, but without an answer from
+        # the client, its waiting. as he would when he is waiting for them."
+        #
+        # This handler read every message in a counterparty group without
+        # looking at who sent it, so Slim posting a rate to a client had the
+        # platform announce it straight back to him. He knows. He wrote it.
+        #
+        # Nothing is lost by the silence: the message is recorded either way,
+        # and when the counterparty answers, that answer is observed and the
+        # desk hears about it then - which is the moment something actually
+        # changed.
+        if message.from_user and await resolve_staff(session, message.from_user.id):
+            logger.debug(
+                "Desk message in %s - noted, not announced", message.chat.id
+            )
             raise SkipHandler
 
         ops = await _operations_for(session, chat)
