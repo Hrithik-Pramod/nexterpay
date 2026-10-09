@@ -221,7 +221,7 @@ def test_the_watcher_ignores_the_desk_itself() -> None:
     )
     body = ast.unparse(watch)
 
-    assert "resolve_staff" in body, (
+    assert "is_our_desk" in body, (
         "watch() does not check who sent the message, so the desk's own "
         "messages are announced back to the desk"
     )
@@ -258,7 +258,7 @@ def test_nothing_treats_the_desk_as_the_counterparty() -> None:
             node for node in ast.walk(tree)
             if isinstance(node, ast.AsyncFunctionDef) and node.name == name
         )
-        assert "resolve_staff" in ast.unparse(fn), (
+        assert "is_our_desk" in ast.unparse(fn), (
             f"{path}::{name} acts on every message in a counterparty group "
             f"without asking who sent it, so the desk's own messages are "
             f"treated as the counterparty's"
@@ -272,3 +272,54 @@ def test_the_watcher_still_speaks_for_a_counterparty() -> None:
         "the watcher no longer tells the desk anything at all - quiet about "
         "our own actions, not deaf to theirs"
     )
+
+
+# --------------------------------------------------------------------------
+# Anonymity is never proof that it was us
+# --------------------------------------------------------------------------
+
+async def test_an_anonymous_admin_is_never_taken_for_our_desk(session) -> None:
+    """Telegram sends every anonymous admin as user 1087968824.
+
+    The same id in every group on the platform, so it says nothing about who
+    typed. On 9 October the live staff table had a row against exactly that
+    id - "Group", added by somebody running /npadduser while anonymous. With
+    the quiet rules in place that row would have made every anonymous admin
+    in a client's group look like NexterPay, and their messages would have
+    been dropped without trace.
+
+    The two mistakes are not the same size. Staying quiet about one of ours
+    is cosmetic; staying quiet about a client is a message that vanishes,
+    which is the failure this project has paid for more than once. So the
+    uncertain case resolves to "not us".
+    """
+    from app.bot.deps import ANONYMOUS_ADMIN_ID, is_our_desk
+    from app.db.models import Staff
+
+    session.add(
+        Staff(
+            telegram_user_id=ANONYMOUS_ADMIN_ID,
+            display_name="Group",
+            is_active=True,
+        )
+    )
+    await session.flush()
+
+    assert await is_our_desk(session, ANONYMOUS_ADMIN_ID) is False, (
+        "an anonymous admin resolved to our desk, so a client posting "
+        "anonymously in their own group would be silently ignored"
+    )
+
+
+async def test_a_real_member_of_staff_is_our_desk(session, operator) -> None:
+    """The other half, so the rule above cannot pass by always saying no."""
+    from app.bot.deps import is_our_desk
+
+    assert await is_our_desk(session, operator.telegram_user_id) is True
+
+
+async def test_a_stranger_is_not_our_desk(session) -> None:
+    from app.bot.deps import is_our_desk
+
+    assert await is_our_desk(session, 999000111) is False
+    assert await is_our_desk(session, None) is False

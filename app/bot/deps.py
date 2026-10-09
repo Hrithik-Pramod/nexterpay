@@ -60,6 +60,34 @@ def is_anonymous_admin(telegram_user_id: int | None) -> bool:
     return telegram_user_id == ANONYMOUS_ADMIN_ID
 
 
+async def is_our_desk(session: AsyncSession, telegram_user_id: int | None) -> bool:
+    """Is this message from NexterPay's own side?
+
+    Asked in a counterparty's group, where the answer decides whether we stay
+    quiet (the quiet rules of 7 October: the platform says nothing about what
+    the desk itself does) or treat the message as the counterparty's.
+
+    The two are not symmetrical, and that is what this function is for.
+    Staying quiet about one of our own is a cosmetic mistake. Staying quiet
+    about a client is a client's message vanishing without trace, which is the
+    failure this project has paid for more than once. So anything uncertain
+    resolves to "not us".
+
+    Hence the anonymous-admin rule. Telegram sends messages from admins with
+    "Remain Anonymous" on as user 1087968824, the same id for every group on
+    the platform, so it says nothing about who typed. On 9 October the live
+    staff table had a row against exactly that id - "Group", added at some
+    point by somebody running /npadduser while anonymous - which would have
+    made every anonymous client admin look like our desk and had their
+    messages dropped in silence.
+
+    The id cannot identify a person, so it never identifies us.
+    """
+    if telegram_user_id is None or is_anonymous_admin(telegram_user_id):
+        return False
+    return await resolve_staff(session, telegram_user_id) is not None
+
+
 async def staff_context(
     session: AsyncSession, telegram_chat_id: int, telegram_user_id: int | None
 ) -> tuple[Chat, Actor] | None:

@@ -43,9 +43,8 @@ from aiogram.types import (
 from sqlalchemy import select
 
 from app.bot import commands as cmd
-from app.bot.deps import gateway
+from app.bot.deps import gateway, is_our_desk
 from app.bot.handlers.fx import FxSettle, settle_capture_block_from
-from app.bot.registry import resolve_staff
 from app.db.base import session_scope
 from app.db.models import Chat
 from app.domain.enums import ChatKind
@@ -148,7 +147,9 @@ async def watch(message: Message) -> None:
         # and when the counterparty answers, that answer is observed and the
         # desk hears about it then - which is the moment something actually
         # changed.
-        if message.from_user and await resolve_staff(session, message.from_user.id):
+        if await is_our_desk(
+            session, message.from_user.id if message.from_user else None
+        ):
             logger.debug(
                 "Desk message in %s - noted, not announced", message.chat.id
             )

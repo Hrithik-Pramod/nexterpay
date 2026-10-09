@@ -142,7 +142,7 @@ def test_no_handler_gives_up_without_saying_why(path: Path) -> None:
         talks in every group it is ever added to;
       * a message that is not addressed to us, in a group where being quiet
         is the entire point of the design;
-      * `resolve_staff` - the message came from our own desk, in a
+      * `is_our_desk` - the message came from our own desk, in a
         counterparty's group. Added 9 October with the quiet rules: the
         platform is deliberately silent about what the desk itself does, and
         answering here would be the bot talking to Slim about Slim's own
@@ -164,7 +164,7 @@ def test_no_handler_gives_up_without_saying_why(path: Path) -> None:
                     "chat is None",
                     "is None:",          # unresolved item, unknown topic
                     "not in",            # not our topic
-                    "resolve_staff",     # our own desk, in their group
+                    "is_our_desk",       # our own desk, in their group
                     "return$",
                 )
             )

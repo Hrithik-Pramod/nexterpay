@@ -19,8 +19,7 @@ from aiogram.types import CallbackQuery, Message
 from app.bot import commands as cmd
 from app.bot import keyboards as kb
 from app.bot.attachments import extract_attachments
-from app.bot.deps import client_context, gateway, prompt_for
-from app.bot.registry import resolve_staff
+from app.bot.deps import client_context, gateway, is_our_desk, prompt_for
 from app.bot.routing import (
     IncomingMessage,
     answering_our_last_message,
@@ -527,7 +526,13 @@ async def client_reply(message: Message) -> None:
         # answer routing went in on 5 October. That keeps "we spoke last"
         # true, so a real answer from the counterparty still finds its
         # request. `/npreply` remains the way to say something on the record.
-        if message.from_user and await resolve_staff(session, message.from_user.id):
+        # `is_our_desk` rather than `resolve_staff`: an anonymous admin is
+        # never treated as us, because the id Telegram sends is the same one
+        # for every group and dropping a client's message is far worse than
+        # relaying one of our own.
+        if await is_our_desk(
+            session, message.from_user.id if message.from_user else None
+        ):
             logger.debug(
                 "Desk message in counterparty chat %s - not relayed",
                 message.chat.id,
