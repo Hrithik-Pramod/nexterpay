@@ -134,14 +134,20 @@ def _bare_returns_before_speaking(fn: ast.AsyncFunctionDef) -> list[int]:
 def test_no_handler_gives_up_without_saying_why(path: Path) -> None:
     """Silence is not an answer, even to somebody who may not do the thing.
 
-    Three exemptions, and only three, each written down rather than waved
+    Four exemptions, and only four, each written down rather than waved
     through:
 
       * `message.from_user is None` - nobody to reply to;
       * a chat we do not recognise at all - answering would mean this bot
         talks in every group it is ever added to;
       * a message that is not addressed to us, in a group where being quiet
-        is the entire point of the design.
+        is the entire point of the design;
+      * `resolve_staff` - the message came from our own desk, in a
+        counterparty's group. Added 9 October with the quiet rules: the
+        platform is deliberately silent about what the desk itself does, and
+        answering here would be the bot talking to Slim about Slim's own
+        message, which is the thing being designed out. Nobody is waiting on
+        a reply, because the person who sent it works here.
     """
     tree = ast.parse(path.read_text(encoding="utf-8"))
     source = path.read_text(encoding="utf-8").splitlines()
@@ -158,6 +164,7 @@ def test_no_handler_gives_up_without_saying_why(path: Path) -> None:
                     "chat is None",
                     "is None:",          # unresolved item, unknown topic
                     "not in",            # not our topic
+                    "resolve_staff",     # our own desk, in their group
                     "return$",
                 )
             )

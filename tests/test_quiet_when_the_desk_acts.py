@@ -230,6 +230,41 @@ def test_the_watcher_ignores_the_desk_itself() -> None:
     assert body.count("raise SkipHandler") >= 4
 
 
+def test_nothing_treats_the_desk_as_the_counterparty() -> None:
+    """The class, across both handlers that read a counterparty's group.
+
+    Found live on 9 October. The capture layer had been taught to ignore the
+    desk's own messages, and the observation duly stopped - but the same
+    message still arrived in the Operations topic through `client_reply`, as
+    "Message received from peter", quoted the way a client's words are quoted
+    and with a Reply button under it.
+
+    The noise was the smaller half. `relay_client_message` records INBOUND
+    against CLIENT_MESSAGE_RECEIVED, so the ledger said the client had said
+    something they never said, and that ledger is what a dispute is settled
+    from.
+
+    Two handlers read those groups. Both must know the difference between
+    the counterparty and us, and a third added later must too.
+    """
+    readers = {
+        "app/bot/handlers/capture.py": "watch",
+        "app/bot/handlers/client.py": "client_reply",
+    }
+
+    for path, name in readers.items():
+        tree = ast.parse(pathlib.Path(path).read_text(encoding="utf-8"))
+        fn = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == name
+        )
+        assert "resolve_staff" in ast.unparse(fn), (
+            f"{path}::{name} acts on every message in a counterparty group "
+            f"without asking who sent it, so the desk's own messages are "
+            f"treated as the counterparty's"
+        )
+
+
 def test_the_watcher_still_speaks_for_a_counterparty() -> None:
     """Rule two is untouched: the other side moving is the whole point."""
     source = pathlib.Path("app/bot/handlers/capture.py").read_text(encoding="utf-8")

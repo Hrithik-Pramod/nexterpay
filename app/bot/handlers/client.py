@@ -20,6 +20,7 @@ from app.bot import commands as cmd
 from app.bot import keyboards as kb
 from app.bot.attachments import extract_attachments
 from app.bot.deps import client_context, gateway, prompt_for
+from app.bot.registry import resolve_staff
 from app.bot.routing import (
     IncomingMessage,
     answering_our_last_message,
@@ -507,6 +508,30 @@ async def client_reply(message: Message) -> None:
     async with session_scope() as session:
         chat = await client_context(session, message.chat.id)
         if chat is None:
+            return
+
+        # The desk talking in a counterparty's own group is not a client
+        # message, and must not be relayed as one.
+        #
+        # Found live on 9 October, testing the quiet rules: Slim typed a rate
+        # into a client group and the Operations topic showed it back as
+        # "Message received from peter", quoted the way a client's words are
+        # quoted, with a Reply button under it.
+        #
+        # Worse than the noise, which is what Jason asked us to remove: it
+        # went into the ledger as INBOUND, against CLIENT_MESSAGE_RECEIVED.
+        # The audit trail said the client had said something the client never
+        # said - and that trail is what a dispute is settled from.
+        #
+        # Nothing is recorded here, which is what happened before the plain
+        # answer routing went in on 5 October. That keeps "we spoke last"
+        # true, so a real answer from the counterparty still finds its
+        # request. `/npreply` remains the way to say something on the record.
+        if message.from_user and await resolve_staff(session, message.from_user.id):
+            logger.debug(
+                "Desk message in counterparty chat %s - not relayed",
+                message.chat.id,
+            )
             return
 
         strategy = build_strategy(get_settings().reply_routing_strategy)
