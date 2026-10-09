@@ -530,13 +530,9 @@ async def client_reply(message: Message) -> None:
         # never treated as us, because the id Telegram sends is the same one
         # for every group and dropping a client's message is far worse than
         # relaying one of our own.
-        if await is_our_desk(
-            session, message.from_user.id if message.from_user else None
-        ):
-            logger.debug(
-                "Desk message in counterparty chat %s - not relayed",
-                message.chat.id,
-            )
+        sender_id = message.from_user.id if message.from_user else None
+        if await is_our_desk(session, sender_id):
+            logger.debug("Desk message in %s - not relayed", message.chat.id)
             return
 
         strategy = build_strategy(get_settings().reply_routing_strategy)

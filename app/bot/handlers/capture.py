@@ -147,12 +147,9 @@ async def watch(message: Message) -> None:
         # and when the counterparty answers, that answer is observed and the
         # desk hears about it then - which is the moment something actually
         # changed.
-        if await is_our_desk(
-            session, message.from_user.id if message.from_user else None
-        ):
-            logger.debug(
-                "Desk message in %s - noted, not announced", message.chat.id
-            )
+        sender_id = message.from_user.id if message.from_user else None
+        if await is_our_desk(session, sender_id):
+            logger.debug("Desk message in %s - not announced", message.chat.id)
             raise SkipHandler
 
         ops = await _operations_for(session, chat)
