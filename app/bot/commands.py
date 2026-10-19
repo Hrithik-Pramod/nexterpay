@@ -94,6 +94,16 @@ SETLEAD = _c("setlead")
 LEADS = _c("leads")
 REMOVELEAD = _c("removelead")
 
+# Naming the group itself. Jason, 19 October: "every client and supplier group
+# has a Lead, its own short Group Code, and eventually associations with the
+# services/routes they use... BBS Finance = #BBS".
+#
+# Set alongside the lead and for the same reason - both are facts about a room
+# that Telegram will not tell us - which is why the names rhyme. The code is
+# what makes `#BBS` mean something mid-sentence instead of being decoration.
+SETGROUPCODE = _c("setgroupcode")
+GROUPS = _c("groups")
+
 # The front door for administration. Two jobs are done under time pressure
 # with somebody waiting - registering a group and adding a person - and both
 # are easier to get wrong from memory than from a list.
@@ -199,7 +209,7 @@ ALL = [
     REGISTER_OPS, REGISTER_CLIENT, REGISTER_SUPPLIER, REGISTER_ARCHIVE,
     ADDUSER, REMOVEUSER,
     WORKLOAD, SETCODE, ADDPARTY, BROADCAST,
-    SETLEAD, LEADS, REMOVELEAD, SETUP, HELP, ROLE,
+    SETLEAD, LEADS, REMOVELEAD, SETGROUPCODE, GROUPS, SETUP, HELP, ROLE,
     NEW_CLIENT, NEW_SUPPLIER,
     ORDER_CLIENT, ORDER_SUPPLIER, FX_DEALS, BOOK, QUOTE, HASH, SETTLE, AMEND,
     WALLET, REJECT,

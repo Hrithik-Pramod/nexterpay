@@ -34,6 +34,7 @@ from app.bot.deps import (
 from app.bot.registry import leads_for, preferred_lead_for, resolve_chat
 from app.db.base import session_scope
 from app.db.models import Chat
+from app.domain import group_codes, shorthand
 from app.domain.enums import ChatKind
 from app.services import relay
 
@@ -133,13 +134,13 @@ async def _counterparties(session, department, *, suppliers: bool | None = None)
 
 @router.message(cmd.any_case(cmd.NEW_CLIENT))
 async def start_with_client(message: Message, state: FSMContext) -> None:
-    """`/npnewcl` - open a request with a client."""
+    """`/npnewcl` - open a request with a client. `/npnewcl #ACME` skips the list."""
     await _start(message, state, suppliers=False, noun="client")
 
 
 @router.message(cmd.any_case(cmd.NEW_SUPPLIER))
 async def start_with_supplier(message: Message, state: FSMContext) -> None:
-    """`/npnewsu` - open a request with a supplier."""
+    """`/npnewsu` - open a request with a supplier. `/npnewsu #BBS` skips the list."""
     await _start(message, state, suppliers=True, noun="supplier")
 
 
@@ -188,8 +189,66 @@ async def _start(
             )
             return
         chat, _ = ctx
+
+        # `/npnewsu #BBS` names the group instead of picking it from a list.
+        #
+        # Jason, 19 October: "if #BBS is included in the FX flow it should
+        # know that BBS is the supplier/counterparty and remove the need to
+        # select BBS again manually."
+        #
+        # Only when a code was actually typed. No code, or no code configured
+        # anywhere, and this does not run at all - the picker appears exactly
+        # as it does today, which is the other half of what he asked for.
+        # Only what a person typed. On the `/np` menu path this `message` is
+        # the bot's own, so reading it for codes would be the platform taking
+        # instructions from itself - the same trap as resolving a permission
+        # against `message.from_user` on a callback, which this file already
+        # carries a note about.
+        named = (
+            shorthand.unique_codes(message.text or "")
+            if acting_user is None
+            else []
+        )
+        if named:
+            if len(named) > 1:
+                await message.reply(
+                    f"That names {len(named)} groups — "
+                    + ", ".join(f"#{code}" for code in named)
+                    + ". A request opens with one counterparty, so say which."
+                )
+                return
+            try:
+                chosen = await group_codes.resolve(
+                    session, named[0],
+                    department=chat.department, suppliers=suppliers,
+                )
+            except group_codes.GroupCodeError as exc:
+                # Refuse rather than fall through to the picker. Falling
+                # through would be friendlier and wrong: the desk typed a
+                # code because they believed it meant something, and quietly
+                # showing a list teaches them the code worked.
+                await message.reply(explain(exc))
+                return
+            direct = (chosen.telegram_chat_id, chosen.title or str(chosen.telegram_chat_id))
+        else:
+            direct = None
+
         options = await _counterparties(session, chat.department, suppliers=suppliers)
         markup = _counterparty_keyboard(options) if options else None
+
+    if direct is not None:
+        telegram_chat_id, title = direct
+        await state.clear()
+        await state.set_state(OutboundCompose.awaiting_message)
+        await state.update_data(to_chat_id=telegram_chat_id, to_title=title)
+        text, markup, mode = prompt_for(
+            user,
+            f"Raising a request with {title}. Type it below - you will see it "
+            f"before anything is sent.",
+            placeholder="The request",
+        )
+        await message.answer(text, reply_markup=markup, parse_mode=mode)
+        return
 
     if not options:
         other = cmd.NEW_CLIENT if suppliers else cmd.NEW_SUPPLIER

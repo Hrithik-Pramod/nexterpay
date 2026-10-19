@@ -205,8 +205,12 @@ _STAFF: list[tuple[str, str, StaffRole]] = [
     (cmd.UNLINK + " <reference>", "remove a link", StaffRole.OPERATOR),
     (cmd.WORKLOAD, "every open request on this desk, with owner and status",
      StaffRole.OPERATOR),
-    (cmd.NEW_CLIENT, "open a request with a client", StaffRole.OPERATOR),
-    (cmd.NEW_SUPPLIER, "open a request with a supplier", StaffRole.OPERATOR),
+    (cmd.NEW_CLIENT, "open a request with a client - add #CODE to skip the list",
+     StaffRole.OPERATOR),
+    (cmd.NEW_SUPPLIER, "open a request with a supplier - add #CODE to skip the list",
+     StaffRole.OPERATOR),
+    (cmd.GROUPS, "the group codes on this desk, and the groups without one",
+     StaffRole.OPERATOR),
     (cmd.WHOAMI, "your departments, your role in each, and what it permits",
      StaffRole.OPERATOR),
     (cmd.ASSIGN, "hand a request to somebody - as a reply to them",
@@ -254,6 +258,8 @@ _ADMIN: list[tuple[str, str]] = [
     (cmd.SETLEAD, "name a contact in a counterparty group - as a reply to them; "
      "add always, or a currency, to make them the usual one"),
     (cmd.LEADS, "who is named for a group"),
+    (cmd.SETGROUPCODE + " <CODE>",
+     "a group's short name - in the group; #BBS then picks it in FX"),
     (cmd.REMOVELEAD, "unname somebody - as a reply to them"),
 ]
 

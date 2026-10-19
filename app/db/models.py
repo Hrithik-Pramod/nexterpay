@@ -113,6 +113,21 @@ class Chat(Base, TimestampMixin):
     # which targets clients only or suppliers only.
     is_supplier: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
+    # A short, permanent name for this room: BBS Finance answers to #BBS.
+    #
+    # On the chat rather than the counterparty, which is the whole point.
+    # `Client.code` belongs to the company and leads every reference; a
+    # company can have several rooms, and the question Jason wants to ask
+    # later - "which groups are affected if Wave/XOF is down" - is about
+    # rooms. Services and routes attach here when that arrives.
+    #
+    # Unique across the platform, not per department: a code that meant two
+    # things in two desks would be worse than no code at all, because the
+    # desk typing it has no way to know which one they got.
+    group_code: Mapped[str | None] = mapped_column(
+        String(4), unique=True, nullable=True
+    )
+
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     client: Mapped[Client | None] = relationship(back_populates="chats")

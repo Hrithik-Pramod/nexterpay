@@ -26,13 +26,23 @@ from __future__ import annotations
 
 import re
 
-# Two to four letters after a hash, not glued to a word on either side.
+# What a code is made of, on its own, so that the one rule has one home.
 #
 # Two is the floor because country codes are two letters and the desk already
 # writes them. Four is the ceiling because that is the width of a counterparty
-# code. The trailing boundary stops `#BBSX` matching as BBS, which matters:
+# code.
+#
+# Separated out because `group_codes.SETTABLE` has to accept exactly what this
+# can find. A code that can be set but never matched is worse than one that is
+# refused: the desk types `#BBSFIN`, nothing resolves, and nothing anywhere
+# explains why. Both patterns are now built from this fragment, so widening one
+# widens the other on the same day.
+CODE_BODY = r"[A-Za-z]{2,4}"
+
+# The same thing in a sentence: after a hash, not glued to a word on either
+# side. The trailing boundary stops `#BBSX` matching as BBS, which matters -
 # half a code resolving to the wrong counterparty is worse than not resolving.
-CODE_RE = re.compile(r"(?<![\w#])#([A-Za-z]{2,4})(?![\w])")
+CODE_RE = re.compile(rf"(?<![\w#])#({CODE_BODY})(?![\w])")
 
 
 def find_codes(text: str) -> list[str]:
@@ -65,4 +75,4 @@ def strip_codes(text: str) -> str:
     return re.sub(r"[ \t]{2,}", " ", cleaned).strip()
 
 
-__all__ = ["CODE_RE", "find_codes", "strip_codes", "unique_codes"]
+__all__ = ["CODE_BODY", "CODE_RE", "find_codes", "strip_codes", "unique_codes"]

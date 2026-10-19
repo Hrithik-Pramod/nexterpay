@@ -21,7 +21,13 @@ from sqlalchemy import func, select
 
 from app.bot import commands as cmd
 from app.bot import keyboards as kb
-from app.bot.deps import gateway, prompt_for
+from app.bot.deps import (
+    explain,
+    gateway,
+    prompt_for,
+    refusal_reason,
+    staff_context,
+)
 from app.bot.registry import (
     deactivate_staff,
     leads_for,
@@ -39,7 +45,9 @@ from app.bot.registry import (
 from app.config import get_settings
 from app.db.base import session_scope
 from app.db.models import Client, Staff, StaffDepartment, WorkItem
+from app.domain import group_codes
 from app.domain.enums import ChatKind, Department, StaffRole, WorkItemStatus
+from app.services.relay import _e
 
 logger = logging.getLogger(__name__)
 router = Router(name="admin")
@@ -763,6 +771,133 @@ async def cmd_setlead(message: Message) -> None:
         f"{target.full_name} is now a named contact for this group.\n"
         f"Contacts: {', '.join(names)}.{marked}"
     )
+
+
+@router.message(cmd.any_case(cmd.SETGROUPCODE))
+async def cmd_setgroupcode(message: Message, command: CommandObject) -> None:
+    """`/npsetgroupcode BBS` - inside the group it names.
+
+    Sent in the counterparty's own room, like `/npsetlead`, and for the same
+    reason: the group is the thing being described, so standing in it is how
+    the platform knows which one you mean. There is no form of this command
+    that takes a group id, deliberately - naming the wrong room from a list
+    is exactly the mistake that would be hardest to notice afterwards.
+
+    Administrators only. A code is a permanent handle that routing will hang
+    off, and a counterparty's own staff should not be renaming the room the
+    desk types at.
+    """
+    async with session_scope() as session:
+        if not await _admin_or_refuse(session, message):
+            return
+
+        chat = await resolve_chat(session, message.chat.id)
+        if chat is None or chat.kind is not ChatKind.CLIENT:
+            await message.reply(
+                f"Send this inside the client or supplier group you want to "
+                f"name. If the group is not registered yet, do that first "
+                f"with /{cmd.REGISTER_CLIENT} or /{cmd.REGISTER_SUPPLIER}."
+            )
+            return
+
+        raw = (command.args or "").strip()
+        if not raw:
+            current = chat.group_code
+            now = (
+                f"This group is #{current}."
+                if current
+                else "This group has no code yet."
+            )
+            await message.reply(
+                f"{now}\n\nUsage: /{cmd.SETGROUPCODE} <CODE> — two to four "
+                f"letters, for example BBS. The desk can then write #BBS and "
+                f"the platform knows which group is meant."
+            )
+            return
+
+        try:
+            previous = await group_codes.assign(session, chat, raw)
+        except group_codes.GroupCodeError as exc:
+            await message.reply(explain(exc))
+            return
+
+        code = chat.group_code
+        where = chat.title or "this group"
+        logger.info("Group code %s set for chat %s", code, chat.telegram_chat_id)
+
+    if previous and previous != code:
+        # Says what it was. A code is something other people have learned to
+        # type, so changing one silently leaves the rest of the desk using a
+        # name that now means nothing.
+        await message.reply(
+            f"{where} is now #{code}, and was #{previous}. The old code no "
+            f"longer resolves — anybody still typing it will be told so "
+            f"rather than reaching the wrong group."
+        )
+        return
+    await message.reply(
+        f"{where} is now #{code}. Writing #{code} in an FX command will pick "
+        f"this group without going through the list."
+    )
+
+
+@router.message(cmd.any_case(cmd.GROUPS))
+async def cmd_groups(message: Message) -> None:
+    """`/npgroups` - the codes this desk can type, and the gaps.
+
+    Staff only, and scoped to the sender's own department. The full list is
+    an internal map of who NexterPay deal with: a client reading it would
+    learn every other client and every supplier on the desk, which is most of
+    the commercial picture.
+
+    Groups without a code are listed too. A desk running this is usually
+    asking "what can I type?", and the missing ones are the answer.
+    """
+    user = message.from_user
+    async with session_scope() as session:
+        ctx = await staff_context(
+            session, message.chat.id, user.id if user else None
+        )
+        if ctx is None:
+            await message.reply(
+                await refusal_reason(
+                    user.id if user else None, session, message.chat.id
+                )
+            )
+            return
+        ops_chat, _ = ctx
+        chats = await group_codes.coded_groups(session, ops_chat.department)
+        department = ops_chat.department
+
+    if not chats:
+        await message.reply(
+            f"No client or supplier groups are registered for "
+            f"{department.label} yet."
+        )
+        return
+
+    lines = [f"<b>Group codes — {_e(department.label)}</b>"]
+    for side, heading in ((False, "Clients"), (True, "Suppliers")):
+        side_chats = [c for c in chats if c.is_supplier is side]
+        if not side_chats:
+            continue
+        lines += ["", f"<b>{heading}</b>"]
+        for chat in side_chats:
+            title = _e(chat.title or str(chat.telegram_chat_id))
+            lines.append(
+                f"#{chat.group_code} · {title}" if chat.group_code
+                else f"— · {title}"
+            )
+
+    missing = [c for c in chats if not c.group_code]
+    if missing:
+        lines += [
+            "",
+            f"<i>{len(missing)} group{'' if len(missing) == 1 else 's'} with "
+            f"no code. Set one with /{cmd.SETGROUPCODE} inside the group.</i>",
+        ]
+
+    await message.reply("\n".join(lines), parse_mode="HTML")
 
 
 @router.message(cmd.any_case(cmd.LEADS))
