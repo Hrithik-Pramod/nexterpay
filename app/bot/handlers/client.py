@@ -497,6 +497,57 @@ async def offer_lookup_format(message: Message) -> None:
     await message.reply(NUDGE)
 
 
+async def _note_desk_message(session, chat, message: Message) -> None:
+    """Write down what one of ours said in a counterparty's group. Say nothing.
+
+    The silence is the quiet rule of 7 October and is not in question. The
+    recording is the half that was missing between 9 and 22 October, when
+    these messages were dropped entirely and the desk's own words were absent
+    from the request they belonged to.
+
+    Resolved the same two ways a counterparty's message is - the reply they
+    answered, or the request this group is in the middle of - because a
+    message that belongs to no request has nowhere to be written down, and
+    inventing somewhere would be worse than the gap.
+    """
+    strategy = build_strategy(get_settings().reply_routing_strategy)
+    incoming = IncomingMessage(
+        telegram_chat_id=message.chat.id,
+        telegram_message_id=message.message_id,
+        sender_name=message.from_user.full_name if message.from_user else "NexterPay",
+        sender_telegram_user_id=message.from_user.id if message.from_user else None,
+        text=message.text or message.caption,
+        reply_to_message_id=(
+            message.reply_to_message.message_id if message.reply_to_message else None
+        ),
+    )
+
+    item = await strategy.resolve(session, chat, incoming)
+    if item is None:
+        item = await answering_our_last_message(
+            session, telegram_chat_id=message.chat.id
+        )
+    if item is None:
+        logger.debug(
+            "Desk message in %s belongs to no request - not recorded",
+            message.chat.id,
+        )
+        return
+
+    await relay.record_desk_message(
+        session, item,
+        chat_id=message.chat.id,
+        message_id=message.message_id,
+        sender_name=incoming.sender_name,
+        sender_telegram_user_id=incoming.sender_telegram_user_id,
+        text=incoming.text,
+    )
+    logger.info(
+        "Desk message recorded against %s, nothing announced",
+        item.display_reference,
+    )
+
+
 @router.message(F.chat.type.in_({"group", "supergroup"}))
 async def client_reply(message: Message) -> None:
     """Anything else a client says in their group.
@@ -532,7 +583,7 @@ async def client_reply(message: Message) -> None:
         # relaying one of our own.
         sender_id = message.from_user.id if message.from_user else None
         if await is_our_desk(session, sender_id):
-            logger.debug("Desk message in %s - not relayed", message.chat.id)
+            await _note_desk_message(session, chat, message)
             return
 
         strategy = build_strategy(get_settings().reply_routing_strategy)

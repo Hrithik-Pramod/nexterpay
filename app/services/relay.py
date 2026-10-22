@@ -173,6 +173,46 @@ async def _record_message(
     return message
 
 
+async def record_desk_message(
+    session: AsyncSession,
+    item: WorkItem,
+    *,
+    chat_id: int,
+    message_id: int | None,
+    sender_name: str,
+    sender_telegram_user_id: int | None,
+    text: str | None,
+) -> Message:
+    """Somebody from NexterPay typed straight into a counterparty's group.
+
+    Written down, and nothing else. No topic post, no notice, no event - the
+    quiet rules of 7 October mean the desk does not get told about its own
+    messages, and the person who wrote it was standing in the group when they
+    did.
+
+    But **written down**. Jason's wording was "if he sends a message, the bot
+    knows... its waiting": knowing is the recording, waiting is the silence.
+    Between 9 and 22 October this did neither - the message was dropped where
+    it was recognised as ours, so the desk's own words were missing from the
+    request they belonged to. On a platform whose value is that the whole
+    conversation is in one place, a hole shaped like "what we actually said to
+    them" is the wrong hole to have.
+
+    OUTBOUND, which is the fact that was wrong before 9 October: it used to be
+    filed as INBOUND against CLIENT_MESSAGE_RECEIVED, so the ledger claimed
+    the client had said something they never said.
+    """
+    return await _record_message(
+        session, item,
+        direction=MessageDirection.OUTBOUND,
+        chat_id=chat_id,
+        message_id=message_id,
+        sender_name=sender_name,
+        sender_telegram_user_id=sender_telegram_user_id,
+        text=text,
+    )
+
+
 async def announce(
     session: AsyncSession, gateway: TelegramGateway, item: WorkItem, event: Event
 ) -> None:
@@ -697,7 +737,21 @@ def claim_notice_text(item: WorkItem, actor_name: str | None) -> str | None:
 
     Returns None when there is nobody to name and no team wording to fall back
     on - saying "someone" would be worse than the silence.
+
+    **Nothing is sent on a request we raised ourselves.** NexterPay's reason
+    for this notice, on 5 September, was "if it is claimed, the client should
+    know who they are speaking with" - which holds when the client raised it
+    and is waiting. On an outbound request it is the other way round: we asked
+    the supplier for a rate, and telling them somebody here "is now looking
+    after your request" describes a request they never made.
+
+    Reported by Gavs D on 22 October, claiming SPEX-1123 - a rate we had asked
+    Supplier Pexi for - and watching the supplier's group receive it.
+    `raised_by_us` has always known the difference; this is the first thing to
+    ask it.
     """
+    if item.raised_by_us:
+        return None
     if item.department is Department.BUSINESS:
         return (
             f"{MARK_OWNER} <b>Enquiry {_e(item.client_reference)}</b> — Our "

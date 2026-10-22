@@ -192,6 +192,40 @@ async def test_business_names_the_team_not_the_person(
     assert "Sarah Hill" not in notice
 
 
+async def test_nothing_is_claimed_at_a_counterparty_who_asked_for_nothing(
+    session, acme_business, gw
+):
+    """A request we raised is not theirs to be told about.
+
+    Gavs D, 22 October, testing the FX route: he asked Supplier Pexi for a
+    rate with /npnewsu, claimed the resulting request in Finance Operations,
+    and watched "Gavs D is now looking after your request" arrive in the
+    supplier's group. The supplier had not made a request.
+
+    NexterPay's reason for this notice on 5 September - "if it is claimed, the
+    client should know who they are speaking with" - is about somebody waiting
+    on us. On an outbound request we are the ones waiting.
+    """
+    item = await _open(session, gw, acme_business, subject="Rate for today")
+    item.raised_by_us = True
+    await session.flush()
+
+    assert relay.claim_notice_text(item, "Gavs D") is None
+
+
+async def test_a_request_they_raised_still_says_who_has_it(
+    session, acme_support, gw
+):
+    """The other side of it, so the fix above cannot quietly silence
+    everything."""
+    item = await _open(session, gw, acme_support, subject="Payment missing")
+    assert item.raised_by_us is False
+
+    notice = relay.claim_notice_text(item, "Sarah Hill")
+    assert notice is not None
+    assert "Sarah Hill" in notice
+
+
 # --------------------------------------------------------------------------
 # What the redraw did not change
 # --------------------------------------------------------------------------

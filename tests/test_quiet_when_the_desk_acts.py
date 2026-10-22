@@ -323,3 +323,87 @@ async def test_a_stranger_is_not_our_desk(session) -> None:
 
     assert await is_our_desk(session, 999000111) is False
     assert await is_our_desk(session, None) is False
+
+
+# --------------------------------------------------------------------------
+# Quiet is not the same as missing
+# --------------------------------------------------------------------------
+#
+# Between 9 and 22 October the desk's own messages in a counterparty group
+# were dropped where they were recognised as ours. The silence was right. The
+# dropping was not: the request then had no record of what NexterPay actually
+# said to them, on a platform whose value is that the whole conversation is in
+# one place.
+#
+# Jason's wording on 7 October already had both halves - "if he sends a
+# message, the bot knows... its waiting". Knowing is the recording. Waiting is
+# the silence.
+
+async def test_the_desk_typing_in_their_group_is_written_down(
+    session, acme_support, support_ops, operator, monkeypatch
+) -> None:
+    import contextlib
+    from types import SimpleNamespace
+
+    from sqlalchemy import select
+
+    from app.bot.handlers import client as client_handlers
+    from app.db.models import Message as MessageRow
+    from app.domain import work_items as wi
+    from app.domain.enums import MessageDirection
+
+    @contextlib.asynccontextmanager
+    async def fake_scope():
+        yield session
+
+    monkeypatch.setattr(client_handlers, "session_scope", fake_scope)
+
+    item = await wi.create_work_item(
+        session, source_chat=acme_support, subject="Rate",
+        original_message="What is the rate?", raised_by_name="NexterPay",
+    )
+    # The anchor that makes this group "in the middle of" that request.
+    session.add(
+        MessageRow(
+            work_item_id=item.id,
+            direction=MessageDirection.OUTBOUND,
+            telegram_chat_id=acme_support.telegram_chat_id,
+            telegram_message_id=900,
+            sender_name="NexterPay Operations",
+            text="What is the rate?",
+        )
+    )
+    await session.flush()
+
+    said: list = []
+    typed = SimpleNamespace(
+        chat=SimpleNamespace(id=acme_support.telegram_chat_id, type="supergroup"),
+        message_id=901,
+        text="checking with them now",
+        caption=None,
+        reply_to_message=None,
+        from_user=SimpleNamespace(
+            id=operator.telegram_user_id, full_name="Sarah Hill"
+        ),
+        reply=lambda *a, **k: said.append(a),
+        answer=lambda *a, **k: said.append(a),
+    )
+
+    await client_handlers.client_reply(typed)
+
+    rows = (await session.execute(
+        select(MessageRow).where(
+            MessageRow.work_item_id == item.id,
+            MessageRow.telegram_message_id == 901,
+        )
+    )).scalars().all()
+
+    assert len(rows) == 1, (
+        "the desk's own message was not recorded, so the request has no "
+        "record of what we said to them"
+    )
+    assert rows[0].direction is MessageDirection.OUTBOUND, (
+        "recorded as INBOUND would mean the ledger claims the counterparty "
+        "said it - the fault this check replaced"
+    )
+    assert not said, "the desk was told about its own message"
