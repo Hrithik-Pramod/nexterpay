@@ -58,7 +58,32 @@ class BadGroupCode(GroupCodeError):
 
 
 class CodeTaken(GroupCodeError):
-    """Another group already answers to this."""
+    """Another group already answers to this.
+
+    Carries the holder, but does not name it in the message. `/npsetgroupcode`
+    is typed inside the counterparty's own room - deliberately, so that the
+    group being named is the one you are standing in - which means every
+    refusal it produces is read by that counterparty.
+
+    Found live on 25 October, running `/npsetgroupcode BBS` in a client group:
+
+        BBS already belongs to TEST - Pexi Finance. Codes have to be unique
+        or #BBS means two different rooms.
+
+    The client had just been told the name of a supplier's group. Nothing
+    about a failed admin command should teach one counterparty that another
+    exists, and `holder.title` is the single most identifying thing the
+    platform holds about a room.
+
+    `holder` stays on the exception so a caller standing somewhere internal
+    can still say which group it was. There is no such caller today; the
+    attribute is here so that adding one does not mean re-deriving the
+    holder, and so this docstring is attached to it when somebody does.
+    """
+
+    def __init__(self, message: str, holder: Chat | None = None) -> None:
+        super().__init__(message)
+        self.holder = holder
 
 
 # Exactly what `#...` matches in a sentence, anchored.
@@ -110,9 +135,18 @@ async def assign(session: AsyncSession, chat: Chat, raw: str) -> str | None:
 
     holder = await holder_of(session, code)
     if holder is not None and holder.id != chat.id:
+        # Says nothing about the holder - see CodeTaken. The desk is pointed
+        # at /npgroups, which is read in an Operations Group where naming
+        # rooms is free, and told that the holder may be on another desk,
+        # because codes are unique platform-wide while /npgroups lists one
+        # department. Without that line an administrator checks the list, does
+        # not find the code, and concludes the refusal was wrong.
         raise CodeTaken(
-            f"{code} already belongs to {holder.title or 'another group'}. "
-            f"Codes have to be unique or #{code} means two different rooms."
+            f"#{code} is already taken. Codes have to be unique or #{code} "
+            f"means two different rooms. Run /npgroups in your Operations "
+            f"Group to see which are in use - and note a code can be held by "
+            f"a group on another desk, which that list will not show.",
+            holder=holder,
         )
 
     previous = chat.group_code

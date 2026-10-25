@@ -106,6 +106,50 @@ async def test_two_groups_cannot_share_a_code(
     assert pexi_supplier.group_code is None
 
 
+async def test_the_refusal_does_not_name_the_group_holding_the_code(
+    session, acme_support, pexi_supplier
+) -> None:
+    """A client must not learn a supplier exists from a failed admin command.
+
+    `/npsetgroupcode` is typed inside the counterparty's own room - that is
+    the design, because the group you are standing in is the group being
+    named - so this refusal is read by that counterparty.
+
+    Found live on 25 October, running `/npsetgroupcode BBS` in a client
+    group, which answered:
+
+        BBS already belongs to TEST - Pexi Finance. Codes have to be unique
+        or #BBS means two different rooms.
+
+    Acme had just been told the name of a supplier's group. The refusal still
+    has to be useful to the administrator, so it points at `/npgroups`, which
+    is read in an Operations Group where naming rooms costs nothing.
+    """
+    await group_codes.assign(session, acme_support, "BBS")
+
+    with pytest.raises(group_codes.CodeTaken) as caught:
+        await group_codes.assign(session, pexi_supplier, "BBS")
+
+    said = str(caught.value)
+    assert acme_support.title
+    assert acme_support.title not in said, (
+        f"the holder's group title reached a counterparty's room: {said!r}"
+    )
+    for word in acme_support.title.replace("—", " ").replace("-", " ").split():
+        assert word.lower() not in said.lower(), (
+            f"{word!r} from the holder's title reached a counterparty's room"
+        )
+
+    # Still useful: it says what to do, and warns that the list it points at
+    # is per desk while codes are unique platform-wide.
+    assert "/npgroups" in said
+    assert "another desk" in said
+
+    # And nothing is lost internally - a caller standing somewhere safe can
+    # still say which group it was.
+    assert caught.value.holder is acme_support
+
+
 async def test_setting_the_same_code_on_the_same_group_is_fine(
     session, acme_support
 ) -> None:
