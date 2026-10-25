@@ -47,6 +47,7 @@ from app.db.base import session_scope
 from app.db.models import Client, Staff, StaffDepartment, WorkItem
 from app.domain import group_codes
 from app.domain.enums import ChatKind, Department, StaffRole, WorkItemStatus
+from app.domain.work_items import operations_chat_for
 from app.services.relay import _e
 
 logger = logging.getLogger(__name__)
@@ -786,6 +787,40 @@ async def cmd_setgroupcode(message: Message, command: CommandObject) -> None:
     Administrators only. A code is a permanent handle that routing will hang
     off, and a counterparty's own staff should not be renaming the room the
     desk types at.
+
+    **It answers in two rooms, and only one of them may hear the code.**
+
+    Jason, 19 October: "#BBS remains completely internal and must never go out
+    to the client/supplier." Every reply this command makes where it is typed
+    is read by that counterparty, and three separate ones were telling them
+    things. Found live on 25 October - this had been sitting in a supplier's
+    group since 12:10 the same day:
+
+        TEST - Pexi Finance is now #BBS. Writing #BBS in an FX command will
+        pick this group without going through the list.
+
+    The code, published to the supplier, with instructions for using it. The
+    no-argument form was worse: it answers "This group is #BBS" and then
+    explains the whole mechanism. The refusals carry the code too.
+
+    Patching the three of them individually is what produced three of them.
+    So the shape is structural instead: in a counterparty's room this command
+    says exactly one fixed sentence - the same words whatever happened - and
+    every word that varies goes to the Operations Group, where naming things
+    costs nothing. Nothing that is computed from a code, a title or a domain
+    error can reach the room the command was typed in, because nothing
+    computed is sent there at all.
+
+    The fixed sentence is deliberately neutral about the outcome. "Saved"
+    would be a lie on the refusal paths, and the honest alternative - varying
+    it - is the thing being removed.
+
+    Not cured, and worth knowing: the administrator's own message still reads
+    `/npsetgroupcode BBS` in that room, and the platform cannot unsay it. The
+    counterparty is left with a bare token and no explanation rather than
+    being taught what it means. Curing that means deleting the command message
+    or moving the command into Operations, and both cost something worth
+    discussing before paying.
     """
     async with session_scope() as session:
         if not await _admin_or_refuse(session, message):
@@ -793,6 +828,7 @@ async def cmd_setgroupcode(message: Message, command: CommandObject) -> None:
 
         chat = await resolve_chat(session, message.chat.id)
         if chat is None or chat.kind is not ChatKind.CLIENT:
+            # Not a counterparty's room, so there is nobody here to overhear.
             await message.reply(
                 f"Send this inside the client or supplier group you want to "
                 f"name. If the group is not registered yet, do that first "
@@ -800,44 +836,74 @@ async def cmd_setgroupcode(message: Message, command: CommandObject) -> None:
             )
             return
 
+        try:
+            ops = await operations_chat_for(session, chat.department)
+            ops_chat_id = ops.telegram_chat_id
+        except LookupError:
+            ops_chat_id = None
+
+        where = chat.title or "this group"
         raw = (command.args or "").strip()
+
         if not raw:
             current = chat.group_code
             now = (
-                f"This group is #{current}."
+                f"{where} is #{current}."
                 if current
-                else "This group has no code yet."
+                else f"{where} has no code yet."
             )
-            await message.reply(
+            detail = (
                 f"{now}\n\nUsage: /{cmd.SETGROUPCODE} <CODE> — two to four "
-                f"letters, for example BBS. The desk can then write #BBS and "
-                f"the platform knows which group is meant."
+                f"letters, for example BBS — sent in that group. The desk can "
+                f"then write #BBS and the platform knows which group is meant."
+            )
+        else:
+            try:
+                previous = await group_codes.assign(session, chat, raw)
+            except group_codes.GroupCodeError as exc:
+                detail = f"{where}: {explain(exc)}"
+            else:
+                code = chat.group_code
+                logger.info(
+                    "Group code %s set for chat %s", code, chat.telegram_chat_id
+                )
+                if previous and previous != code:
+                    # Says what it was. A code is something other people have
+                    # learned to type, so changing one silently leaves the rest
+                    # of the desk using a name that now means nothing.
+                    detail = (
+                        f"{where} is now #{code}, and was #{previous}. The old "
+                        f"code no longer resolves — anybody still typing it "
+                        f"will be told so rather than reaching the wrong group."
+                    )
+                else:
+                    detail = (
+                        f"{where} is now #{code}. Writing #{code} in an FX "
+                        f"command will pick this group without going through "
+                        f"the list."
+                    )
+
+    if ops_chat_id is not None:
+        try:
+            await gateway().send_message(chat_id=ops_chat_id, text=detail)
+        except Exception:
+            # Whatever happened to the code has happened; the desk simply has
+            # not been told where it was expecting to read it.
+            logger.exception("Could not post the group code detail to Operations")
+            await message.reply(
+                "I could not reach your Operations Group. Run /npgroups "
+                "there to see where this stands."
             )
             return
-
-        try:
-            previous = await group_codes.assign(session, chat, raw)
-        except group_codes.GroupCodeError as exc:
-            await message.reply(explain(exc))
-            return
-
-        code = chat.group_code
-        where = chat.title or "this group"
-        logger.info("Group code %s set for chat %s", code, chat.telegram_chat_id)
-
-    if previous and previous != code:
-        # Says what it was. A code is something other people have learned to
-        # type, so changing one silently leaves the rest of the desk using a
-        # name that now means nothing.
         await message.reply(
-            f"{where} is now #{code}, and was #{previous}. The old code no "
-            f"longer resolves — anybody still typing it will be told so "
-            f"rather than reaching the wrong group."
+            "Noted — I have answered in your Operations Group."
         )
         return
+
+    logger.warning("No Operations Group for %s; group code detail unsent", where)
     await message.reply(
-        f"{where} is now #{code}. Writing #{code} in an FX command will pick "
-        f"this group without going through the list."
+        "There is no Operations Group registered for this desk, so I have "
+        "nowhere to reply. An administrator needs to register one first."
     )
 
 

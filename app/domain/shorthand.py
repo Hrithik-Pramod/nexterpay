@@ -70,9 +70,44 @@ def strip_codes(text: str) -> str:
     A counterparty does not need to see the platform's internal labels, and a
     supplier reading `#ACME` has just learned the client's code - which is the
     beginning of working out what NexterPay make on them.
+
+    Takes the punctuation with it. Removing a word from the middle of a
+    sentence leaves the spacing around it behind, and the result went out to a
+    supplier on 25 October reading:
+
+        Noting this is for , same terms as last week.
+
+    The code had gone, which is the part that matters, and what arrived was a
+    sentence with a hole in it. A counterparty cannot tell a redaction from a
+    broken bot, and the one they will assume is the one that makes them doubt
+    the figures in the same message.
+
+    This cannot rescue the grammar - "for , same" becomes "for, same", not
+    whatever the desk meant - so it buys a typo in place of something that
+    reads like a fault. The real answer is upstream: the desk sees the
+    outgoing text in the preview before anything is sent, and that preview
+    now shows exactly this.
     """
-    cleaned = CODE_RE.sub("", text or "")
-    return re.sub(r"[ \t]{2,}", " ", cleaned).strip()
+    kept: list[str] = []
+    for line in (text or "").splitlines():
+        tidied = _tidy(CODE_RE.sub("", line))
+        if tidied or not (line.strip() and not tidied):
+            # Blank lines the desk typed are paragraph breaks and stay. A line
+            # that held something and now holds nothing held only codes, and
+            # leaving it behind turns "#BBS" on its own line into a gap.
+            kept.append(tidied)
+    return "\n".join(kept).strip()
+
+
+def _tidy(line: str) -> str:
+    """One line, with the spacing the removal left behind cleaned up."""
+    # A space stranded before punctuation by the removal.
+    line = re.sub(r"[ \t]+([,.;:!?)\]])", r"\1", line)
+    # An opening bracket left hanging against whatever followed the code.
+    line = re.sub(r"([(\[])[ \t]+", r"\1", line)
+    # Brackets emptied out entirely - "(#BBS)" should not become "()".
+    line = re.sub(r"\(\s*\)|\[\s*\]", "", line)
+    return re.sub(r"[ \t]{2,}", " ", line).strip()
 
 
 __all__ = ["CODE_BODY", "CODE_RE", "find_codes", "strip_codes", "unique_codes"]

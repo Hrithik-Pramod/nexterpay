@@ -527,3 +527,166 @@ def test_every_outward_rendering_of_a_subject_goes_through_one_function() -> Non
         f"these send a raw subject to a counterparty: {offenders}. Use "
         f"relay.outward_subject(item)."
     )
+
+
+# --------------------------------------------------------------------------
+# What a counterparty reads when a code is removed from the middle of it
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("typed,expected", [
+    # The one that went out live, 25 October, to a supplier.
+    (
+        "Noting this is for #BBS, same terms as last week.",
+        "Noting this is for, same terms as last week.",
+    ),
+    ("Rate please (#BBS) today", "Rate please today"),
+    ("Quote for #BBS and come back to me", "Quote for and come back to me"),
+    # Paragraph breaks the desk typed are theirs and survive.
+    ("Line one\n\nLine two", "Line one\n\nLine two"),
+    # A line that held nothing but a code should not survive as a gap.
+    ("#BBS\nPlease quote XOF", "Please quote XOF"),
+    ("No codes here at all", "No codes here at all"),
+])
+def test_removing_a_code_does_not_leave_a_hole(typed, expected) -> None:
+    """Stripping takes the spacing with it.
+
+    Found live on 25 October, read in a supplier's group:
+
+        Noting this is for , same terms as last week.
+
+    The code had gone - the part that matters - and what arrived was a
+    sentence with a hole in it. A counterparty cannot tell a redaction from a
+    broken bot, and the one they will assume is the one that makes them doubt
+    the figures in the same message.
+
+    This does not rescue the grammar, and is not meant to: "for, same" is a
+    typo where "for , same" is a fault. The desk sees the outgoing text in
+    the preview before anything is sent, which is the real safety net, and
+    `test_the_preview_is_what_actually_goes_out` is what keeps it honest.
+    """
+    assert shorthand.strip_codes(typed) == expected
+
+
+def test_the_preview_is_what_actually_goes_out() -> None:
+    """The outbound preview heading must be the heading that is sent.
+
+    The preview composed its body through `outbound_body`, which strips, and
+    then put the raw subject above it - so a request raised as
+
+        /npnewsu Please quote XOF 20,100,000 to Senegal for #BBS
+
+    previewed with `#BBS` in the heading and was sent without it. Found on
+    25 October.
+
+    The drift is the point rather than the leak: the preview is the desk's
+    last chance to see that removing the code left their sentence reading
+    oddly, and a preview that is not literally what gets sent cannot do that.
+    """
+    import ast
+    import pathlib
+
+    from app.services import relay
+
+    typed = "Please quote XOF 20,100,000 to Senegal for #BBS"
+    assert relay.outward_subject_text(typed) == (
+        "Please quote XOF 20,100,000 to Senegal for"
+    )
+
+    # And the preview reaches it rather than rendering the subject itself.
+    source = pathlib.Path("app/bot/handlers/outbound.py").read_text(encoding="utf-8")
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "capture":
+            break
+    else:
+        raise AssertionError("the outbound preview handler has been renamed")
+
+    called = {
+        ast.unparse(inner.func)
+        for inner in ast.walk(node)
+        if isinstance(inner, ast.Call)
+    }
+    assert "relay.outward_subject_text" in called, (
+        "the outbound preview renders the subject itself again, so it can "
+        "drift from what the counterparty is sent - it did, until 25 October"
+    )
+
+
+def test_the_confirmation_in_the_counterpartys_room_never_says_the_code() -> None:
+    """`/npsetgroupcode` answers in two rooms, and only one may hear the code.
+
+    The command is typed inside the counterparty's own group - deliberately,
+    because the room you are standing in is the room being named - so every
+    reply it makes is read by that counterparty.
+
+    Found live on 25 October, sitting in a supplier's group since 12:10 that
+    same day:
+
+        TEST — Pexi Finance is now #BBS. Writing #BBS in an FX command will
+        pick this group without going through the list.
+
+    That is the code, published to the supplier, with instructions for using
+    it. Jason, 19 October: "#BBS remains completely internal and must never go
+    out to the client/supplier." The refusal path had been fixed hours
+    earlier; this, the path that runs every time it *works*, had not.
+
+    Read off the AST rather than by grepping the file, because the fix is a
+    comment-heavy one and the words "#BBS" and "is now" appear all over the
+    reasoning. What is checked is the actual string literals handed to
+    `message.reply` - the ones that land in the counterparty's room.
+    """
+    import ast
+    import pathlib
+
+    source = pathlib.Path("app/bot/handlers/admin.py").read_text(encoding="utf-8")
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "cmd_setgroupcode":
+            break
+    else:
+        raise AssertionError("cmd_setgroupcode has been renamed")
+
+    spoken: list[str] = []
+    for call in ast.walk(node):
+        if not isinstance(call, ast.Call):
+            continue
+        target = ast.unparse(call.func)
+        if not target.endswith("message.reply"):
+            continue
+        for argument in call.args:
+            # Only literal text. A name here is a variable this test cannot
+            # follow, which is exactly the hole the fault came through, so it
+            # fails rather than passing on something it did not read.
+            if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+                spoken.append(argument.value)
+            elif isinstance(argument, ast.JoinedStr):
+                parts = [
+                    v.value for v in argument.values
+                    if isinstance(v, ast.Constant) and isinstance(v.value, str)
+                ]
+                spoken.append("".join(parts))
+
+                # An interpolation is allowed only when it is one of this
+                # module's own command-name constants - `/{cmd.REGISTER_CLIENT}`
+                # and the like, which say nothing about any group. Anything
+                # computed from a code, a title or a domain error is the fault
+                # itself, and the guard cannot evaluate it, so it refuses.
+                for value in argument.values:
+                    if not isinstance(value, ast.FormattedValue):
+                        continue
+                    written = ast.unparse(value.value)
+                    assert written.startswith("cmd."), (
+                        f"a reply in the counterparty's room interpolates "
+                        f"{written!r}; if that is a code, a group title or a "
+                        f"refusal, the counterparty is being told"
+                    )
+            elif not isinstance(argument, ast.Call):
+                raise AssertionError(
+                    f"cannot read what is replied in the counterparty's room: "
+                    f"{ast.unparse(argument)}"
+                )
+
+    assert spoken, "cmd_setgroupcode no longer answers where it was typed"
+    for said in spoken:
+        assert "#" not in said, f"a code reached the counterparty's room: {said!r}"
+        assert "is now" not in said.lower(), (
+            f"the counterparty was told what this group is now called: {said!r}"
+        )

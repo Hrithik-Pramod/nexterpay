@@ -1746,8 +1746,31 @@ def outward_subject(item: WorkItem) -> str:
     fallback: a counterparty reading a reference followed by an empty dash
     learns less than nothing.
     """
-    cleaned = shorthand.strip_codes(item.subject or "")
-    return cleaned or "New request"
+    return outward_subject_text(item.subject or "")
+
+
+def outward_subject_text(subject: str) -> str:
+    """`outward_subject` for a subject that has no work item yet.
+
+    The outbound preview needs this: it has to show the desk what the
+    counterparty will read, and at that point nothing has been created.
+
+    Split out rather than duplicated because the preview had quietly drifted.
+    It composed the body through `outbound_body`, which strips, and then put
+    the raw subject above it - so a request raised as
+
+        /npnewsu Please quote XOF 20,100,000 to Senegal for #BBS
+
+    previewed with `#BBS` in the heading and was sent without it. Found on
+    25 October. Harmless in itself, and the reason it matters is what the
+    preview is for: it is the desk's last chance to notice that stripping the
+    code has left their sentence reading oddly, and a preview that is not
+    literally what gets sent cannot do that job.
+
+    The comment above the preview already said it should be composed the same
+    way the real message is. Half of it was.
+    """
+    return shorthand.strip_codes(subject or "") or "New request"
 
 
 def outbound_opening_text(item: WorkItem, body: str) -> str:

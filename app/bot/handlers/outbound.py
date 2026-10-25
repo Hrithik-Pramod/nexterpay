@@ -326,7 +326,8 @@ async def capture(message: Message, state: FSMContext) -> None:
     # here. Two implementations of "what will they see" is how the preview came
     # to show the first line twice while claiming to be a preview.
     rest = relay.outbound_body(subject, body)
-    shown = f"{subject}\n\n{rest}" if rest else subject
+    heading = relay.outward_subject_text(subject)
+    shown = f"{heading}\n\n{rest}" if rest else heading
 
     await message.reply(
         f"This will open a new request with {data.get('to_title')} and send:\n\n"
