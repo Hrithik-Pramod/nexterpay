@@ -187,6 +187,80 @@ async def work_item_for_thread(
     return result.scalar_one_or_none()
 
 
+# Telegram refuses a message over 4096 characters, and the refusal is an
+# exception rather than a truncation.
+#
+# Found on 25 October measuring the unbounded outputs. `/npbook` passes 4096
+# at about seventy open deals and the settlement preview at about sixty lines,
+# and neither send was wrapped in anything - so the desk typed `/npbook`, got
+# an exception inside aiogram, and saw nothing at all. A command that does
+# nothing and says nothing, which is the failure this platform has a whole
+# test file about.
+#
+# It is worse than an ordinary silence, because the quiet rules of 7 October
+# rest on the book: the platform stopped narrating on the grounds that the
+# desk can ask at any time. The busier the desk, the longer the book, and the
+# more certainly the one thing holding up the silence is the thing that breaks.
+TELEGRAM_LIMIT = 4096
+
+# Headroom. Telegram counts entities rather than bytes, and an HTML tag is
+# cheaper in the counted length than in the string - so the string length is a
+# safe overestimate, but not one worth running to the edge of.
+CHUNK = 3800
+
+
+def in_parts(text: str, limit: int = CHUNK) -> list[str]:
+    """Split a long message on line boundaries, losing nothing.
+
+    Truncation was the other option and is wrong here. Both the things that
+    overflow are lists whose purpose is to be complete - the book is what the
+    desk chases from, and the settlement preview is what they check before
+    recording money. Cutting the end off either one hides exactly the rows
+    nobody then knows to look for.
+
+    Lines rather than characters because the text is HTML, and a cut through
+    the middle of a tag produces a message Telegram rejects outright - trading
+    one invisible failure for another. A single line longer than the limit is
+    hard-split as a last resort; nothing on this platform writes one.
+    """
+    if len(text) <= limit:
+        return [text]
+
+    parts: list[str] = []
+    current = ""
+    for line in (text or "").splitlines(keepends=True):
+        while len(line) > limit:
+            if current:
+                parts.append(current)
+                current = ""
+            parts.append(line[:limit])
+            line = line[limit:]
+        if len(current) + len(line) > limit:
+            parts.append(current)
+            current = line
+        else:
+            current += line
+    if current:
+        parts.append(current)
+    return [part for part in parts if part.strip()]
+
+
+async def say(send, text: str, **kwargs) -> None:
+    """`await say(message.reply, text, parse_mode="HTML")`, however long it is.
+
+    Keyboards are attached to the last part only: a button belongs under the
+    end of what it acts on, and repeating it on every chunk would offer the
+    same action four times.
+    """
+    parts = in_parts(text)
+    markup = kwargs.pop("reply_markup", None)
+    for index, part in enumerate(parts):
+        extra = dict(kwargs)
+        if markup is not None and index == len(parts) - 1:
+            extra["reply_markup"] = markup
+        await send(part, **extra)
+
+
 def explain(exc: Exception) -> str:
     """Domain errors are safe to show staff; anything else is not."""
     if isinstance(exc, DomainError):

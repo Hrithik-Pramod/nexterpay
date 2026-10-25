@@ -42,6 +42,7 @@ from app.bot.deps import (
     gateway,
     prompt_for,
     refusal_reason,
+    say,
     staff_context,
     work_item_for_thread,
 )
@@ -2599,7 +2600,8 @@ async def settle_capture_block_from(
 
     if not any(match.matched for match in matches):
         await state.clear()
-        await message.reply(
+        await say(
+            message.reply,
             preview + "\n\n<i>Nothing here matched an open deal, so there is "
             "nothing to record.</i>",
             parse_mode="HTML",
@@ -2633,8 +2635,8 @@ async def settle_capture_block_from(
     if await _ask_for_a_missing_country(message, state):
         return
 
-    await message.reply(
-        preview,
+    await say(
+        message.reply, preview,
         parse_mode="HTML",
         reply_markup=_action_keyboard("✅ Record this settlement", "fx:setsave"),
     )
@@ -2711,8 +2713,8 @@ async def settle_capture_country(message: Message, state: FSMContext) -> None:
         return
 
     await state.set_state(FxSettle.awaiting_block)
-    await message.reply(
-        data.get("settle_preview") or "Ready to record.",
+    await say(
+        message.reply, data.get("settle_preview") or "Ready to record.",
         parse_mode="HTML",
         reply_markup=_action_keyboard("✅ Record this settlement", "fx:setsave"),
     )
@@ -2999,7 +3001,9 @@ async def outstanding_book(message: Message) -> None:
         entries = await fx.outstanding_book(session)
         text = book_text(entries, utcnow())
 
-    await message.reply(text, parse_mode="HTML")
+    # Split rather than truncated: the book is what the desk chases from,
+    # and a cut end hides exactly the deals nobody then knows to look for.
+    await say(message.reply, text, parse_mode="HTML")
 
 
 async def start_deal(session, item: WorkItem, actor: Actor) -> FxOrder:
