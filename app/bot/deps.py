@@ -148,21 +148,28 @@ async def refusal_reason(
                 "register it before the bot will do anything here."
             )
         if chat.kind is not ChatKind.OPERATIONS:
-            # Short on purpose: this one is read by the counterparty.
+            # Two audiences, one message, and both halves are load-bearing.
             #
-            # A refusal here is sent into the client's or supplier's own
-            # group, where everyone can see it. It used to go on to describe
-            # "your Operations Group - the internal one where the request
-            # topics are", which explains NexterPay's internal filing to an
-            # outsider in order to tell a member of staff something they
-            # already know. Seen on 25 October, running /npgroups in a client
-            # group on purpose.
+            # **It names where to go.** Reported in testing: somebody sent a
+            # staff command in a client group, was told they were not
+            # registered for the department, and went hunting a permissions
+            # problem when they were simply in the wrong room.
+            # `test_a_staff_command_in_a_client_group_says_so` exists for that
+            # and asserts the Operations Group is named.
             #
-            # It still speaks rather than staying silent: a staff member whose
-            # command did nothing would otherwise assume it had worked.
+            # **It describes nothing internal.** The refusal lands in the
+            # counterparty's own group, where they read it too. It used to
+            # finish "- the internal one where the request topics are", which
+            # explains NexterPay's filing to an outsider in order to tell a
+            # colleague something they already know. Seen on 25 October,
+            # running /npgroups in a client group on purpose.
+            #
+            # Removing the whole sentence was the first attempt and was wrong:
+            # it threw away the fix for the reported incident to buy very
+            # little. The direction stays, the description goes.
             return (
-                "This is a client group, and that is a staff command. It has "
-                "not run."
+                "This is a client group, and that is a staff command. Send it "
+                "in your Operations Group instead."
             )
 
         if telegram_user_id is not None:

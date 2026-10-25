@@ -205,20 +205,27 @@ async def test_the_wrong_room_refusal_explains_nothing_internal(
     """Running a staff command in a client's group answers *in that group*,
     where the client reads it too.
 
-    It used to go on to describe "your Operations Group - the internal one
-    where the request topics are", explaining NexterPay's internal filing to
-    an outsider in order to tell a member of staff something they already
-    know. Found on 25 October, running /npgroups in a client group on purpose.
+    It used to finish "- the internal one where the request topics are",
+    which explains NexterPay's filing to an outsider in order to tell a
+    colleague something they already know. Found on 25 October, running
+    /npgroups in a client group on purpose.
 
-    It still speaks: a staff member whose command did nothing would otherwise
-    assume it had worked.
+    It still names the Operations Group, and that half is not optional:
+    `test_a_staff_command_in_a_client_group_says_so` in test_wiring exists
+    because somebody once read a permissions refusal here and went hunting a
+    permissions problem when they were only in the wrong room. Deleting the
+    whole sentence - the first thing tried here - threw that fix away to buy
+    very little.
     """
     from app.bot.deps import refusal_reason
 
     text = await refusal_reason(5001, session, acme_support.telegram_chat_id)
 
     assert text, "a staff command in the wrong room now says nothing at all"
-    for internal in ("Operations Group", "topic", "internal", "request topics"):
+    assert "operations group" in text.lower(), (
+        "the refusal no longer says where to go, which is what it is for"
+    )
+    for internal in ("topic", "internal", "filing"):
         assert internal.lower() not in text.lower(), (
-            f"the client can read this, and it mentions {internal!r}"
+            f"the client can read this, and it describes {internal!r}"
         )
