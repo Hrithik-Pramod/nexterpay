@@ -697,7 +697,7 @@ async def send_order(query: CallbackQuery, state: FSMContext) -> None:
                 receives_currency=data["receives_currency"],
                 actor=actor,
             )
-            await fx_relay.send_order(
+            withdrew = await fx_relay.send_order(
                 session, gateway(), order, side, actor=actor,
                 keyboard=confirm_keyboard(order.id, side),
             )
@@ -705,10 +705,21 @@ async def send_order(query: CallbackQuery, state: FSMContext) -> None:
             logger.exception("FX order send failed for %s", order_id)
             await query.message.answer(explain(exc))
             return
+        reference = order.display_reference
 
-    # Nothing. The desk pressed Send; telling them it sent is the dialogue
-    # Jason asked us to remove on 7 October. A failure still speaks - see the
-    # except above - so silence here means it went.
+    # Nothing on success. The desk pressed Send; telling them it sent is the
+    # dialogue Jason asked us to remove on 7 October. A failure still speaks -
+    # see the except above - so silence here means it went.
+    #
+    # An order that replaced one we could not take down is not success. Two
+    # live Confirm buttons showing different figures is the state that let a
+    # client agree to a number nobody had shown them, so it is said out loud.
+    if not withdrew:
+        await query.message.answer(
+            f"⚠️ {reference} has gone, but I could not take the previous "
+            f"order message down. Check the {side.value}'s group — the old "
+            f"figures may still be showing with a live button."
+        )
 
 
 @router.callback_query(F.data.startswith("fx:confirm:"))

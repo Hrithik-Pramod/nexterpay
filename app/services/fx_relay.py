@@ -215,16 +215,48 @@ async def send_order(
     *,
     actor: Actor,
     keyboard=None,
-) -> None:
+) -> bool:
     """The order, to whichever side it belongs to.
 
     One function for both sides rather than two, deliberately. Two would mean
     two places composing figures, and the second one is where somebody
     eventually reads the wrong column. This one cannot: it is handed a side and
     passes it straight to `view_for`.
+
+    Returns False when an order already in front of that counterparty could
+    not be taken down - see below. True otherwise, including when there was
+    nothing to take down.
     """
     counterparty, _ = await _chat_for_side(session, order, side)
     text = order_text(order, side)
+
+    # An order being re-issued replaces the one already in their group, and
+    # the old one has to stop being confirmable first.
+    #
+    # `/npordercl` can be run again on a deal that is already awaiting the
+    # client's confirmation - `create_client_order` allows it deliberately, so
+    # the desk can correct figures they have just typed. Until 25 October the
+    # second send simply overwrote the stored message id, which left the first
+    # order sitting in the client's group with its old figures and a live
+    # Confirm button, and nothing holding the id needed to take it down.
+    #
+    # That is the fault found live on 4 October - a client agreeing to a
+    # number that is no longer the order - reached by a second route.
+    # Amendment learned to withdraw; issuing did not. Doing it here rather
+    # than in the handler means every caller gets it, including the next one.
+    replaced = (
+        order.client_order_message_id
+        if side is FxSide.CLIENT
+        else order.supplier_order_message_id
+    )
+    withdrew = True
+    if replaced is not None:
+        withdrew = await withdraw_order(session, gateway, order, side)
+        if not withdrew:
+            logger.warning(
+                "Could not withdraw the previous %s order on %s before "
+                "sending a new one", side.value, order.display_reference,
+            )
 
     sent = await gateway.send_message(
         counterparty.telegram_chat_id, text, reply_markup=keyboard
@@ -249,7 +281,9 @@ async def send_order(
         sender_name=actor.name,
         text=text,
     )
-    # Nothing is said to the desk here. See `_announce` for why.
+    # Nothing is said to the desk here on success. See `_announce` for why.
+    # A failed withdrawal is not success, and the caller reports it.
+    return withdrew
 
 
 async def send_settlement(

@@ -502,3 +502,145 @@ async def test_nothing_outstanding_is_not_a_failure(
     assert await fx_relay.withdraw_order(
         session, FakeGateway(), order, FxSide.CLIENT
     ) is True
+
+
+# --------------------------------------------------------------------------
+# Re-issuing an order, which is the other way to leave a stale one standing
+# --------------------------------------------------------------------------
+#
+# Found on 25 October, walking every FX transition from every status ahead of
+# the November launch.
+#
+# `create_client_order` allows itself to be run again on a deal already
+# awaiting the client's confirmation - deliberately, so the desk can correct
+# figures they have just typed. `send_order` then overwrote the stored
+# message id, and nothing was left holding the id of the order already in the
+# client's group. It stayed there with its old figures and a live Confirm
+# button.
+#
+# Which is the 4 October fault exactly - a client agreeing to a number that is
+# no longer the order - reached by a second route. Amendment had learned to
+# withdraw; issuing had not.
+
+class _Gateway:
+    """Remembers what was sent, and what was taken back."""
+
+    def __init__(self) -> None:
+        self.sent: list[int] = []
+        self.withdrawn: list[int] = []
+        self._next = 5000
+
+    async def send_message(self, chat_id, text, **kw):
+        from types import SimpleNamespace
+
+        self._next += 1
+        self.sent.append(self._next)
+        return SimpleNamespace(message_id=self._next)
+
+    async def edit_reply_markup(self, chat_id, message_id, **kw):
+        self.withdrawn.append(message_id)
+        return True
+
+    async def edit_message_text(self, chat_id, message_id, text, **kw):
+        return True
+
+
+async def test_issuing_a_second_order_takes_the_first_one_down(
+    session, acme_support, support_ops, operator
+):
+    """Two live Confirm buttons showing different figures is the state that
+    let a client agree to a number nobody had shown them."""
+    from app.domain.enums import FxSide
+    from app.services import fx_relay
+
+    order = await _agreed_order(session, acme_support, operator)
+    order.status = FxOrderStatus.AWAITING_CLIENT_CONFIRMATION
+    order.client_order_message_id = None
+    await session.flush()
+
+    gw = _Gateway()
+    actor = Actor.of(operator)
+
+    await fx.create_client_order(
+        session, order, account_name="Acme Payments", rate=Decimal("610"),
+        pays=Decimal("33000"), pays_currency="EUR",
+        receives=Decimal("20130000"), receives_currency="XOF", actor=actor,
+    )
+    assert await fx_relay.send_order(
+        session, gw, order, FxSide.CLIENT, actor=actor, keyboard={"k": 1}
+    )
+    first = order.client_order_message_id
+
+    await fx.create_client_order(
+        session, order, account_name="Acme Payments", rate=Decimal("610"),
+        pays=Decimal("20000"), pays_currency="EUR",
+        receives=Decimal("12200000"), receives_currency="XOF", actor=actor,
+    )
+    assert await fx_relay.send_order(
+        session, gw, order, FxSide.CLIENT, actor=actor, keyboard={"k": 1}
+    )
+
+    assert first in gw.withdrawn, (
+        "the first order was left in the client's group with its old figures "
+        "and a live Confirm button"
+    )
+    assert order.client_order_message_id != first
+
+
+async def test_a_first_order_withdraws_nothing(
+    session, acme_support, support_ops, operator
+):
+    """So the guard above cannot pass by withdrawing indiscriminately."""
+    from app.domain.enums import FxSide
+    from app.services import fx_relay
+
+    order = await _agreed_order(session, acme_support, operator)
+    order.status = FxOrderStatus.AWAITING_CLIENT_CONFIRMATION
+    order.client_order_message_id = None
+    await session.flush()
+
+    gw = _Gateway()
+    actor = Actor.of(operator)
+    await fx.create_client_order(
+        session, order, account_name="Acme Payments", rate=Decimal("610"),
+        pays=Decimal("33000"), pays_currency="EUR",
+        receives=Decimal("20130000"), receives_currency="XOF", actor=actor,
+    )
+    await fx_relay.send_order(
+        session, gw, order, FxSide.CLIENT, actor=actor, keyboard={"k": 1}
+    )
+    assert gw.withdrawn == []
+
+
+async def test_a_failed_withdrawal_is_reported_not_swallowed(
+    session, acme_support, support_ops, operator
+):
+    """Silence means it worked, so this cannot be silent.
+
+    If the old order will not come down, the counterparty is looking at two
+    buttons and the desk has to know which group to go and tidy.
+    """
+    from app.domain.enums import FxSide
+    from app.services import fx_relay
+
+    class Stubborn(_Gateway):
+        async def edit_reply_markup(self, chat_id, message_id, **kw):
+            raise RuntimeError("message is too old to edit")
+
+        async def edit_message_text(self, chat_id, message_id, text, **kw):
+            raise RuntimeError("message is too old to edit")
+
+    order = await _agreed_order(session, acme_support, operator)
+    order.status = FxOrderStatus.AWAITING_CLIENT_CONFIRMATION
+    order.client_order_message_id = 4242
+    await session.flush()
+
+    actor = Actor.of(operator)
+    await fx.create_client_order(
+        session, order, account_name="Acme Payments", rate=Decimal("610"),
+        pays=Decimal("20000"), pays_currency="EUR",
+        receives=Decimal("12200000"), receives_currency="XOF", actor=actor,
+    )
+    assert await fx_relay.send_order(
+        session, Stubborn(), order, FxSide.CLIENT, actor=actor, keyboard={"k": 1}
+    ) is False, "a withdrawal that failed reported success"
