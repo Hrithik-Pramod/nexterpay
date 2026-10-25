@@ -687,6 +687,9 @@ async def send_order(query: CallbackQuery, state: FSMContext) -> None:
         create = (
             fx.create_client_order if side is FxSide.CLIENT else fx.create_supplier_order
         )
+        # Read before anything moves, so the refusal below can say truthfully
+        # where the deal has been put back to.
+        was, status_before = order.display_reference, order.status.label
         try:
             await create(
                 session, order,
@@ -703,8 +706,22 @@ async def send_order(query: CallbackQuery, state: FSMContext) -> None:
                 keyboard=confirm_keyboard(order.id, side),
             )
         except Exception as exc:
+            # Put the deal back. The move to "Awaiting their confirmation"
+            # means *we have asked them*, and if the message never arrived we
+            # have not.
+            #
+            # Found on 25 October, failing the send on purpose. The handler
+            # caught the error and returned, which left the session to commit
+            # on the way out of `session_scope` - so the deal advanced, the
+            # counterparty had nothing in front of them, and `/npbook` listed
+            # it under "waiting on clients". The desk would have chased
+            # somebody who was never asked, from a book that looked right.
+            await session.rollback()
             logger.exception("FX order send failed for %s", order_id)
-            await query.message.answer(explain(exc))
+            await query.message.answer(
+                f"{explain(exc)}\n\nNothing has changed — {was} is still "
+                f"{status_before}. Try again when that group is reachable."
+            )
             return
         reference = order.display_reference
 
@@ -1662,6 +1679,7 @@ async def settle_send(query: CallbackQuery, state: FSMContext) -> None:
             await query.message.answer("That deal no longer exists.")
             return
 
+        was, status_before = order.display_reference, order.status.label
         try:
             await fx.record_hash(session, order, tx_hash=data["tx_hash"], actor=actor)
             await fx_relay.send_settlement(
@@ -1669,8 +1687,15 @@ async def settle_send(query: CallbackQuery, state: FSMContext) -> None:
                 keyboard=receipt_keyboard(order.id),
             )
         except Exception as exc:
+            # Same reasoning as send_order. "Awaiting receipt" means the
+            # client has been given the hash and asked to confirm; if the
+            # message did not arrive, they have not been.
+            await session.rollback()
             logger.exception("FX settlement send failed for %s", order_id)
-            await query.message.answer(explain(exc))
+            await query.message.answer(
+                f"{explain(exc)}\n\nNothing has changed — {was} is still "
+                f"{status_before}. The hash has not been recorded."
+            )
             return
 
     # Nothing. See send_order.
