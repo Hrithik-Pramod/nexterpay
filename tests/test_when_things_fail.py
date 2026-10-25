@@ -119,3 +119,77 @@ def test_a_settlement_already_in_the_world_is_not_rolled_back() -> None:
         "settle_save no longer reports the clients it could not tell"
     )
     assert "failed.append" in body or "failed" in body
+
+
+# --------------------------------------------------------------------------
+# A picker that offers what the step cannot do
+# --------------------------------------------------------------------------
+#
+# Found live on 25 October, driving the bot. `/npordercl` listed every open
+# deal, including one still at Rate requested. Choosing it asked four
+# questions, produced a preview headed "This will be sent to Acme Payments"
+# with a live Send button, and only refused after the tap.
+#
+# `_open_deals` has taken an `allowed` filter since it was written, with a
+# comment saying why: "A picker that offers a deal and then says no is how
+# somebody learns the state machine by trial and error in front of a client."
+# The two order steps never passed it.
+
+def test_the_order_pickers_offer_only_what_they_can_act_on() -> None:
+    from app.bot.handlers.fx import ORDERABLE
+    from app.domain.enums import FxOrderStatus, FxSide
+
+    assert ORDERABLE[FxSide.CLIENT] == (
+        FxOrderStatus.RATE_QUOTED,
+        FxOrderStatus.AWAITING_CLIENT_CONFIRMATION,
+    )
+    assert ORDERABLE[FxSide.SUPPLIER] == (
+        FxOrderStatus.AWAITING_SUPPLIER_ACCEPTANCE,
+    )
+
+
+def test_the_picker_agrees_with_the_rule_that_refuses() -> None:
+    """The list the desk is offered is taken from the same states the domain
+    requires, so the two cannot drift apart."""
+    import inspect
+
+    from app.bot.handlers.fx import ORDERABLE
+    from app.domain import fx as domain
+    from app.domain.enums import FxSide
+
+    for side, creator in (
+        (FxSide.CLIENT, domain.create_client_order),
+        (FxSide.SUPPLIER, domain.create_supplier_order),
+    ):
+        source = inspect.getsource(creator)
+        for status in ORDERABLE[side]:
+            assert status.name in source, (
+                f"the {side.value} picker offers {status.name}, which "
+                f"{creator.__name__} does not accept"
+            )
+
+
+def test_the_refusal_does_not_guess_why_the_send_failed() -> None:
+    """Found in the same session, and it was mine.
+
+    The rollback message said "Try again when that group is reachable",
+    which is one possible cause. The same path is taken when the deal was
+    simply in the wrong state, and the desk was sent looking for a Telegram
+    problem that did not exist. `explain(exc)` already says why; the rollback
+    half says only what it left behind.
+
+    Checked against the strings the code can actually send, not the file's
+    text. The first version of this grepped the source and failed on the
+    comment above, which quotes the old wording in order to explain it -
+    source text is not code, a lesson this project has paid for before.
+    """
+    tree = ast.parse(HANDLERS.read_text(encoding="utf-8"))
+    spoken = [
+        node.value for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    ]
+
+    assert not [text for text in spoken if "reachable" in text], (
+        "a refusal still guesses that the group was unreachable"
+    )
+    assert len([text for text in spoken if "Nothing has changed" in text]) == 2

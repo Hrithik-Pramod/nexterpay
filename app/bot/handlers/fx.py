@@ -463,6 +463,29 @@ async def order_supplier(message: Message, state: FSMContext) -> None:
     await _start(message, state, FxSide.SUPPLIER)
 
 
+# Which deals each order step can actually act on.
+#
+# Taken from the `_require_state` calls in `fx.create_client_order` and
+# `fx.create_supplier_order`, so the list the desk is offered and the rule
+# that refuses them cannot disagree.
+#
+# Found live on 25 October. `/npordercl` offered every open deal, including
+# one still at Rate requested. The desk then answered four questions, read a
+# preview headed "This will be sent to Acme Payments", tapped Send - and only
+# then was told the deal was in the wrong state. `_open_deals` has taken an
+# `allowed` filter since it was written, with a comment saying exactly why:
+# "A picker that offers a deal and then says no is how somebody learns the
+# state machine by trial and error in front of a client." The order steps
+# were the two that never passed it.
+ORDERABLE: dict[FxSide, tuple[FxOrderStatus, ...]] = {
+    FxSide.CLIENT: (
+        FxOrderStatus.RATE_QUOTED,
+        FxOrderStatus.AWAITING_CLIENT_CONFIRMATION,
+    ),
+    FxSide.SUPPLIER: (FxOrderStatus.AWAITING_SUPPLIER_ACCEPTANCE,),
+}
+
+
 async def _start(message: Message, state: FSMContext, side: FxSide) -> None:
     user = message.from_user
     async with session_scope() as session:
@@ -474,13 +497,22 @@ async def _start(message: Message, state: FSMContext, side: FxSide) -> None:
                 )
             )
             return
-        deals = await _open_deals(session)
+        deals = await _open_deals(session, allowed=ORDERABLE[side])
         markup = _deal_keyboard(deals, side) if deals else None
 
     if not deals:
+        # Now that the list is filtered, "no open FX deals" would often be
+        # untrue - there may be plenty, just none at this step. Saying the
+        # wrong true-sounding thing is how somebody goes looking for a deal
+        # that is sitting in front of them.
+        waiting = (
+            "quoted and waiting for the client's amount"
+            if side is FxSide.CLIENT
+            else "confirmed by the client and waiting to go to the supplier"
+        )
         await message.reply(
-            "There are no open FX deals. A deal starts from the client's "
-            "request - open it and use More → Start FX."
+            f"No deal is {waiting}, so there is no {side.value} order to "
+            f"build yet.\n\nRun /{cmd.BOOK} to see where everything is."
         )
         return
 
@@ -718,9 +750,15 @@ async def send_order(query: CallbackQuery, state: FSMContext) -> None:
             # somebody who was never asked, from a book that looked right.
             await session.rollback()
             logger.exception("FX order send failed for %s", order_id)
+            # Says what is true and nothing more. An earlier version added
+            # "try again when that group is reachable", which guessed at the
+            # cause: the same path is taken when the deal was simply in the
+            # wrong state, and the desk was sent looking for a Telegram
+            # problem that did not exist. `explain(exc)` above already says
+            # why; this half only says what it left behind.
             await query.message.answer(
                 f"{explain(exc)}\n\nNothing has changed — {was} is still "
-                f"{status_before}. Try again when that group is reachable."
+                f"{status_before}."
             )
             return
         reference = order.display_reference
