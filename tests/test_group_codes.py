@@ -391,3 +391,95 @@ def test_every_refusal_on_the_platform_is_a_domain_error() -> None:
         "these are raised at people but are not DomainErrors, so explain() "
         f"replaces them with a generic apology: {offenders}"
     )
+
+
+# --------------------------------------------------------------------------
+# The code must not escape in anything a counterparty reads
+# --------------------------------------------------------------------------
+#
+# Jason, 19 October: "#BBS remains completely internal and must never go out
+# to the client/supplier."
+#
+# Found on 25 October hunting leaks. `outbound_body` had stripped codes from
+# the body since the shorthand existed - but a request's subject is the first
+# line the desk typed, rendered separately, and nothing stripped that. Since
+# group codes arrived, a first line beginning `#BBS` is the normal way to
+# write one.
+
+@pytest.mark.parametrize("typed,expected", [
+    ("#BBS can you quote XOF for today", "can you quote XOF for today"),
+    ("Can you quote XOF\n#BBS please", "Can you quote XOF"),
+    ("#BBS", "New request"),
+    ("Nothing internal here", "Nothing internal here"),
+])
+def test_a_subject_loses_the_shorthand_on_the_way_out(typed, expected) -> None:
+    from types import SimpleNamespace
+
+    from app.services import relay
+
+    subject = (typed.splitlines()[0] if typed else "")[:120] or "New request"
+    item = SimpleNamespace(client_reference="ACME-1042", subject=subject)
+
+    assert relay.outward_subject(item) == expected
+
+    opening = relay.outbound_opening_text(item, typed)
+    assert "#BBS" not in opening, (
+        "the counterparty was sent the desk's own shorthand in the subject"
+    )
+
+
+async def test_the_topic_keeps_the_shorthand(session, acme_support) -> None:
+    """Internally it is useful: the Operations topic is titled from the
+    subject, and `#BBS` there says which supplier the request is with.
+
+    Only the outward rendering strips, which is why there are two functions
+    and not one.
+    """
+    from app.domain import work_items as wi
+    from app.services import relay
+
+    item = await wi.create_work_item(
+        session, source_chat=acme_support, subject="#BBS can you quote XOF",
+        original_message="#BBS can you quote XOF", raised_by_name="Sarah",
+    )
+
+    assert "#BBS" in relay.topic_name(item, "Acme Ltd")
+    assert relay.outward_subject(item) == "can you quote XOF"
+
+
+def test_every_outward_rendering_of_a_subject_goes_through_one_function() -> None:
+    """The class, so the next outward path cannot forget.
+
+    `item.subject` read directly inside a function that sends to a
+    counterparty is the shape of this fault. Internal renderings - the topic
+    name, the Operations header - are meant to keep the code and are named
+    here rather than discovered.
+    """
+    import ast
+    import pathlib
+
+    internal = {"topic_name", "header_text"}
+
+    source = pathlib.Path("app/services/relay.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name in internal or node.name == "outward_subject":
+            continue
+        body = ast.unparse(node)
+        if "item.subject" not in body:
+            continue
+        # Reading it to pass to outward_subject or outbound_body is fine.
+        bare = body.replace("outward_subject(item)", "").replace(
+            "outbound_body(item.subject or '', body)", ""
+        )
+        if "item.subject" in bare and "send_message" in body:
+            offenders.append(node.name)
+
+    assert not offenders, (
+        f"these send a raw subject to a counterparty: {offenders}. Use "
+        f"relay.outward_subject(item)."
+    )

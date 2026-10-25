@@ -1720,6 +1720,36 @@ def outbound_body(subject: str, body: str) -> str:
     return shorthand.strip_codes(body)
 
 
+def outward_subject(item: WorkItem) -> str:
+    """The subject as a counterparty may read it, with our shorthand removed.
+
+    A subject is the first line of whatever the desk typed, so on an outbound
+    request it is their words verbatim - and since 19 October those words are
+    quite likely to begin `#BBS`, because that is now how you name a group.
+
+    Found on 25 October hunting leaks. `outbound_body` strips codes from the
+    body and has since the shorthand existed, but the subject is rendered
+    separately and was not stripped by anything. Typing
+
+        #BBS can you quote XOF for today
+
+    sent the supplier a message headed `ACME-1042 · #BBS can you quote XOF for
+    today`. Jason, 19 October: "#BBS remains completely internal and must
+    never go out to the client/supplier."
+
+    The stored subject keeps the code, deliberately - the Operations topic is
+    titled from it, and `#BBS` is useful there. It is removed here, at the
+    last moment before it escapes, which is where `staff_reply_text` strips
+    for the same reason.
+
+    A subject that was *only* a code strips to nothing, so there is a
+    fallback: a counterparty reading a reference followed by an empty dash
+    learns less than nothing.
+    """
+    cleaned = shorthand.strip_codes(item.subject or "")
+    return cleaned or "New request"
+
+
 def outbound_opening_text(item: WorkItem, body: str) -> str:
     """What the counterparty receives when NexterPay raise something with them.
 
@@ -1732,7 +1762,8 @@ def outbound_opening_text(item: WorkItem, body: str) -> str:
     as the acknowledgement, pointed the other way.
     """
     parts = [
-        f"{MARK_RECEIVED} <b>{_e(item.client_reference)} · {_e(item.subject)}</b>"
+        f"{MARK_RECEIVED} <b>{_e(item.client_reference)} · "
+        f"{_e(outward_subject(item))}</b>"
     ]
     rest = outbound_body(item.subject or "", body)
     if rest:
@@ -2145,7 +2176,7 @@ async def post_anchor(
     # has happened at all. Giving it one would spend a symbol on a non-event
     # and make the other four mean less.
     text = (
-        f"<b>{_e(item.client_reference)} · {_e(item.subject)}</b>\n"
+        f"<b>{_e(item.client_reference)} · {_e(outward_subject(item))}</b>\n"
         f"Status: {_e(item.status.client_label)}\n\n"
         f"<i>(<b>Reply to this message</b> to add to this request.)</i>"
     )
