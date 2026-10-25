@@ -148,10 +148,21 @@ async def refusal_reason(
                 "register it before the bot will do anything here."
             )
         if chat.kind is not ChatKind.OPERATIONS:
+            # Short on purpose: this one is read by the counterparty.
+            #
+            # A refusal here is sent into the client's or supplier's own
+            # group, where everyone can see it. It used to go on to describe
+            # "your Operations Group - the internal one where the request
+            # topics are", which explains NexterPay's internal filing to an
+            # outsider in order to tell a member of staff something they
+            # already know. Seen on 25 October, running /npgroups in a client
+            # group on purpose.
+            #
+            # It still speaks rather than staying silent: a staff member whose
+            # command did nothing would otherwise assume it had worked.
             return (
-                "This is a client group, and that is a staff command. Send it "
-                "in your Operations Group instead - the internal one where the "
-                "request topics are."
+                "This is a client group, and that is a staff command. It has "
+                "not run."
             )
 
         if telegram_user_id is not None:

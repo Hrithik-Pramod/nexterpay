@@ -193,3 +193,32 @@ def test_the_refusal_does_not_guess_why_the_send_failed() -> None:
         "a refusal still guesses that the group was unreachable"
     )
     assert len([text for text in spoken if "Nothing has changed" in text]) == 2
+
+
+# --------------------------------------------------------------------------
+# A refusal the counterparty can read
+# --------------------------------------------------------------------------
+
+async def test_the_wrong_room_refusal_explains_nothing_internal(
+    session, acme_support
+) -> None:
+    """Running a staff command in a client's group answers *in that group*,
+    where the client reads it too.
+
+    It used to go on to describe "your Operations Group - the internal one
+    where the request topics are", explaining NexterPay's internal filing to
+    an outsider in order to tell a member of staff something they already
+    know. Found on 25 October, running /npgroups in a client group on purpose.
+
+    It still speaks: a staff member whose command did nothing would otherwise
+    assume it had worked.
+    """
+    from app.bot.deps import refusal_reason
+
+    text = await refusal_reason(5001, session, acme_support.telegram_chat_id)
+
+    assert text, "a staff command in the wrong room now says nothing at all"
+    for internal in ("Operations Group", "topic", "internal", "request topics"):
+        assert internal.lower() not in text.lower(), (
+            f"the client can read this, and it mentions {internal!r}"
+        )
