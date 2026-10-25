@@ -43,6 +43,7 @@ from typing import Protocol
 # rather than copied: this file and `settlement.py` each made the same wrong
 # choice independently, which is what two copies of a decision buys you.
 from app.domain import settlement
+from app.domain.errors import DomainError
 
 logger = logging.getLogger(__name__)
 
@@ -89,8 +90,23 @@ WALLET_SETTING = "fx.watched_wallet"
 _TRON_ADDRESS = re.compile(r"^T[1-9A-HJ-NP-Za-km-z]{33}$")
 
 
-class WalletError(Exception):
-    """Something that is not an address NexterPay can be paid at."""
+class WalletError(DomainError):
+    """Something that is not an address NexterPay can be paid at.
+
+    A DomainError since 25 October, which it should have been from the start.
+
+    Every other refusal on this platform is one, and `deps.explain` is built
+    on that: a DomainError is shown to staff as written, anything else becomes
+    "Something went wrong. The error has been logged." The messages below are
+    carefully worded - they say what a Tron address looks like - and any
+    handler using the ordinary `except DomainError` pattern would have thrown
+    all of that away and told the desk nothing useful.
+
+    `/npwallet` escaped it by catching `WalletError` by name, so nothing was
+    broken today. Found by fuzzing on 25 October: it was the only error of its
+    kind outside the hierarchy, which makes it a trap for the next caller
+    rather than a bug in the current one.
+    """
 
 
 def parse_address(text: str) -> str:

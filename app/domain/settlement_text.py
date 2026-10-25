@@ -38,13 +38,40 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import (
+    ROUND_HALF_UP,
+    Decimal,
+    DivisionByZero,
+    InvalidOperation,
+    Overflow,
+)
 
 from app.domain import corridors
 from app.domain.errors import DomainError
 
 # Tron transaction ids: 64 hex characters, on a line of their own in every
 # settlement they have sent.
+# The point past which a figure stops being money and starts being a typo.
+#
+# Not a business rule. Their largest real line so far is 50,250,000 XOF, and
+# this is seven orders of magnitude above it - the parser's job is to refuse
+# the impossible, while judging the merely implausible is what the discrepancy
+# check and the human reading the preview are for.
+#
+# It exists because the arithmetic breaks before the absurdity does. Dividing
+# a 25-digit amount by a rate raises decimal.InvalidOperation from `quantize`,
+# which is not a SettlementTextError, so it escaped the handlers entirely:
+# `capture.watch` saw a settlement-shaped message, blew up inside aiogram, and
+# the desk was told nothing at all. Found on 25 October fuzzing the parsers.
+#
+# Below the ceiling the arithmetic always completes, so no caller of
+# `computed_usdt` has to defend itself.
+CEILING = Decimal("1e15")
+
+# USDT's precision on Tron. Named so the guard in `parse_line` and the
+# property it protects cannot quietly round to different places.
+USDT_PLACES = Decimal("0.000001")
+
 HASH_RE = re.compile(r"\b([0-9a-fA-F]{64})\b")
 
 # A settlement line. Deliberately loose about the furniture around the
@@ -106,7 +133,7 @@ class ParsedLine:
         # division recurs and carries twenty-eight digits into whatever
         # renders it.
         return (self.local_amount / self.rate).quantize(
-            Decimal("0.000001"), rounding=ROUND_HALF_UP
+            USDT_PLACES, rounding=ROUND_HALF_UP
         )
 
 
@@ -183,7 +210,13 @@ def parse_figure(text: str) -> Decimal:
         raise SettlementTextError(f"“{raw}” is not a number.") from None
     if value < 0:
         raise SettlementTextError(f"“{raw}” is negative.")
+    if not value.is_finite() or value >= CEILING:
+        raise SettlementTextError(
+            f"“{raw}” is too large to be a figure about money. If that is "
+            f"really the amount, say so and we will raise the limit."
+        )
     return value
+
 
 
 def parse_line(text: str) -> ParsedLine | None:
@@ -192,6 +225,15 @@ def parse_line(text: str) -> ParsedLine | None:
     None rather than an error, because a pasted block is full of lines that
     are not settlement lines - greetings, the total, the hash, blank space -
     and the caller sorts them out.
+
+    **"Not a settlement line" and "a settlement line I cannot read" are
+    different answers**, and only the first one is None. Once the label and
+    the shape have matched, this *is* one of their lines, and returning None
+    for it would drop it from the block in silence - three of four lines
+    understood and the fourth gone, with a plausible-looking total. That is
+    the outcome this file's own docstring calls the worst one available, and
+    it was reachable here until 25 October: any figure the parser refused
+    took its whole line with it, quietly.
     """
     match = LINE_RE.match(text or "")
     if match is None:
@@ -201,13 +243,40 @@ def parse_line(text: str) -> ParsedLine | None:
     if not (label in corridors.COUNTRY_CURRENCY or corridors.countries_for(label)):
         return None
 
-    try:
-        local = parse_figure(match.group("local"))
-        rate = parse_figure(match.group("rate"))
-    except SettlementTextError:
-        return None
+    # Past this point the line is theirs, so every problem is reported.
+    local = parse_figure(match.group("local"))
+    rate = parse_figure(match.group("rate"))
     if rate == 0:
-        return None
+        raise SettlementTextError(
+            f"“{text.strip()}” divides by a rate of nothing. A line needs the "
+            f"rate the payment was made at."
+        )
+
+    # The invariant the rest of the code relies on: **if a ParsedLine exists,
+    # its arithmetic works.**
+    #
+    # Bounding the two figures separately is not enough, and that was the
+    # first attempt at this. A small enough rate turns two in-range numbers
+    # into a quotient with more digits than the decimal context can quantize,
+    # and `quantize` then raises InvalidOperation - which is not a
+    # SettlementTextError, so it escaped every handler. `capture.watch` blew
+    # up inside aiogram on a settlement-shaped message and the desk was told
+    # nothing at all.
+    #
+    # So the check belongs on the quotient, computed once, here, where there
+    # is still somebody to tell. `computed_usdt` below repeats the division
+    # rather than caching it, which is cheap and keeps the dataclass frozen
+    # and comparable; what matters is that it can no longer fail.
+    try:
+        usdt = local / rate
+        if not usdt.is_finite() or usdt >= CEILING:
+            raise InvalidOperation
+        usdt.quantize(USDT_PLACES, rounding=ROUND_HALF_UP)
+    except (InvalidOperation, DivisionByZero, Overflow):
+        raise SettlementTextError(
+            f"“{text.strip()}” does not work out to an amount of money — "
+            f"{local} at a rate of {rate}. Check the figures."
+        ) from None
 
     stated = match.group("usdt")
     try:

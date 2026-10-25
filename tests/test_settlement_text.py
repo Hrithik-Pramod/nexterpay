@@ -242,6 +242,104 @@ def test_an_unknown_label_is_not_a_line():
     assert text.parse_line("ZZ: 3000000/606=4950") is None
 
 
-def test_a_zero_rate_is_not_a_line():
-    """Dividing by it is the next thing that would happen."""
-    assert text.parse_line("CI: 3000000/0=4950") is None
+def test_a_zero_rate_is_reported_rather_than_dropped():
+    """Changed on 25 October, deliberately.
+
+    This used to return None, on the reasoning that dividing by zero was the
+    next thing that would happen. Avoiding the crash was right; None was the
+    cheapest way to do it and the wrong one.
+
+    `CI: 3000000/0=4950` matched the line shape and names a country NexterPay
+    pay into. It *is* one of their settlement lines, with a rate somebody
+    mistyped. Returning None dropped it from the block in silence - so a
+    four-line payment would record three, show a total that looked plausible,
+    and leave one deal waiting on money the platform believed was accounted
+    for. This file's own docstring calls that the worst outcome available.
+
+    Now there is a real error path, so it is used.
+    """
+    with pytest.raises(text.SettlementTextError):
+        text.parse_line("CI: 3000000/0=4950")
+
+
+def test_a_line_that_is_not_a_line_at_all_is_still_quietly_ignored():
+    """The other half, unchanged: a pasted block is full of greetings, totals
+    and blank space, and the caller sorts those out."""
+    assert text.parse_line("morning all") is None
+    assert text.parse_line("= 39 309,469 USDT") is None
+    assert text.parse_line("ZZZ: 3000000/585") is None
+
+
+# --------------------------------------------------------------------------
+# Figures that are not figures
+# --------------------------------------------------------------------------
+#
+# Found on 25 October, fuzzing the parsers ahead of the November launch.
+#
+# A settlement line whose arithmetic overflows raised decimal.InvalidOperation
+# out of `quantize`. That is not a SettlementTextError, so no handler caught
+# it: `capture.watch` blew up inside aiogram on a settlement-shaped message
+# and the desk was told nothing whatsoever. Silence on a message about money.
+#
+# Two ways in, and the first fix only closed one of them - which is the point
+# of keeping both tests. Bounding each figure stops a huge amount; it does
+# nothing about a tiny rate, where two perfectly ordinary numbers divide into
+# something with more digits than the decimal context can hold.
+
+@pytest.mark.parametrize("block", [
+    "XOF: " + "9" * 60 + "/585",                 # amount far past money
+    "XOF: 999999999999999/0.000000000001",       # in-range figures, huge quotient
+    "XOF: 20100000/0.0000000001",
+    "XOF: 1/0.000000000000000000000000001",
+])
+def test_a_line_that_cannot_work_out_is_refused_not_crashed(block) -> None:
+    with pytest.raises(text.SettlementTextError):
+        text.parse(block)
+
+
+@pytest.mark.parametrize("block", [
+    "XOF: " + "9" * 60 + "/585",
+    "XOF: 999999999999999/0.000000000001",
+    "XOF: 20100000/0",
+])
+def test_the_watcher_survives_a_block_that_cannot_be_read(block) -> None:
+    """The path where it actually hurt.
+
+    `capture.observe` reads every message in a counterparty's group. An
+    exception here does not reach a person - it reaches aiogram, which logs
+    it. The desk sees nothing and has no idea anything was missed.
+    """
+    from app.services import capture
+
+    assert capture.observe(block) == []
+
+
+def test_every_line_that_survives_parsing_can_be_divided() -> None:
+    """The invariant worth having: if a ParsedLine exists, its arithmetic
+    works. Nothing downstream should have to defend itself."""
+    block = (
+        "XAF: 3000000/606=4 950,495\n"
+        "XOF: 20100000/585=34 358,974\n"
+        "SN 15000000/583\n"
+        "\n= 39 309,469 USDT"
+    )
+    parsed = text.parse(block)
+    assert len(parsed.lines) == 3
+    for line in parsed.lines:
+        assert line.computed_usdt.is_finite()
+        assert line.computed_usdt > 0
+
+
+def test_their_own_block_is_untouched_by_any_of_this() -> None:
+    """The one from 1 September, which every change here has to keep."""
+    parsed = text.parse(
+        "XAF: 3000000/606=4 950,495\n"
+        "XOF: 20100000/585=34 358,974\n\n"
+        "= 39 309,469 USDT\n\n"
+        "51c86654d87af90109a33bead642ca329771a4669d4bdc749219a49b78d80474"
+    )
+    assert [str(line.computed_usdt) for line in parsed.lines] == [
+        "4950.495050", "34358.974359",
+    ]
+    assert parsed.stated_total == Decimal("39309.469")
+    assert parsed.tx_hash

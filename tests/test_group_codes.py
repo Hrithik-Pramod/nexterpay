@@ -349,3 +349,45 @@ async def test_two_codes_will_not_be_chosen_between(
 
     assert state.data.get("to_chat_id") is None
     assert "#BBS" in " ".join(message.said)
+
+
+def test_every_refusal_on_the_platform_is_a_domain_error() -> None:
+    """`deps.explain` shows a DomainError to staff as written, and turns
+    everything else into "Something went wrong. The error has been logged."
+
+    So an exception class meant to be read by a person, that is not a
+    DomainError, is a carefully worded message nobody will ever see. Found by
+    fuzzing on 25 October: `WalletError` was the only one, and `/npwallet`
+    only escaped it by catching the class by name.
+
+    Enumerated rather than named, so the next one fails here instead.
+    """
+    import importlib
+    import inspect
+    import pkgutil
+
+    from app.domain.errors import DomainError
+
+    offenders = []
+    for package in ("app.domain", "app.services"):
+        module = importlib.import_module(package)
+        for info in pkgutil.iter_modules(module.__path__):
+            name = f"{package}.{info.name}"
+            try:
+                loaded = importlib.import_module(name)
+            except Exception:          # a module needing a live service
+                continue
+            for attr, value in vars(loaded).items():
+                if not inspect.isclass(value) or not issubclass(value, Exception):
+                    continue
+                if value.__module__ != name:
+                    continue
+                if not attr.endswith("Error"):
+                    continue
+                if not issubclass(value, DomainError):
+                    offenders.append(f"{name}.{attr}")
+
+    assert not offenders, (
+        "these are raised at people but are not DomainErrors, so explain() "
+        f"replaces them with a generic apology: {offenders}"
+    )
