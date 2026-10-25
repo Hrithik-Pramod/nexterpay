@@ -650,3 +650,24 @@ def test_every_work_item_action_offered_is_one_that_is_handled() -> None:
     assert not offered - handled, (
         f"offered on a keyboard but not handled: {sorted(offered - handled)}"
     )
+
+
+def test_the_command_escape_is_actually_wired_to_the_dispatcher() -> None:
+    """The escape rule only exists if it is registered.
+
+    `test_a_command_escapes_a_flow.py` proves the middleware behaves, but it
+    builds its own Dispatcher to do it - so it would keep passing if somebody
+    dropped the registration here and shipped a bot where `/npbook` is eaten
+    again. The behaviour and the wiring need separate guards; this is the
+    wiring one, and it belongs in the file that owns the real dispatcher.
+
+    Outer rather than inner, specifically: `StateFilter` is evaluated between
+    the two, so an inner middleware cannot clear state in time to matter.
+    """
+    from app.bot.main import a_command_always_wins
+
+    registered = dispatcher().message.outer_middleware
+    assert a_command_always_wins in list(registered), (
+        "a slash command no longer escapes an open FSM flow - /npbook typed "
+        "during /npsettle is read as settlement data again (25 October)"
+    )

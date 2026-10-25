@@ -248,9 +248,65 @@ def _reachable(url: str, timeout: float = 3.0) -> bool:
         return False
 
 
+# Every name the bot answers to, lowercased, for the escape rule below.
+# Derived from commands.ALL rather than listed again, so a command added next
+# year escapes a flow without anybody remembering this file exists.
+KNOWN_COMMANDS = frozenset(name.lower() for name in cmd.ALL)
+
+
+async def a_command_always_wins(handler, event, data):
+    """A slash command abandons whatever flow is open and runs.
+
+    Found live on 25 October. Half way through `/npsettle`, which waits for a
+    pasted block, typing `/npbook` produced:
+
+        No settlement lines found. Each line should read like
+        "CI 50250000/583" - country, amount, and the rate it was converted at.
+
+    The command had been swallowed as settlement data, and the desk was left
+    inside the flow with nothing saying so. `/npfx` typed in the same state
+    worked perfectly - because its handler happens to sit above the state
+    handler in fx.py, and `/npbook`'s sits below it.
+
+    So the behaviour was not so much wrong as arbitrary: whether a command
+    escaped an open flow depended on where somebody had put its function in a
+    file. Nobody can learn that rule, and it fails mid-task on a desk that is
+    busy.
+
+    An outer middleware because this is one rule about every message. The
+    alternative - the same guard pasted into each of the twenty-odd state
+    handlers - is the exact shape this project has been bitten by again and
+    again: correct in the ones somebody remembered.
+
+    Both of the last two statements are load-bearing, which is not obvious.
+    `StateFilter` does not read the storage; it reads `raw_state`, which
+    aiogram's own FSM middleware snapshotted into `data` at update level
+    before this one ran. Clearing the context alone leaves that snapshot
+    stale, the filter still matches, and `/npbook` is still eaten - a fix
+    that passes a unit test holding a real FSMContext and does nothing
+    whatsoever against a live dispatcher. Caught by reading aiogram 3.30's
+    filters/state.py instead of trusting the obvious, and the reason the test
+    for this drives a Dispatcher rather than calling the function.
+
+    Nothing is said about the abandonment. The command the person typed
+    answers them, which is proof enough the flow is over; a line of apology
+    before every deliberate change of mind is the chatter the quiet rules of
+    7 October removed.
+    """
+    text = (getattr(event, "text", "") or "").strip()
+    if text.startswith("/") and data.get("raw_state") is not None:
+        word = text.split(maxsplit=1)[0][1:].split("@")[0].lower()
+        if word in KNOWN_COMMANDS:
+            state = data.get("state")
+            if state is not None:
+                await state.clear()
+            data["raw_state"] = None
+    return await handler(event, data)
+
+
 def build_dispatcher() -> Dispatcher:
     dp = Dispatcher(storage=build_storage())
-
+    dp.message.outer_middleware(a_command_always_wins)
 
     @dp.message(cmd.any_case(cmd.START, cmd.START_ALIAS))
     async def cmd_start(message: Message) -> None:
