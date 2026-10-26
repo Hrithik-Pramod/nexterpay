@@ -332,3 +332,30 @@ async def test_one_client_with_two_identical_deals_is_still_ambiguous(
 
     assert not matches[0].matched
     assert "2 open deals" in matches[0].problem
+
+
+def test_the_importer_counts_what_it_stored() -> None:
+    """"Loaded N rows" must be rows stored, not lines read.
+
+    `accounts.record` is an upsert, so a line repeated in the spreadsheet
+    becomes one row - and NexterPay's 4 October file lists `BBS 2,1Win`
+    twice. The script printed the number of lines it had read.
+
+    Run live on 26 October it said "Loaded 19 rows" against a table holding
+    18. Both numbers were right about different things, which is the worst
+    kind of wrong: somebody reconciling a 20-line file against an 18-row
+    table goes hunting for a row that was never missing.
+    """
+    from scripts.import_supplier_accounts import loaded_message
+
+    # The live case.
+    said = loaded_message(read=19, stored=18)
+    assert said.startswith("Loaded 18 rows."), said
+    assert "1 line(s)" in said, (
+        "a file with a repeated line should say so, or the person reading "
+        "19 lines and 18 rows has nothing to reconcile them with"
+    )
+
+    # Nothing repeated: no second sentence to explain away.
+    assert loaded_message(read=18, stored=18) == "Loaded 18 rows."
+    assert loaded_message(read=0, stored=0) == "Loaded 0 rows."

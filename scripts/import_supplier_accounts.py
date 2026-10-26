@@ -132,12 +132,38 @@ async def run(path: Path, supplier: str, confirm: bool) -> int:
             print("\nDry run. Nothing was written. Add --confirm to load it.")
             return 0
 
-        for code, number, name in rows:
+        # Counted as stored, not as read.
+        #
+        # This printed `len(rows)`, which is how many lines the file had, and
+        # said "Loaded" about it. `accounts.record` is an upsert, so a line
+        # repeated in the spreadsheet - their 4 October file lists
+        # `BBS 2,1Win` twice - becomes one row.
+        #
+        # Run live on 26 October it reported "Loaded 19 rows" against a table
+        # holding 18, and both numbers were right about different things.
+        # Somebody reconciling a 20-line file against that would go looking
+        # for a row that was never missing. The dedupe is correct; only the
+        # sentence was wrong.
+        distinct = {(code, number, name) for code, number, name in rows}
+        for code, number, name in sorted(distinct):
             await accounts.record(
                 session, supplier_code=code, number=number, client_name=name
             )
-        print(f"\nLoaded {len(rows)} rows.")
+
+        print("\n" + loaded_message(read=len(rows), stored=len(distinct)))
     return 0
+
+
+def loaded_message(*, read: int, stored: int) -> str:
+    """What to say afterwards, counted as rows stored rather than lines read."""
+    said = f"Loaded {stored} rows."
+    repeated = read - stored
+    if repeated:
+        said += (
+            f" {repeated} line(s) in the file repeat one already counted, so "
+            f"they are the same row."
+        )
+    return said
 
 
 def main() -> int:
