@@ -40,6 +40,17 @@ import pathlib
 import pytest
 
 HANDLERS = pathlib.Path("app/bot/handlers")
+SERVICES = pathlib.Path("app/services")
+
+# The service modules that put messages in front of counterparties.
+#
+# Named here, and `test_no_service_writes_outward_unwatched` proves the list
+# is still every one of them.
+OUTWARD_SERVICES = (
+    "app/services/relay.py",
+    "app/services/fx_relay.py",
+    "app/services/broadcast.py",
+)
 
 # The functions that actually put a message in front of a counterparty.
 #
@@ -65,6 +76,11 @@ OUTWARD_WRITERS = {
     # test_the_withdrawal_composes_nothing_from_the_order in
     # test_fx_relay_leaks.py, which is what keeps that true.
     "withdraw_order",
+    # broadcast.send. Added 26 October, when widening OUTWARD_SERVICES to
+    # include broadcast.py found it had never been in scope - see
+    # test_the_writer_list_is_still_complete. It is the widest door there is:
+    # one message to every client and supplier group on a desk.
+    "send",
 }
 
 # Ways a handler can claim the work before doing it. Any one of them is
@@ -204,13 +220,25 @@ def test_there_are_doors_to_check() -> None:
 def test_the_writer_list_is_still_complete() -> None:
     """The set above is derived from the services, so it must be rederived.
 
-    A new function in relay.py or fx_relay.py that writes to a counterparty is
-    a new way out. If it is not in `OUTWARD_WRITERS`, every handler that calls
-    it is invisible to this whole file - which is exactly the failure mode
-    this file was written to end.
+    A new function in one of `OUTWARD_SERVICES` that writes to a counterparty
+    is a new way out. If it is not in `OUTWARD_WRITERS`, every handler that
+    calls it is invisible to this whole file - which is exactly the failure
+    mode this file was written to end.
+
+    The module list used to be two files, written out here. On 26 October a
+    broadcast was found going to every client and supplier group with our
+    `#ACME` and `#BBS` shorthand in it, untouched since the feature was
+    built - because `broadcast.py` was not one of the two, so this file had
+    never looked at it.
+
+    That is this file's own lesson applied to this file. It was written
+    because faults get fixed where they are noticed rather than where they
+    live, and its module list was itself a hand-maintained list of the places
+    somebody had noticed. `test_no_service_writes_outward_unwatched` below
+    now derives the list the same way everything else here is derived.
     """
     found = set()
-    for module in ("app/services/relay.py", "app/services/fx_relay.py"):
+    for module in OUTWARD_SERVICES:
         tree = ast.parse(pathlib.Path(module).read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, ast.AsyncFunctionDef):
@@ -411,4 +439,51 @@ def test_every_settlement_tells_the_client(case) -> None:
         f"{filename}::{node.name} sends the settlement without the Confirm "
         f"receipt button, so the deal can never be closed from the client's "
         f"side."
+    )
+
+
+def test_no_service_writes_outward_unwatched() -> None:
+    """`OUTWARD_SERVICES` must be every service that writes to a counterparty.
+
+    The list above was two files, written out by hand, for as long as this
+    file existed. On 26 October a broadcast was found carrying our `#ACME`
+    and `#BBS` shorthand to every client and supplier group on the desk, and
+    sending to all of them before clearing its own button - two faults this
+    file exists to catch, in a module it had simply never been pointed at.
+
+    So the list gets the same treatment as everything else here: derived, and
+    checked. Any module under app/services that hands a chat id to the
+    gateway is either in `OUTWARD_SERVICES` or named below as internal, and
+    adding a third option means editing this test, which is the point.
+    """
+    # Writes only into NexterPay's own rooms.
+    #
+    # archive.py moves a finished ticket into the archive group; wallet_watch
+    # posts chain activity to Finance Operations; gateway.py is the transport
+    # every one of them calls. None of them can reach a counterparty, and
+    # `test_the_writer_list_is_still_complete` would catch it if one started.
+    internal_services = {
+        "app/services/archive.py",
+        "app/services/wallet_watch.py",
+        "app/services/gateway.py",
+    }
+
+    writes = set()
+    for path in sorted(SERVICES.glob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if _called_name(node) in {"send_message", "send_photo", "send_document"}:
+                writes.add(path.as_posix())
+                break
+
+    unwatched = writes - set(OUTWARD_SERVICES) - internal_services
+    assert not unwatched, (
+        f"{sorted(unwatched)} send messages and no test in this file has ever "
+        f"looked at them. Add each to OUTWARD_SERVICES if it can reach a "
+        f"client or supplier, or to internal_services above if it cannot - "
+        f"and say which, because 'nobody checked' is how the broadcast "
+        f"shorthand leak survived from the day the feature was built."
     )

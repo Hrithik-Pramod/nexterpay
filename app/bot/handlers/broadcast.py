@@ -222,6 +222,28 @@ async def send(query: CallbackQuery, state: FSMContext) -> None:
         await query.answer("That draft has expired. Start again.", show_alert=True)
         return
 
+    # Claimed here, before any of the work below.
+    #
+    # `bc.send` walks every group on the desk one at a time, which is seconds
+    # of Telegram calls with the button still sitting there. The draft used to
+    # be cleared afterwards, so a second tap in that window sent the whole
+    # broadcast again - to every client and supplier.
+    #
+    # This is the duplicate-send fault NexterPay reported on 27 September
+    # ("seeing this happen a few times, duplicate messages"), fixed then in
+    # outbound.py and staff.py and found again in `tell_client_the_rate` and
+    # `send_order` on 3 October. Broadcast had it all along and was never
+    # checked, because `test_every_outward_door.py` scanned only relay.py and
+    # fx_relay.py - see that file, 26 October.
+    #
+    # It is the worst place to have had it: one tap is one message to
+    # everybody, so two taps is two messages to everybody.
+    await state.clear()
+    try:
+        await query.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        logger.debug("Could not clear the broadcast buttons", exc_info=True)
+
     async with session_scope() as session:
         ctx = await staff_context(
             session, query.message.chat.id, query.from_user.id if query.from_user else None
@@ -232,6 +254,7 @@ async def send(query: CallbackQuery, state: FSMContext) -> None:
         _, actor = ctx
 
         recipients = await bc.audience_for(session, audience, data.get("selected"))
+
         try:
             record = await bc.send(
                 session, gateway(), body=body, audience=audience,
@@ -241,9 +264,15 @@ async def send(query: CallbackQuery, state: FSMContext) -> None:
             broadcast_id = record.id
         except Exception as exc:
             await query.answer(explain(exc)[:190], show_alert=True)
+            # The draft is gone deliberately - we do not know how far the
+            # sending got, so it must not be retriable by tapping again. The
+            # text goes back so nothing has to be retyped.
+            await query.message.answer(
+                f"That did not send, and the draft has been cleared so it "
+                f"cannot go out twice. Your text:\n\n— — —\n{body}"[:4000]
+            )
             return
 
-    await state.clear()
     try:
         await query.message.edit_text(
             f"{summary}\n\n— — —\n{body}"[:4000],
