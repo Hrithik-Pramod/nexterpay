@@ -415,9 +415,23 @@ async def send(query: CallbackQuery, state: FSMContext) -> None:
         thread_id=thread_id,
         reply_markup=kb.work_item_actions(work_item_id, claimed=False),
     )
+    # What they were sent, not what was typed.
+    #
+    # This line says "and sent" and then shows text, so it is a claim about
+    # what the counterparty received - which is the desk's own record of the
+    # conversation when they scroll back. It showed `body` verbatim, so a
+    # request raised with `#BBS` in it was recorded here as having been sent
+    # with the code in, and the supplier had been sent it without. Seen on
+    # 26 October, immediately after fixing the same drift in the preview
+    # above: the preview had been the obvious half and this is the other one.
+    #
+    # The code is not the point - this is an Operations Group and `#BBS` is
+    # welcome here. The point is that a record of what was said to somebody
+    # has to be what was said to them.
+    sent = relay.outbound_body(subject, body) or relay.outward_subject_text(subject)
     try:
         await query.message.edit_text(
-            f"Opened {reference} with {data.get('to_title')} and sent.\n\n— — —\n{body}"[:4000],
+            f"Opened {reference} with {data.get('to_title')} and sent.\n\n— — —\n{sent}"[:4000],
             reply_markup=None,
         )
     except Exception:

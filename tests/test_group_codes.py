@@ -690,3 +690,47 @@ def test_the_confirmation_in_the_counterpartys_room_never_says_the_code() -> Non
         assert "is now" not in said.lower(), (
             f"the counterparty was told what this group is now called: {said!r}"
         )
+
+
+def test_what_operations_records_as_sent_is_what_was_sent() -> None:
+    """The desk's own record has to match the counterparty's copy.
+
+    After sending, the preview is edited to read "Opened SPEX-1125 with TEST
+    — Pexi Finance and sent." followed by the text. That is a claim about
+    what the supplier received, and it is what the desk scrolls back to when
+    they want to know what was said.
+
+    It showed the raw `body`, so a request raised with `#BBS` in it was
+    recorded in Operations as sent with the code in, while the supplier had
+    been sent it without. Seen on 26 October, immediately after fixing the
+    same drift in the preview - the preview was the obvious half and this
+    was the other one.
+
+    The code itself is not the problem here. Operations is internal and
+    `#BBS` is welcome in it. A record of what was said to somebody has to be
+    what was said to them.
+    """
+    import ast
+    import pathlib
+
+    source = pathlib.Path("app/bot/handlers/outbound.py").read_text(encoding="utf-8")
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "send":
+            break
+    else:
+        raise AssertionError("the outbound send handler has been renamed")
+
+    for call in ast.walk(node):
+        if not isinstance(call, ast.Call):
+            continue
+        if not ast.unparse(call.func).endswith("edit_text"):
+            continue
+        written = ast.unparse(call)
+        assert "and sent" in written, "this is no longer the sent-confirmation"
+        assert "{body}" not in written, (
+            "Operations is told the request was sent and shown the text as "
+            "typed, which is not the text the counterparty received"
+        )
+        break
+    else:
+        raise AssertionError("nothing confirms the send in Operations any more")
