@@ -25,6 +25,7 @@ from app.bot.deps import (
     gateway,
     prompt_for,
     refusal_reason,
+    replied_to_user,
     staff_context,
     work_item_for_thread,
 )
@@ -330,8 +331,9 @@ async def cmd_assign(message: Message, command: CommandObject) -> None:
             return
 
         target_id = None
-        if message.reply_to_message and message.reply_to_message.from_user:
-            target_id = message.reply_to_message.from_user.id
+        replied = replied_to_user(message)
+        if replied is not None:
+            target_id = replied.id
         elif command.args and command.args.strip().isdigit():
             target_id = int(command.args.strip())
 

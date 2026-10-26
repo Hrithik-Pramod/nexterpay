@@ -26,6 +26,7 @@ from app.bot.deps import (
     gateway,
     prompt_for,
     refusal_reason,
+    replied_to_user,
     staff_context,
 )
 from app.bot.registry import (
@@ -382,7 +383,7 @@ async def cmd_adduser(message: Message, command: CommandObject) -> None:
         if not await _admin_or_refuse(session, message):
             return
 
-        target = message.reply_to_message.from_user if message.reply_to_message else None
+        target = replied_to_user(message)
         if target is None:
             await message.reply(
                 f"That has to be a reply. Telegram will not tell a bot who is "
@@ -461,8 +462,9 @@ async def cmd_removeuser(message: Message, command: CommandObject) -> None:
 
         args = (command.args or "").split()
         target_id = None
-        if message.reply_to_message and message.reply_to_message.from_user:
-            target_id = message.reply_to_message.from_user.id
+        replied = replied_to_user(message)
+        if replied is not None:
+            target_id = replied.id
         elif args and args[0].isdigit():
             target_id = int(args.pop(0))
         if target_id is None:
@@ -719,7 +721,7 @@ async def cmd_setlead(message: Message) -> None:
             )
             return
 
-        target = message.reply_to_message.from_user if message.reply_to_message else None
+        target = replied_to_user(message)
         if target is None:
             await message.reply(
                 f"That has to be a reply. Telegram will not tell a bot who is "
@@ -1030,7 +1032,7 @@ async def cmd_removelead(message: Message) -> None:
             return
 
         chat = await resolve_chat(session, message.chat.id)
-        target = message.reply_to_message.from_user if message.reply_to_message else None
+        target = replied_to_user(message)
         if chat is None or target is None:
             await message.reply(
                 f"Reply to a message from the person, then send /{cmd.REMOVELEAD}."

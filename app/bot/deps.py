@@ -190,6 +190,54 @@ async def refusal_reason(
     )
 
 
+def replied_to_user(message):
+    """The person this message is a reply to, or None.
+
+    Use this instead of `message.reply_to_message.from_user` anywhere a
+    command means "the person you replied to". There is a trap in the Bot API
+    and every one of those commands was in it.
+
+    Inside a forum topic, Telegram fills `reply_to_message` on *every* message
+    with the service message that created the topic, whether the person
+    replied to anything or not. So a command typed in a topic always looks
+    like a reply, to whoever opened the topic - which on this platform is
+    always the bot, because the bot creates every topic.
+
+    What that cost, found live on 26 October running `/npremoveuser
+    1087968824` in an Operations topic:
+
+        Unknown department. One of: support|finance|development|business|
+        compliance.
+
+    No department had been given. The id was read as a department because the
+    phantom reply had already claimed the target slot. The same shape makes
+    `/npassign <telegram id>` useless in the only room it can be used - it
+    needs a work item, so it is always typed in a topic, so the id is always
+    ignored - and makes `/npadduser` and `/npsetlead` typed in a topic act on
+    the bot rather than refusing.
+
+    The failure mode is the dangerous one: these commands do not break, they
+    act on the wrong person and say something confident about it.
+
+    Two checks rather than one, because they fail differently. The service
+    message is identifiable by `forum_topic_created`, which is exact; and the
+    root of a topic has a message id equal to the thread id, which catches a
+    topic whose opening message is not a service message at all. Either is
+    enough on its own and neither is free to get wrong.
+    """
+    replied = getattr(message, "reply_to_message", None)
+    if replied is None or replied.from_user is None:
+        return None
+    if getattr(replied, "forum_topic_created", None) is not None:
+        return None
+    if (
+        getattr(message, "message_thread_id", None) is not None
+        and replied.message_id == message.message_thread_id
+    ):
+        return None
+    return replied.from_user
+
+
 async def work_item_for_thread(
     session: AsyncSession, chat: Chat, thread_id: int | None
 ) -> WorkItem | None:
