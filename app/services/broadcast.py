@@ -28,6 +28,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Broadcast, BroadcastDelivery, Chat
+from app.domain import shorthand
 from app.domain.enums import ChatKind, StaffRole
 from app.domain.errors import DomainError
 from app.domain.work_items import Actor, utcnow
@@ -128,6 +129,28 @@ async def was_broadcast(
     return result.scalar_one_or_none() is not None
 
 
+def outward_body(body: str) -> str:
+    """The broadcast as a counterparty will read it.
+
+    Our shorthand removed, the same as every other message that leaves - and
+    it was not, on the one path that reaches every counterparty at once.
+
+    Found on 26 October reading this file after the live test was refused for
+    want of a Manager role. `send` passed `body` straight to
+    `gateway.send_message` and nothing in this module had ever heard of
+    `shorthand`. A broadcast reading "Wave are down for XOF, #ACME and #BBS
+    affected" would have gone to every client and supplier group on the desk
+    with both codes in it.
+
+    Jason, 19 October: "#BBS remains completely internal and must never go out
+    to the client/supplier." The single-recipient paths were each fixed when
+    somebody noticed them; this one was never noticed because sending it needs
+    a role the desk rarely uses, which is also what makes it the worst one to
+    get wrong - it is used for outages, in a hurry, by whoever is senior.
+    """
+    return shorthand.strip_codes(body or "")
+
+
 def preview(body: str, audience: str, recipients: list[Recipient]) -> str:
     """What the sender sees before deciding. Deliberately blunt."""
     names = ", ".join(r.title for r in recipients[:12])
@@ -138,7 +161,7 @@ def preview(body: str, audience: str, recipients: list[Recipient]) -> str:
         f"{'' if len(recipients) == 1 else 's'} "
         f"({AUDIENCE_LABELS.get(audience, audience)}):\n"
         f"{names}\n\n"
-        f"— — —\n{body}\n— — —\n\n"
+        f"— — —\n{outward_body(body)}\n— — —\n\n"
         f"Nothing has been sent yet."
     )
 
@@ -159,6 +182,16 @@ async def send(
     if not recipients:
         raise DomainError("That audience has no groups in it.")
 
+    # Stored as typed, sent without the shorthand. The record is NexterPay's
+    # own and `#ACME` in it is useful when somebody asks later which groups a
+    # broadcast was about; `spoken` is what leaves.
+    spoken = outward_body(body)
+    if not spoken.strip():
+        raise DomainError(
+            "That broadcast is only our own shorthand, so there would be "
+            "nothing left to send once it is taken out."
+        )
+
     record = Broadcast(
         sent_by_staff_id=actor.staff.id if actor.staff else None,
         sent_by_name=actor.name,
@@ -175,7 +208,7 @@ async def send(
             chat_title=recipient.title,
         )
         try:
-            sent = await gateway.send_message(recipient.telegram_chat_id, body)
+            sent = await gateway.send_message(recipient.telegram_chat_id, spoken)
             delivery.telegram_message_id = sent.message_id
         except Exception as exc:
             # One group failing must not stop the rest, and must not be

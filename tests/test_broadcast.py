@@ -458,3 +458,82 @@ async def test_an_operator_is_told_why_rather_than_ignored(
     assert sent, "an operator was refused with no explanation"
     assert "manager" in sent[-1].lower()
     assert await state.get_state() is None, "state was set for someone who was refused"
+
+
+# --------------------------------------------------------------------------
+# Our shorthand must not ride out on a broadcast
+# --------------------------------------------------------------------------
+
+def test_a_broadcast_leaves_without_our_shorthand() -> None:
+    """The one message that reaches every counterparty at once.
+
+    Found on 26 October, reading this module after the live test was refused
+    for want of a Manager role. `send` passed `body` straight to
+    `gateway.send_message` and nothing here had ever heard of `shorthand`,
+    so a broadcast reading
+
+        Wave are down for XOF, #ACME and #BBS affected
+
+    would have gone to every client and supplier group on the desk with both
+    codes in it. Jason, 19 October: "#BBS remains completely internal and
+    must never go out to the client/supplier."
+
+    Each single-recipient path was fixed when somebody noticed it. This one
+    was never noticed, because sending it needs a role the desk rarely uses -
+    which is also what makes it the worst one to get wrong. It is for
+    outages: used in a hurry, by whoever is senior, to everybody.
+    """
+    from app.services import broadcast
+
+    typed = "Wave are down for XOF, #ACME and #BBS affected"
+
+    assert broadcast.outward_body(typed) == (
+        "Wave are down for XOF, and affected"
+    )
+    assert "#ACME" not in broadcast.outward_body(typed)
+    assert "#BBS" not in broadcast.outward_body(typed)
+
+
+def test_the_broadcast_preview_is_what_recipients_get() -> None:
+    """Same rule as every other preview on the platform."""
+    from app.services import broadcast
+
+    shown = broadcast.preview(
+        "Rates held for #ACME today",
+        "clients",
+        [broadcast.Recipient(telegram_chat_id=-100123, title="Acme Payments")],
+    )
+
+    assert "#ACME" not in shown, (
+        "the sender approved a sentence that is not the one that goes out"
+    )
+    assert "Rates held for today" in shown
+
+
+def test_what_is_sent_and_what_is_stored_come_from_one_place() -> None:
+    """`send` must deliver the stripped text, not the typed one.
+
+    Read off the AST: the fix is comment-heavy and the word `body` appears
+    throughout the reasoning. What matters is the argument actually handed to
+    `send_message`.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from app.services import broadcast
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(broadcast.send)))
+    for call in ast.walk(tree):
+        if isinstance(call, ast.Call) and ast.unparse(call.func).endswith(
+            "send_message"
+        ):
+            args = [ast.unparse(a) for a in call.args]
+            assert "body" not in args, (
+                "a broadcast is sent as typed, so our shorthand goes to every "
+                "client and supplier group at once"
+            )
+            assert "spoken" in args
+            break
+    else:
+        raise AssertionError("broadcast.send no longer sends anything")
