@@ -344,3 +344,82 @@ def test_the_withdrawal_text_names_no_figures() -> None:
         "the withdrawal notice contains a number; it should say that the "
         "order is replaced and nothing else"
     )
+
+
+def test_no_fx_message_outward_carries_text_the_desk_typed() -> None:
+    """The FX side has no free-text channel to a counterparty, and must not.
+
+    Every other outward path on this platform relays something a person
+    wrote, so each needs `strip_codes` on the way out and each has been a
+    leak at some point. `fx_relay` is built the other way round: every
+    message it sends is fixed wording plus figures read through
+    `fx.view_for`. There is nothing typed in it to leak.
+
+    Established on 26 October while checking amend, reject and rate check
+    for the shorthand fault found in broadcast. They were clean, and this
+    is why - not because somebody remembered to strip, but because there was
+    nothing to strip. That is the stronger property and worth keeping.
+
+    `notify_rejected` is the one to watch. It takes the desk's `reason` and
+    deliberately does not send it: "We are not able to work with that rate on
+    this one" is the whole message, because a supplier who learns what beat
+    them learns the market NexterPay buy in. The parameter sits right there
+    in the signature, which is exactly the shape somebody later interpolates
+    "helpfully".
+    """
+    import ast
+    import pathlib
+
+    FREE_TEXT = {"reason", "text", "note", "message", "body", "comment", "line"}
+
+    source = pathlib.Path("app/services/fx_relay.py").read_text(encoding="utf-8")
+    offenders = []
+    for fn in ast.walk(ast.parse(source)):
+        if not isinstance(fn, ast.AsyncFunctionDef):
+            continue
+        typed = {a.arg for a in fn.args.args} | {a.arg for a in fn.args.kwonlyargs}
+        typed &= FREE_TEXT
+        if not typed:
+            continue
+
+        # Does this function put anything in front of a counterparty?
+        #
+        # Writing into NexterPay's own Operations topic is not outward, and
+        # `_announce` exists to do exactly that, so a send whose target names
+        # `ops` does not count.
+        outward = [
+            call for call in ast.walk(fn)
+            if isinstance(call, ast.Call)
+            and getattr(call.func, "attr", "") in {"send_message", "edit_message_text"}
+            and "ops" not in (ast.unparse(call.args[0]) if call.args else "")
+        ]
+        if not outward:
+            continue
+
+        # Is the typed text read at all?
+        #
+        # Reading the send call alone is not enough, and the first version of
+        # this test did exactly that: `notify_rejected` builds its sentence
+        # into a local and passes `text`, so interpolating `reason` into that
+        # local left the send call unchanged and the guard silent. It was the
+        # older `test_a_rejected_supplier_is_told_nothing_about_the_price`
+        # that caught the mutation, which is the only reason this was noticed.
+        #
+        # A parameter that is never loaded cannot reach anybody. One that is
+        # loaded, in a function that writes outward, has to be looked at.
+        read = {
+            node.id for node in ast.walk(fn)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+        }
+        leaked = typed & read
+        if leaked:
+            offenders.append(
+                f"{fn.name} reads {sorted(leaked)} and writes to a counterparty"
+            )
+
+    assert not offenders, (
+        "an FX message to a counterparty now carries text somebody typed: "
+        f"{offenders}. Either compose it from fx.view_for like the rest of "
+        "the module, or strip our shorthand out of it - every other outward "
+        "path that relays typed text has leaked at least once."
+    )
