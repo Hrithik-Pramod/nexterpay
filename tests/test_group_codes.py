@@ -734,3 +734,62 @@ def test_what_operations_records_as_sent_is_what_was_sent() -> None:
         break
     else:
         raise AssertionError("nothing confirms the send in Operations any more")
+
+
+def test_every_screen_that_claims_to_show_an_outgoing_message_strips() -> None:
+    """A preview, and a record of a send, must be the text that was sent.
+
+    Three of these turned up in two days, in three different files, all from
+    the same cause: the text that goes out passes through a function that
+    strips our shorthand, and the text we *show* passed through none.
+
+      * the outbound preview heading          (25 Oct)
+      * the Operations record after sending   (26 Oct)
+      * the staff reply preview, and its own
+        record after sending                  (26 Oct, on ACME-1126)
+
+    The last one is the one that matters. It is the screen whose entire job
+    is "read this before you tap Send", and what it showed was:
+
+        preview:  Checked against #ACME standing terms. Shall I book it?
+        received: Checked against standing terms. Shall I book it?
+
+    Nothing leaked. The desk approved a sentence nobody was sent, and the
+    gap between the two is exactly where removing a word can leave the
+    sentence reading oddly - which is the only thing the preview is for.
+
+    Named sites rather than a scan. A scan would have to guess which strings
+    are shown to a desk and which are sent, and a guard that quietly covers
+    less than it claims is worse than none. A new preview fails this test by
+    not being in the list, which somebody notices.
+    """
+    import ast
+    import pathlib
+
+    sites = [
+        ("app/bot/handlers/outbound.py", "capture", "the outbound preview"),
+        ("app/bot/handlers/outbound.py", "send", "the Operations record of a send"),
+        ("app/bot/handlers/staff.py", "capture_reply_draft", "the staff reply preview"),
+        ("app/bot/handlers/staff.py", "_apply", "the record of a sent reply"),
+    ]
+
+    for module, function, what in sites:
+        source = pathlib.Path(module).read_text(encoding="utf-8")
+        found = None
+        for node in ast.walk(ast.parse(source)):
+            if (
+                isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
+                and node.name == function
+            ):
+                found = node
+                break
+        assert found is not None, (
+            f"{function} is gone from {module} - {what} has moved, and this "
+            f"guard is no longer watching it"
+        )
+
+        written = ast.unparse(found)
+        assert ("strip_codes" in written) or ("outward_subject_text" in written), (
+            f"{what} renders text without stripping our shorthand, so it no "
+            f"longer shows what the counterparty is actually sent"
+        )

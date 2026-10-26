@@ -32,6 +32,7 @@ from app.bot.deps import (
 from app.bot.registry import resolve_chat
 from app.db.base import session_scope
 from app.db.models import Chat, Client, Staff, WorkItem
+from app.domain import shorthand
 from app.domain import work_items as wi
 from app.domain.enums import ChatKind, Department, Priority, WorkItemStatus
 from app.domain.history import load_events, render_history
@@ -523,7 +524,29 @@ async def capture_reply_draft(message: Message, state: FSMContext) -> None:
     # people tapping without reading, so it has to show everything that is
     # about to leave - a file included silently is the same class of problem
     # as a file dropped silently.
-    body = text or "(no message)"
+    # Shown as the counterparty will read it, not as it was typed.
+    #
+    # `staff_reply_text` strips our shorthand at the last moment before the
+    # message escapes, so a reply typed with `#ACME` in it arrives without.
+    # This screen did not, and it is the screen whose whole job is "read this
+    # before you tap Send".
+    #
+    # Found live on 26 October, replying to a client on ACME-1126:
+    #
+    #     preview:  Checked against #ACME standing terms. Shall I book it?
+    #     received: Checked against standing terms. Shall I book it?
+    #
+    # Nothing leaked - the strip did its job. What was wrong is that the desk
+    # approved a sentence nobody was sent, and the difference is exactly where
+    # removing a word can leave the sentence reading oddly. A preview that is
+    # not literally what gets sent cannot catch that, which is the only reason
+    # the preview is here.
+    #
+    # Third place this drift turned up today, after the outbound preview and
+    # the Operations record of what was sent. Same cause each time: the text
+    # that goes out passes through one function and the text we show passes
+    # through none.
+    body = shorthand.strip_codes(text) if text else "(no message)"
     carried = ""
     if attachments:
         first = attachments[0]
@@ -824,7 +847,10 @@ async def _apply(
             origin_message_id=data.get("draft_message_id"),
         )
         where = (to_chat.title if to_chat else None) or "the client"
-        sealed = f"Sent to {where}:\n\n{body}"
+        # Same text the counterparty got - see the preview above. This is the
+        # desk's record of what was said to them, and `send_client_reply`
+        # strips our shorthand on the way out, so `body` is not it.
+        sealed = f"Sent to {where}:\n\n{shorthand.strip_codes(body)}"
         if attachment is not None:
             sealed += f"\n\nWith: {attachment.file_name or attachment.kind}"
         origin = data.get("draft_message_id")
