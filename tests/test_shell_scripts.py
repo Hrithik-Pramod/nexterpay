@@ -127,3 +127,66 @@ def test_backup_and_restore_agree_on_what_a_dump_looks_like() -> None:
             f"{name} does not use the shared check"
         )
         assert "lib-dump.sh" in text, f"{name} does not source the shared check"
+
+
+def test_no_script_is_wired_wrong() -> None:
+    """Every script under scripts/ must call the things it imports correctly.
+
+    `import_supplier_accounts.py` called `init_engine()` with no argument, and
+    `init_engine` has required one since it was written. The script had
+    therefore never been run - not once, by anybody. It was delivered on
+    4 October, its parsing was unit-tested, and it went into the FX Desk
+    Instructions as the way to load NexterPay's account list.
+
+    The first time anyone actually ran it, on 26 October with the real file
+    in hand, it raised before touching the database:
+
+        TypeError: init_engine() missing 1 required positional argument: 'url'
+
+    Nothing caught it because nothing imports these modules. They are entry
+    points: `python -m scripts.x`, run by hand, months apart. A script nobody
+    has run is indistinguishable from one that works until the day it is
+    needed, which is always a day when somebody is waiting.
+
+    So this imports each one. Importing does not run `main()`, but it does
+    compile the module and resolve its imports, and the check below then
+    matches the known entry-point calls against their real signatures.
+    """
+    import ast
+    import importlib
+    import inspect
+    import pathlib
+
+    scripts = sorted(pathlib.Path("scripts").glob("*.py"))
+    scripts = [p for p in scripts if p.name != "__init__.py"]
+    assert scripts, "no scripts found - has the directory moved?"
+
+    from app.db import base as db_base
+
+    # Entry points these scripts share, checked against the real thing.
+    signatures = {"init_engine": inspect.signature(db_base.init_engine)}
+
+    problems = []
+    for path in scripts:
+        module = importlib.import_module(f"scripts.{path.stem}")
+        assert module is not None
+
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for call in ast.walk(tree):
+            if not isinstance(call, ast.Call):
+                continue
+            name = getattr(call.func, "id", None) or getattr(call.func, "attr", None)
+            if name not in signatures:
+                continue
+            try:
+                signatures[name].bind(
+                    *[ast.unparse(a) for a in call.args],
+                    **{k.arg: ast.unparse(k.value) for k in call.keywords if k.arg},
+                )
+            except TypeError as exc:
+                problems.append(f"{path.name} line {call.lineno}: {name}() {exc}")
+
+    assert not problems, (
+        "a script calls something with the wrong arguments and would fail the "
+        f"moment it is run: {problems}"
+    )

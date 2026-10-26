@@ -37,6 +37,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 
+from app.config import get_settings
 from app.db.base import init_engine, session_scope
 from app.db.models import Client
 from app.domain import accounts
@@ -82,7 +83,21 @@ async def run(path: Path, supplier: str, confirm: bool) -> int:
         print(f"Nothing to load from {path}.")
         return 1
 
-    init_engine()
+    # The URL, like every other script here passes it.
+    #
+    # This read `init_engine()` with no argument, and `init_engine` has
+    # required one since it was written - so this script had never once been
+    # run. It was delivered on 4 October, tested at the parsing level, and
+    # went into the instructions as the way to load NexterPay's account list.
+    # The first time anybody tried it, on 26 October, it raised before
+    # touching the database:
+    #
+    #     TypeError: init_engine() missing 1 required positional argument
+    #
+    # `test_no_script_is_wired_wrong` in test_shell_scripts.py now checks the
+    # call in every script under scripts/, because a script nobody has run is
+    # indistinguishable from one that works until the day it is needed.
+    init_engine(get_settings().database_url)
     async with session_scope() as session:
         known = {
             name for name in (
