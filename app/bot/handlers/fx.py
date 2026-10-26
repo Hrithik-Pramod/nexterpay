@@ -241,14 +241,58 @@ def receipt_keyboard(order_id: int) -> InlineKeyboardMarkup:
     ]])
 
 
-def preview_text(side: FxSide, target: str, figures: Figures, account: str) -> str:
+def preview_text(
+    side: FxSide,
+    target: str,
+    figures: Figures,
+    account: str,
+    agreed_rate: Decimal | None = None,
+) -> str:
     """What the desk sees before anything is sent.
 
     Shows the same figures the counterparty will see and says who they are
     going to. This screen exists to stop somebody sending a client's numbers to
     a supplier, so it names both.
+
+    `agreed_rate` is the rate already on the deal for this side - what the
+    client was quoted, or what the supplier quoted us. The order step asks for
+    the rate again, and until 26 October it accepted a different one in
+    silence.
+
+    Found driving a deal end to end. FXACME-SPEX-1006 was quoted to the client
+    at 600, the client was asked "Rate on XOF is 600. Would you like to
+    proceed?" and tapped Yes. `/npordercl` then asked for the rate, 590 was
+    typed, and the order read:
+
+        Rate: 590
+        They send: 35,000 USDT
+        They receive: 20,650,000 XOF
+
+    At the rate they agreed they would have received 21,000,000 - so the
+    client was 350,000 XOF short, on an order they had already said yes to,
+    and nothing on the screen or in the topic mentioned that the rate had
+    moved. A typo in that field is indistinguishable from a decision.
+
+    Warned rather than refused, like the negative-margin warning in
+    `rate_preview_text`. There are honest reasons to type a different number -
+    the quote was wrong, or the figures were agreed by phone - and the one
+    thing the desk must not do is send it without noticing. Changing a rate a
+    counterparty has already accepted has its own path, `/npamend`, which
+    asks them again; the warning names it, because a desk that wanted the
+    rate to move wants that and not this.
     """
-    return "\n".join([
+    lines = []
+    if agreed_rate is not None and agreed_rate != figures.rate:
+        lines += [
+            f"⚠️ {target} agreed {fx.format_money(agreed_rate)}, and this "
+            f"order says {fx.format_money(figures.rate)}.",
+            "",
+            f"Sending it changes the rate without asking them. If the rate "
+            f"really has moved, cancel and use /{cmd.AMEND} to reprice, which "
+            f"puts the new rate to them.",
+            "",
+        ]
+    return "\n".join(lines + [
         f"This will be sent to {target} as the {side.value} side:",
         "",
         f"Account: {account}",
@@ -659,10 +703,14 @@ async def capture_name(message: Message, state: FSMContext) -> None:
             await message.reply("That deal no longer exists.")
             return
         target = await _target_name(session, order, side)
+        # This side's own column, through the one function that reads a side -
+        # `order.client_rate` here would be the leak this module is built to
+        # prevent, on the supplier path.
+        agreed_rate = fx.view_for(order, side).rate
 
     await state.update_data(account=account)
     await message.answer(
-        preview_text(side, target, figures, account),
+        preview_text(side, target, figures, account, agreed_rate=agreed_rate),
         reply_markup=_send_keyboard(data["order_id"], side, target),
     )
 
